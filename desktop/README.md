@@ -102,6 +102,17 @@ for desktop apps) and the tray tooltip.
   you come back. On a workspace **without** a keeper nothing sleeps, so the
   stream is held for as long as the app runs.
 
+### Closing the window
+
+Closing the window does not quit: the app stays in the tray, and the core
+keeps the stream, the alerts and the badge going. On **Linux and Windows** the
+window is destroyed, and the webview with it (`close_to_tray` in `lib.rs`),
+because the webview is nearly all of the app's memory and the core needs none
+of it to watch the Feed. Opening it again — from the tray, a notification or a
+link — rebuilds it, and the target queue makes sure whatever opened it lands.
+**macOS** hides the window instead: its dock badge is set through a window.
+Quit is in the tray menu.
+
 ### Deep links and single instance
 
 `kubecoder://` links use the push target format, in two spellings:
@@ -148,7 +159,10 @@ it until the navigator is mounted.
 - **Strict CSP** on the bundled UI: `default-src 'self'`, `script-src 'self'`,
   `connect-src ipc: http://ipc.localhost`, `frame-src 'none'`,
   `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`. Inline styles
-  are allowed because react-native-web emits them.
+  are allowed because react-native-web injects its styles at runtime; Tauri is
+  told not to add hashes to `style-src` (`dangerousDisableAssetCspModification:
+  ["style-src"]`), since any hash there makes the webview ignore
+  `'unsafe-inline'`. Scripts keep Tauri's hashes and no inline script runs.
 
 ## Building
 
@@ -166,6 +180,10 @@ Flags for `scripts/build-ui.mjs` (read by `tauri build` and `tauri dev` too):
 |---|---|
 | `KC_DESKTOP_DEMO=1` | the demo-data build (no workspace needed) |
 | `KC_ALLOW_CLEARTEXT=1` | allow `http://localhost` workspaces; also enables `KC_DESKTOP_HOST` + `KC_DESKTOP_TOKEN` to pre-seed a connection (memory only) for a test run |
+
+At run time, `KC_DESKTOP_TRACE=1` logs each command the UI calls (its name and
+window, never its arguments), and `KC_DESKTOP_RELEASE_AFTER_MIN` and
+`KC_PUSH_MIN_INTERVAL` tune the sleep policy and the alert throttle.
 
 ### macOS
 
@@ -194,7 +212,12 @@ launch.
 In a kube-coder workspace pod `sudo` may be unavailable (the pod runs with
 `allowPrivilegeEscalation: false`); `scripts/rootless-linux-deps.sh` downloads
 the same packages with `apt-get download` and unpacks them into a prefix
-under `/home/dev`, then prints the environment to build and run with.
+under `/home/dev`, patches WebKitGTK's compiled-in helper path to point into
+it, and prints the environment to build and run with (on a GPU-less virtual
+display, including `WEBKIT_DISABLE_DMABUF_RENDERER=1`). To try the app with no
+workspace, `scripts/fake-workspace.py` serves enough of the API (and counts
+requests), and `scripts/fake-notifyd.py` stands in for a notification daemon
+and clicks what it is sent.
 
 ### CI
 
@@ -202,7 +225,9 @@ under `/home/dev`, then prints the environment to build and run with.
 installers on `ubuntu-latest` (`.deb`, `.AppImage`), `macos-latest` (universal
 `.dmg`) and `windows-latest` (`.msi`, NSIS `.exe`) for every PR that touches
 `desktop/` or `mobile/`, fails if an installer is over 20 MB, and uploads them
-as workflow artifacts.
+as workflow artifacts. The AppImage is reported but not held to 20 MB: it
+carries its own WebKitGTK and GTK stack (its AppDir is ~210 MB before
+compression), where the `.deb` uses the system's.
 
 ## Tests
 
@@ -218,18 +243,52 @@ owns: the app itself plus the webview's helper processes (WebKitWebProcess and
 WebKitNetworkProcess on Linux, the WebContent/Networking XPC services on macOS,
 the msedgewebview2 tree on Windows).
 
-Method used for the Linux number below:
+Method used for the Linux numbers below:
 
-1. Build the demo UI and a release binary:
-   `KC_DESKTOP_DEMO=1 npx tauri build --no-bundle`.
-2. Run it on a virtual display, at the default 1280×820 window, and leave it
-   idle for 10 minutes.
-3. Sum the RSS of the app's process tree:
-   `scripts/measure-rss.sh <pid>` (walks the children and adds VmRSS).
+1. Build a release binary that may talk to a loopback workspace:
+   `KC_ALLOW_CLEARTEXT=1 npx tauri build --no-bundle`.
+2. Start `scripts/fake-workspace.py`, and run the app against it
+   (`KC_DESKTOP_HOST=http://127.0.0.1:6099 KC_DESKTOP_TOKEN=test-token`) on a
+   virtual display at the default 1280×820 window: one workspace connected,
+   the event stream held, the Feed and Board screens visited.
+3. Leave it idle for 10 minutes, then sum its process tree with
+   `scripts/measure-rss.sh <pid>`.
 
 RSS counts shared library pages in every process that maps them, so the sum
-over-counts what the app really costs the machine; `scripts/measure-rss.sh`
-also prints the PSS total (shared pages divided among their users), which is
-the fairer number.
+over-counts what the app costs the machine. The script also prints PSS
+(shared pages divided among their users) and USS (pages only this app maps);
+private *dirty* memory is the part the kernel cannot simply drop.
 
-MEASUREMENTS_PLACEHOLDER
+### Linux, measured in a kube-coder pod (Xvfb, no GPU), 2026-11-01
+
+| State | RSS sum | PSS | USS | private dirty |
+|---|---:|---:|---:|---:|
+| Window open, connected, idle 10 min | 437.5 MB | 221.3 MB | 149.2 MB | 142.6 MB |
+| Same, WebKit GL compositing off | 439.8 MB | 220.4 MB | 150.2 MB | — |
+| Window closed (tray only), 3 min | 209.7 MB | 155.2 MB | 122.6 MB | 50.9 MB |
+| Firefox, same UI in one tab, idle 10 min | 1259.6 MB | 646.6 MB | 537.6 MB | — |
+
+**The window-open Linux number is over the 120 MB budget.** Where it goes:
+
+- The web process holds ~86 MB of private dirty memory, mostly the JavaScript
+  heap of the mobile web bundle (5.9 MB of JS, every screen loaded up front).
+- Each WebKit process maps WebKitGTK, JavaScriptCore and GTK, and RSS counts
+  them once per process.
+- This display has no GPU, so Mesa's software rasterizer pulls `libLLVM`
+  (~44 MB resident) into two processes. A machine with a GPU driver that does
+  not use LLVM will not pay this; turning off GL compositing did not avoid it.
+
+Closing the window (Linux, Windows) drops the web process and roughly halves
+the footprint; most of what remains in the core's USS is clean library text
+that only it now maps, which the kernel can reclaim.
+
+**macOS and Windows are not measured** — this pod cannot run either. WKWebView
+and WebView2 have different process models and allocators, so the Linux number
+does not predict them; measure them on real machines with the same method
+(Activity Monitor's "Memory" for the app plus its WebKit XPC services; Task
+Manager for the app plus its `msedgewebview2` children).
+
+Ways to bring the window-open number down, in order of likely payoff: split
+the web bundle so screens load on demand; set WebKit's memory-pressure limits
+(`WebKitMemoryPressureSettings`); and drop the webview after the window has
+been hidden for a while on macOS too.

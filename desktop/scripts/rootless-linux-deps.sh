@@ -46,6 +46,30 @@ find "$PREFIX" -type l -name '*.so*' | while read -r l; do
 done
 
 LIB="$PREFIX/usr/lib/x86_64-linux-gnu"
+
+# WebKitGTK release builds ignore WEBKIT_EXEC_PATH and spawn their helper
+# processes from a path compiled into libwebkit2gtk. Rewrite that path in the
+# unpacked (private) copy to one of the SAME length that links to the helpers.
+WK_OLD=/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1
+WK_NEW=$(python3 -I - "$(dirname "$PREFIX")" "$WK_OLD" <<'PY'
+import sys
+root, old = sys.argv[1], sys.argv[2]
+tail = '/webkit2gtk-4.1'
+pad = len(old) - len(root) - len('/wk') - len(tail)
+if pad < 0:
+    sys.exit('prefix too long for the WebKit path patch')
+print(root + '/wk' + 'x' * pad + tail)
+PY
+)
+mkdir -p "$(dirname "$WK_NEW")"
+ln -sfn "$LIB/webkit2gtk-4.1" "$WK_NEW"
+python3 -I - "$(readlink -f "$LIB/libwebkit2gtk-4.1.so.0")" "$WK_OLD" "$WK_NEW" <<'PY'
+import sys
+path, old, new = sys.argv[1], sys.argv[2].encode(), sys.argv[3].encode()
+data = open(path, 'rb').read()
+open(path, 'wb').write(data.replace(old, new))
+PY
+
 cat <<EOF
 # --- source this to build ---
 export PKG_CONFIG_PATH=$LIB/pkgconfig:$PREFIX/usr/share/pkgconfig
@@ -54,8 +78,10 @@ export C_INCLUDE_PATH=$PREFIX/usr/include
 export RUSTFLAGS="-C link-arg=-Wl,-rpath-link,$LIB -C link-arg=-Wl,-rpath-link,$PREFIX/lib/x86_64-linux-gnu"
 # --- and this to run the built app ---
 export LD_LIBRARY_PATH=$LIB:$PREFIX/lib/x86_64-linux-gnu
-export WEBKIT_EXEC_PATH=$LIB/webkit2gtk-4.1
-export WEBKIT_INJECTED_BUNDLE_PATH=$LIB/webkit2gtk-4.1/injected-bundle
 export GIO_MODULE_DIR=$LIB/gio/modules
 export XDG_DATA_DIRS=$PREFIX/usr/share:\${XDG_DATA_DIRS:-/usr/share}
+# Mesa's EGL vendor file is in the prefix, not /usr/share/glvnd.
+export __EGL_VENDOR_LIBRARY_DIRS=$PREFIX/usr/share/glvnd/egl_vendor.d
+# A virtual display (Xvfb) has no GPU: render without DMA-BUF.
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
 EOF

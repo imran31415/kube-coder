@@ -736,12 +736,31 @@ fn host_slug(base: &url::Url) -> String {
     s.chars().take(100).collect()
 }
 
+/// Bring the UI forward, rebuilding the window if closing it destroyed it
+/// (see `close_to_tray` in lib.rs). A rebuilt UI boots, hydrates and drains
+/// the target queue, so whatever asked for the window still lands.
 pub fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(MAIN) {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
+    let window = match app.get_webview_window(MAIN) {
+        Some(w) => w,
+        None => {
+            let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == MAIN) else { return };
+            match tauri::WebviewWindowBuilder::from_config(app, cfg).and_then(|b| b.build()) {
+                Ok(w) => {
+                    if let Some(core) = app.try_state::<Arc<Core>>() {
+                        crate::tray::set_needs_you(app, core.status().needs_you);
+                    }
+                    w
+                }
+                Err(e) => {
+                    eprintln!("[kc] could not open the window: {e}");
+                    return;
+                }
+            }
+        }
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 #[cfg(test)]

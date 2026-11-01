@@ -186,15 +186,36 @@ pub fn run() {
                 // Closing the window keeps the app in the tray, still
                 // watching for things that need you. Quit is in the tray menu.
                 WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    let _ = window.hide();
                     if let Some(core) = window.try_state::<Arc<Core>>() {
                         core.on_focus(false);
+                    }
+                    if !close_to_tray() {
+                        api.prevent_close();
+                        let _ = window.hide();
                     }
                 }
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running kube-coder desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building kube-coder desktop")
+        .run(|_app, event| {
+            // The last window closing is not quitting: the core keeps running
+            // in the tray. Only an explicit exit (the tray's Quit) ends it.
+            if let tauri::RunEvent::ExitRequested { api, code: None, .. } = event {
+                api.prevent_exit();
+            }
+        });
+}
+
+/// Whether closing the window destroys it rather than hiding it.
+///
+/// The Rust core raises the alerts and sets the badge on its own, so a closed
+/// window does not need a live webview behind it — and the webview is nearly
+/// all of the app's memory (desktop/README.md). On Linux and Windows the
+/// window is destroyed, leaving only the core in the tray; it is rebuilt when
+/// opened again. macOS keeps it hidden instead: the dock badge is set through
+/// a window, and a Mac app that stays in the dock is expected to keep it.
+fn close_to_tray() -> bool {
+    !cfg!(target_os = "macos")
 }
