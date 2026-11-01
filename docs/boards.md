@@ -584,6 +584,27 @@ place. Mobile passes the ids through **unencoded** — they go into a plain obje
 and are matched against `item_id` literally, where the web's query string has
 to encode them.
 
+**A tap that launches the app lands on the card too** (#709). With the app fully
+closed, the tap happens before the tap listener exists, so `initPush` also reads
+the launching response (`getLastNotificationResponse()`) and hands it to the
+same `handleNotificationResponse` the listener uses — one routing path for every
+ref kind (`board:`, `task:`, `thread:` and the rest), not a second one for cold
+starts. At that point the app is still on its boot screen with no navigator
+mounted, so the tap is **parked** and replayed from `NavigationContainer`'s
+`onReady`; a `board:` target then goes through `boardFocus` as it would on a
+warm tap. The tap still marks its Feed row read straight away rather than
+waiting for the replay.
+
+Each response routes **once**. On a cold start the listener can be told about
+the launching tap as well as the read seeing it, in either order, and a re-run
+of the boot effect reads it again. The dedupe key is the request identifier
+**plus the delivery date**: `push_notify` sets `collapseId` to the Feed row id,
+and on iOS that becomes the identifier, so every re-send of one alert shares it
+— keyed on the identifier alone, a tap on a repeat later in the same launch
+would be swallowed. After routing, the native copy is cleared
+(`clearLastNotificationResponse()`), because the dedupe lives in memory and a
+JS reload in the same process would otherwise read the tap again.
+
 **Mobile leads this design.** Approving five staged replies from a phone is the
 realistic workflow; running a board from a phone is not — so `BoardScreen`
 carries the queue and the decisions, plus the one thing a queue alone cannot
@@ -830,12 +851,6 @@ down.
 
 ## Not yet built
 
-**Cold start from a notification.** Nothing calls
-`getLastNotificationResponseAsync()`, so a tap that launches the app from
-scratch lands on the default screen rather than the item — for every ref kind,
-not just `board:`. The focus store makes the fix two lines (park the target,
-replay it after boot); it is not done.
-
 **iPad.** The app has no tablet layout anywhere, so the review card runs the
 full width of a 1024pt viewport. Capping the list
 (`contentContainerStyle: { maxWidth: 700, alignSelf: 'center' }`) is the whole
@@ -924,6 +939,10 @@ cd mobile && npm run typecheck && npm test
   forms that must fall back to the Feed rather than to half a target
 - `mobile/src/store/boardFocus.test.ts` — the deep-link handoff, and that the
   **second** of two quick taps wins
+- `mobile/src/push/notifications.test.ts` — a cold-start tap on a `board:`,
+  `task:` and `thread:` notification, the parked tap replayed once the
+  navigator is ready, and one navigation when both the launch read and the
+  listener see the same response
 - `mobile/src/util/lastBoard.test.ts` — which board the phone reopens on, and
   the fallback when the remembered one has been disconnected
 - `mobile/src/util/boardTabs.test.ts` — the three tabs over every state ×
