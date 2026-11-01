@@ -144,14 +144,13 @@ export interface BoardRunItem {
 }
 
 export interface BoardRunSummary {
-  origin?: 'manual' | 'send_back' | 'chat';
   origin_request_id?: string | null;
   origin_thread_id?: string | null;
   id: string;
   board_id: string;
   mode: 'propose' | 'autonomous';
   /** What started it. `cron`/`webhook` runs also carry `trigger` (#709). */
-  origin?: 'manual' | 'send_back' | 'cron' | 'webhook';
+  origin?: 'manual' | 'send_back' | 'cron' | 'webhook' | 'chat';
   trigger?: { type: 'cron' | 'webhook'; id: string } | null;
   status: 'running' | 'done' | 'stopped' | 'interrupted';
   concurrency: number;
