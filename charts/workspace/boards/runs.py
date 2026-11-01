@@ -41,6 +41,14 @@ module never decides where anything lives.
 import re
 import time
 
+
+class RunStartError(str):
+    """Stable startup classification, compatible with existing string callers."""
+    def __new__(cls, message, code, status=400, retryable=False):
+        value = super().__new__(cls, message)
+        value.code, value.status, value.retryable = code, status, retryable
+        return value
+
 # The ONE content-hash implementation, re-exported so callers of this module
 # never grow a second one. A processed marker written against a different hash
 # than the write path computes would silently stop skipping anything.
@@ -74,7 +82,7 @@ DEFAULT_MODE = 'propose'
 # saved trigger config — and an unknown origin is coerced to `manual` below,
 # so a caller passing one that is missing here gets a wrong label, not an
 # error. Hence the test that pins both.
-ORIGINS = ('manual', 'send_back', 'cron', 'webhook')
+ORIGINS = ('manual', 'send_back', 'cron', 'webhook', 'chat')
 TRIGGER_ORIGINS = ('cron', 'webhook')
 
 # Ceiling on a single run regardless of pod capacity. Board work is dominated by
@@ -364,6 +372,8 @@ def summary(run):
         'mode': run.get('mode'),
         'origin': run.get('origin', 'manual'),
         'trigger': run.get('trigger'),
+        'origin_request_id': run.get('origin_request_id'),
+        'origin_thread_id': run.get('origin_thread_id'),
         'status': run.get('status'),
         'concurrency': run.get('concurrency'),
         'requested_concurrency': run.get('requested_concurrency'),

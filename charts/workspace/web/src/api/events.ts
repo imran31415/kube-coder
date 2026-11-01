@@ -39,6 +39,7 @@ const EVENT_TYPES = [
   'devcontainer.changed',
   'boards.changed',
   'boards.run',
+  'boards.request',
   'boards.review',
   // Security scans (#726). A scan rewrites its findings as it works, so the
   // live view is driven by these rather than by polling a long-running job.

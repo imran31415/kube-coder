@@ -49,6 +49,8 @@ func main() {
 	switch cmd {
 	case "serve":
 		err = serve()
+	case "board-approval-local":
+		err = serveLocalBoardApprovals()
 	case "sleep":
 		if os.Getenv("KEEPER_SLEEP_ENABLED") != "true" {
 			err = errors.New("keeper.sleep.enabled is off: the chart still sets the workspace's replicas, so the next helm upgrade would wake it again")
@@ -109,6 +111,11 @@ func serve() error {
 		page = "/etc/keeper/page/holding.html"
 	}
 	s := &Server{
+		BoardApprovals: &BoardApprovals{
+			Dir:     filepath.Join(os.Getenv("KEEPER_STATE_DIR"), "board-approvals"),
+			AuthURL: os.Getenv("KEEPER_BOARD_AUTH_URL"),
+			Origin:  os.Getenv("KEEPER_BOARD_ORIGIN"),
+		},
 		Kube:              k,
 		PageFile:          page,
 		UserHeader:        os.Getenv("KEEPER_USER_HEADER"),

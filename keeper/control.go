@@ -37,6 +37,10 @@ const controlMaxBody = 64 << 10
 // ControlHandler serves :8083.
 func (s *Server) ControlHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/keeper/board-approvals/") && r.URL.RawPath == "" {
+			s.handleBoardApproval(w, r)
+			return
+		}
 		path := r.URL.Path
 		if r.URL.RawPath != "" {
 			path = "" // percent-encoded: never one of ours

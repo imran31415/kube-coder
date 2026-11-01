@@ -1,3 +1,6 @@
+{{- if and (.Values.boardHandoff).enabled (not .Values.keeper.enabled) }}
+{{- fail "boardHandoff.enabled requires keeper.enabled: approval decisions must be outside the agent workspace" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,6 +129,15 @@ spec:
         # is what a keeper-less workspace wants.
         - name: KEEPER_CONTROL_URL
           value: http://keeper-{{ .Values.user.name }}-control.{{ .Values.namespace }}.svc.cluster.local
+        {{- if (.Values.boardHandoff).enabled }}
+        {{- if ne .Values.ingress.auth.type "oauth2" }}
+        {{- fail "boardHandoff.enabled requires GitHub OAuth (ingress.auth.type=oauth2)" }}
+        {{- end }}
+        - name: KC_BOARD_HANDOFF_ENABLED
+          value: "true"
+        - name: KC_BOARD_APPROVAL_URL
+          value: http://keeper-{{ .Values.user.name }}-control.{{ .Values.namespace }}.svc.cluster.local/api/keeper/board-approvals
+        {{- end }}
         - name: KEEPER_CONTROL_SECRET
           valueFrom:
             secretKeyRef:
