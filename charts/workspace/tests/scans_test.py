@@ -413,6 +413,213 @@ class ApplyArtifactsTests(unittest.TestCase):
         self.assertEqual(rec['status'], 'running')
         self.assertEqual(rec['findings'], [])
 
+    def test_a_stop_request_outranks_the_scanners_word_for_the_signal(self):
+        """The scanner writes `interrupted` for the SIGTERM a Stop sends —
+        the same word it uses when it crashes."""
+        for reported in ('interrupted', 'failed', 'stopped'):
+            rec = self.record(stop_requested_at=1.0)
+            scans.apply_artifacts(rec, {'run': {'status': reported},
+                                        'findings': []})
+            self.assertEqual(rec['status'], 'stopped', reported)
+
+    def test_a_scan_that_completed_as_stop_was_pressed_stays_done(self):
+        rec = self.record(stop_requested_at=1.0)
+        scans.apply_artifacts(rec, {'run': {'status': 'completed'},
+                                    'findings': []})
+        self.assertEqual(rec['status'], 'done')
+
+
+class ReportTests(unittest.TestCase):
+    """The scanner's write-up — the result the scan was run for.
+
+    It already arrived inside the run record and `apply_artifacts` kept only
+    `llm_usage` and `status`, so a scan that finished having proven nothing
+    rendered a blank page with the word "done" on it.
+    """
+
+    def record(self, **over):
+        rec = {'status': 'running', 'findings': [], 'counts': {}, 'usage': {},
+               'ended_at': None, 'target': {'port': 3000, 'name': 'shop'},
+               'mode': 'quick'}
+        rec.update(over)
+        return rec
+
+    REPORT = {'text': '# Executive Summary\n\nChecked the login page.',
+              'location': '/home/dev/.claude-scans/scn_x/report.md'}
+
+    def test_the_report_and_coverage_reach_the_record(self):
+        rec = self.record()
+        scans.apply_artifacts(rec, {
+            'run': {'status': 'completed'}, 'findings': [],
+            'report': self.REPORT,
+            'coverage': {'complete': False, 'caveats': ['ran out of room']},
+        })
+        self.assertEqual(rec['report'], self.REPORT)
+        self.assertEqual(rec['coverage']['caveats'], ['ran out of room'])
+
+    def test_a_later_read_never_blanks_a_report_already_held(self):
+        """The scanner writes the report once and tidies up after itself, so
+        the poll that lands next can see nothing. Taking the report back off
+        the page at that moment is the bug this guards."""
+        rec = self.record()
+        scans.apply_artifacts(rec, {'run': {'status': 'running'},
+                                    'findings': [], 'report': self.REPORT,
+                                    'coverage': {'complete': True,
+                                                 'caveats': []}})
+        scans.apply_artifacts(rec, {'run': {}, 'findings': None,
+                                    'report': None, 'coverage': None})
+        self.assertEqual(rec['report'], self.REPORT)
+        self.assertTrue(rec['coverage']['complete'])
+
+    def test_a_backend_that_reports_neither_stores_neither(self):
+        rec = self.record()
+        scans.apply_artifacts(rec, {'run': {'status': 'running'},
+                                    'findings': []})
+        self.assertNotIn('report', rec)
+        self.assertNotIn('coverage', rec)
+
+    def test_only_a_report_with_text_is_kept(self):
+        for bad in (None, {}, 'a string', {'text': ''}, {'text': '  '},
+                    {'location': '/x'}, {'text': 5}):
+            self.assertIsNone(scans.parse_report(bad), bad)
+
+    def test_a_report_with_no_location_is_still_a_report(self):
+        """A backend running the scan elsewhere has no file on this machine;
+        its write-up is still the result."""
+        parsed = scans.parse_report({'text': 'done'})
+        self.assertEqual(parsed, {'text': 'done', 'location': ''})
+
+    def test_the_list_row_drops_the_report_but_keeps_the_verdict(self):
+        row = scans.summarise({'id': 'scn_x', 'report': self.REPORT,
+                               'coverage': {'complete': False,
+                                            'caveats': ['short']}})
+        self.assertNotIn('report', row)
+        self.assertFalse(row['coverage']['complete'])
+
+
+class CoverageTests(unittest.TestCase):
+
+    def test_unknown_coverage_is_never_read_as_a_yes(self):
+        """A record written before coverage was read must not claim the app
+        was covered — that is exactly the all-clear this module exists to
+        refuse."""
+        self.assertIsNone(scans.covered_everything({}))
+        self.assertIsNone(scans.covered_everything({'coverage': {}}))
+        self.assertIsNone(scans.covered_everything({'coverage': 'yes'}))
+        self.assertIs(scans.covered_everything({'coverage': {'complete': True}}),
+                      True)
+        self.assertIs(scans.covered_everything({'coverage': {'complete': False}}),
+                      False)
+
+    def test_caveats_are_the_scanners_own_sentences(self):
+        rec = {'coverage': {'complete': False,
+                            'caveats': ['not reached', '', 7, '  ']}}
+        self.assertEqual(scans.coverage_caveats(rec), ['not reached'])
+        self.assertEqual(scans.coverage_caveats({}), [])
+
+
+class BudgetNoteTests(unittest.TestCase):
+    """The spend figure alone does not say the limit is what ended the scan."""
+
+    def note(self, **over):
+        rec = {'status': 'done', 'budget_usd': 3.0,
+               'usage': {'cost_usd': 2.76}}
+        rec.update(over)
+        return scans.budget_note(rec)
+
+    def test_a_scan_that_ended_on_its_limit_says_so(self):
+        text = self.note()
+        self.assertIn('$2.76', text)
+        self.assertIn('$3.00', text)
+        self.assertIn('stops testing before the limit', text)
+
+    def test_a_scan_nowhere_near_its_limit_says_nothing(self):
+        self.assertEqual(self.note(usage={'cost_usd': 0.30}), '')
+
+    def test_no_limit_means_no_note(self):
+        self.assertEqual(self.note(budget_usd=None), '')
+
+    def test_a_running_scan_is_not_told_what_it_would_have_bought(self):
+        self.assertEqual(self.note(status='running'), '')
+
+
+class EndedBadlyTests(unittest.TestCase):
+
+    def test_which_ends_owe_the_user_a_reason(self):
+        self.assertTrue(scans.ended_badly({'status': 'failed'}))
+        self.assertTrue(scans.ended_badly({'status': 'interrupted'}))
+        self.assertTrue(scans.ended_badly({'status': 'stopped'}))
+        self.assertFalse(scans.ended_badly({'status': 'stopped',
+                                            'stop_requested_at': 1.0}))
+        self.assertFalse(scans.ended_badly({'status': 'done'}))
+        self.assertFalse(scans.ended_badly({'status': 'running'}))
+
+    def test_a_spent_budget_is_named_without_the_backend(self):
+        reason = scans.fallback_reason({'budget_usd': 5.0,
+                                        'usage': {'cost_usd': 5.01}})
+        self.assertEqual(reason, 'The scan reached its $5.00 spending limit.')
+
+    def test_an_unknown_reason_says_it_is_unknown(self):
+        reason = scans.fallback_reason({'budget_usd': 5.0,
+                                        'usage': {'cost_usd': 0.63}})
+        self.assertIn('did not say why', reason)
+        self.assertIn('did not say why', scans.fallback_reason(None))
+
+
+class EndReasonTests(unittest.TestCase):
+    """`end_reason_of` — the one code every page picks its headline and next
+    step by."""
+
+    def reason(self, **rec):
+        return scans.end_reason_of(rec)
+
+    def test_a_running_scan_has_no_end_reason(self):
+        self.assertEqual(self.reason(status='running'), '')
+        self.assertEqual(scans.end_reason_of(None), '')
+
+    def test_who_ended_it_comes_before_what_the_backend_said(self):
+        self.assertEqual(self.reason(status='done', end_cause='provider'),
+                         'completed')
+        self.assertEqual(self.reason(status='stopped', stop_requested_at=1.0,
+                                     end_cause='provider'), 'user_stopped')
+        self.assertEqual(self.reason(status='interrupted',
+                                     interrupted_reason='restart'),
+                         'workspace_restarted')
+
+    def test_a_stop_request_on_a_scan_that_completed_anyway_is_completed(self):
+        self.assertEqual(self.reason(status='done', stop_requested_at=1.0),
+                         'completed')
+
+    def test_each_backend_cause_maps_to_its_reason(self):
+        for cause, expected in (('provider', 'provider_error'),
+                                ('budget', 'budget_reached'),
+                                ('scanner', 'scanner_error'),
+                                ('lost', 'lost_track')):
+            self.assertEqual(self.reason(status='failed', end_cause=cause),
+                             expected, cause)
+
+    def test_a_spent_budget_is_named_with_no_cause_at_all(self):
+        """A record from before causes were stored still reads right."""
+        self.assertEqual(self.reason(status='stopped', budget_usd=3.0,
+                                     usage={'cost_usd': 3.0}),
+                         'budget_reached')
+
+    def test_with_nothing_known_a_vanished_process_is_not_a_scanner_error(self):
+        self.assertEqual(self.reason(status='interrupted',
+                                     interrupted_reason='vanished'),
+                         'process_vanished')
+        self.assertEqual(self.reason(status='failed'), 'scanner_error')
+        self.assertEqual(self.reason(status='stopped'), 'scanner_error')
+
+    def test_every_answer_is_a_known_code(self):
+        for status in scans.TERMINAL_SCAN_STATUSES:
+            self.assertIn(self.reason(status=status), scans.END_REASONS)
+
+    def test_both_views_carry_it(self):
+        rec = {'status': 'stopped', 'stop_requested_at': 1.0}
+        self.assertEqual(scans.summarise(rec)['end_reason'], 'user_stopped')
+        self.assertEqual(scans.public_view(rec)['end_reason'], 'user_stopped')
+
 
 class PublicViewTests(unittest.TestCase):
 
@@ -462,7 +669,28 @@ class ResultSummaryTests(unittest.TestCase):
     def test_a_failed_scan_says_nothing_was_checked(self):
         text = self.summary(status='failed', error='No model configured.')
         self.assertIn('nothing was checked', text)
-        self.assertIn('No model configured.', text)
+
+    def test_the_reason_is_not_repeated_inside_the_sentence(self):
+        """Every surface shows the record's `error` beside this sentence. In
+        it as well, the page printed the reason twice."""
+        text = self.summary(status='failed', error='No model configured.')
+        self.assertNotIn('No model configured.', text)
+
+    def test_a_scan_that_failed_after_working_does_not_say_nothing_was_checked(self):
+        text = self.summary(status='failed', usage={'requests': 40})
+        self.assertIn('partway', text)
+        self.assertNotIn('nothing was checked', text)
+
+    def test_a_scan_its_user_stopped_says_so(self):
+        text = self.summary(status='stopped', stop_requested_at=1.0)
+        self.assertIn('You stopped', text)
+        self.assertNotIn('unexpectedly', text)
+
+    def test_a_scan_the_scanner_ended_itself_does_not_blame_the_user(self):
+        text = self.summary(status='stopped',
+                            error='The scan reached its spending limit.')
+        self.assertIn('scanner ended', text)
+        self.assertNotIn('You stopped', text)
 
     def test_a_scan_interrupted_by_a_restart_says_so(self):
         text = self.summary(status='interrupted',
@@ -483,11 +711,42 @@ class ResultSummaryTests(unittest.TestCase):
         # A record written before this field existed must still not claim it.
         self.assertNotIn('restart', self.summary(status='interrupted').lower())
 
+    def test_an_interrupted_scan_with_a_reason_does_not_also_say_unexpectedly(self):
+        """The reason ("killed by the system…") is printed beside this
+        sentence; "ended unexpectedly" next to it reads as a contradiction."""
+        text = self.summary(status='interrupted', interrupted_reason='vanished',
+                            error='The scanner was killed by the system.')
+        self.assertNotIn('unexpectedly', text)
+        self.assertIn('stopped before it finished', text)
+        self.assertIn('unexpectedly', self.summary(status='interrupted'))
+
     def test_a_stopped_scan_says_only_part_was_checked(self):
         self.assertIn('part', self.summary(status='stopped'))
 
     def test_findings_are_counted_in_the_sentence(self):
         self.assertIn('3', self.summary(counts={'total': 3}))
+
+    def test_a_done_scan_that_missed_part_of_the_app_is_not_an_all_clear(self):
+        """The exact sentence the user read as "my app is clean": the scan
+        reached `done` with nothing proven, because the scanner stopped
+        testing near the spending limit and spent the rest writing up."""
+        text = self.summary(coverage={'complete': False,
+                                      'caveats': ['ran out of room']})
+        self.assertIn('not an all-clear', text)
+        self.assertNotIn('found nothing', text)
+
+    def test_a_scan_that_did_cover_the_app_still_says_so_plainly(self):
+        text = self.summary(coverage={'complete': True, 'caveats': []})
+        self.assertIn('found nothing', text)
+
+    def test_findings_from_a_partial_scan_say_there_may_be_more(self):
+        text = self.summary(counts={'total': 3},
+                            coverage={'complete': False, 'caveats': ['x']})
+        self.assertIn('3', text)
+        self.assertIn('may be more', text)
+
+    def test_an_older_record_with_no_verdict_keeps_the_old_wording(self):
+        self.assertIn('found nothing', self.summary())
 
     def test_a_target_with_no_name_falls_back_to_its_port(self):
         text = self.summary(target={'port': 3000, 'name': ''})

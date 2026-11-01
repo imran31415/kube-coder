@@ -77,8 +77,8 @@
   display: flex; flex-wrap: wrap; justify-content: space-between;
   align-items: flex-start; gap: var(--size-3);
 }
+.security-detail-actions { display: flex; align-items: center; gap: var(--size-2); }
 
-.security-summary { max-width: 68ch; line-height: 1.5; }
 
 /* The app's name leads; the status sits beside it. */
 .scan-title {
@@ -205,13 +205,167 @@
   .scan-meter > span { transition: none; }
 }
 
-.security-error {
-  white-space: pre-wrap; word-break: break-word;
-  padding: var(--size-3);
-  border-left: 3px solid var(--danger);
-  border-radius: var(--radius);
+/* How a finished scan ended — one card, tinted by tone. Prose, not a code
+   block: it is written for the person reading it, and the raw scanner
+   output lives in the server log. The tint is the same quiet mix the
+   problem cards use, so a failure reads as serious without shouting. */
+.scan-outcome {
+  --tone: var(--text-muted);
+  display: flex; gap: var(--size-3); align-items: flex-start;
+  max-width: 72ch;
+  padding: var(--size-3) var(--size-4);
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, var(--border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--tone) 6%, var(--surface));
+}
+.scan-outcome.is-success { --tone: var(--success); }
+.scan-outcome.is-warn { --tone: var(--warn); }
+.scan-outcome.is-danger { --tone: var(--danger); }
+
+.scan-outcome-icon { color: var(--tone); flex: none; padding-top: 2px; }
+
+.scan-outcome-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.scan-outcome-body > h3 { margin: 0; font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.scan-outcome-body > p {
+  margin: 0; line-height: 1.5; font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+/* The reason is the answer to "why", so it sits apart from the summary
+   sentence rather than running on from it. */
+.scan-outcome-reason { color: var(--text); font-weight: var(--weight-medium); }
+
+.scan-outcome-actions {
+  display: flex; flex-wrap: wrap; gap: var(--size-2);
+  margin-top: var(--size-1);
+}
+
+.scan-caveats {
+  margin: 6px 0 0; padding-left: 1.1rem;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.scan-caveats li { line-height: 1.5; font-size: var(--text-md); }
+
+.scan-budget-note {
+  margin: 0; max-width: 68ch; line-height: 1.5;
+  color: var(--text-muted); font-size: var(--text-sm);
+}
+
+/* ---- the scanner's report ------------------------------------------ */
+
+/* On a wide screen the report is a panel down the right edge, about a
+   quarter of the screen wide, and the scan moves over to make room for it.
+   Fixed to the viewport rather than sticky: the page scrolls the window,
+   but `.app-main` is an overflow container, and sticky would pin to that
+   and never stick. Stacked under the scan on a narrow screen, where a
+   quarter is too thin to read. */
+.scan-layout { display: flex; flex-direction: column; gap: var(--size-5); }
+
+@media (min-width: 1100px) {
+  .route-security:has(> .scan-layout.has-report) {
+    --scan-report-w: clamp(300px, 25vw, 560px);
+    margin-right: var(--scan-report-w);
+  }
+  .scan-layout.has-report .scan-report {
+    position: fixed;
+    top: var(--topbar-total);
+    right: 0;
+    bottom: 0;
+    width: var(--scan-report-w);
+    border-width: 0 0 0 1px;
+    border-radius: 0;
+  }
+}
+
+.scan-report {
+  display: flex; flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: var(--surface);
-  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.scan-report-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--size-2);
+  padding: var(--size-2) var(--size-2) var(--size-2) var(--size-4);
+  border-bottom: 1px solid var(--border);
+}
+.scan-report-head h3 { margin: 0; font-size: var(--text-md); }
+
+/* Where the file is kept, said before the text it holds. */
+.scan-report-saved {
+  display: flex; gap: var(--size-2);
+  padding: var(--size-3) var(--size-4);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 7%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+.scan-report-saved > svg { flex: none; margin-top: 2px; }
+.scan-report-saved-body {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  min-width: 0;
+  color: var(--text);
+}
+.scan-report-saved-body p {
+  margin: 0; font-size: var(--text-sm); font-weight: var(--weight-medium);
+}
+.scan-report-saved-body code {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  line-height: 1.5; color: var(--text-muted); word-break: break-all;
+}
+
+.scan-report-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--size-3) var(--size-4);
+}
+@media (max-width: 1099px) {
+  .scan-report-body { max-height: 32rem; }
+}
+
+.scan-report-body:focus-visible { outline: 2px solid var(--border-2); outline-offset: -2px; }
+
+.scan-report-body > :first-child { margin-top: 0; }
+.scan-report-body > :last-child { margin-bottom: 0; }
+
+.scan-report-body h1,
+.scan-report-body h2,
+.scan-report-body h3 {
+  margin: var(--size-4) 0 var(--size-2);
+  font-size: var(--text-md);
+}
+
+.scan-report-body p,
+.scan-report-body li { line-height: 1.55; font-size: var(--text-sm); }
+.scan-report-body p { margin: 0 0 var(--size-2); }
+.scan-report-body ul,
+.scan-report-body ol { margin: 0 0 var(--size-2); padding-left: 1.2rem; }
+.scan-report-body ul { list-style: disc; }
+.scan-report-body ol { list-style: decimal; }
+
+.scan-report-body code {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  word-break: break-word;
+}
+
+.scan-report-body pre {
+  margin: 0 0 var(--size-2);
+  padding: var(--size-2);
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.scan-report-body table {
+  display: block; overflow-x: auto;
+  border-collapse: collapse; font-size: var(--text-xs);
+}
+.scan-report-body th,
+.scan-report-body td {
+  padding: 4px var(--size-2); border: 1px solid var(--border); text-align: left;
 }
 
 .security-findings { display: flex; flex-direction: column; gap: 8px; }

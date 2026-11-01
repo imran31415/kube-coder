@@ -13,6 +13,8 @@ Run with:
     cd charts/workspace && python3 -m unittest tests.scans_manager_test
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -37,6 +39,11 @@ class StubBackend(scan_backends.ScanBackend):
         self.started = []
         self.stopped = []
         self.log = ''
+        self.reason = ''           # what explain_end() says to the user
+        self.evidence = ''         # ...and to the server log
+        self.cause = ''            # ...and what kind of end it was
+        self.explained = 0
+        self.on_stop = None        # what the scanner does when signalled
         self.start_error = None
         self.resolve_error = None
 
@@ -62,10 +69,16 @@ class StubBackend(scan_backends.ScanBackend):
 
     def stop(self, handle):
         self.stopped.append(handle)
+        if self.on_stop:
+            self.on_stop()
         self.alive = False
 
     def tail_log(self, handle, limit=4000):
         return self.log
+
+    def explain_end(self, handle):
+        self.explained += 1
+        return self.reason, self.evidence, self.cause
 
 
 class ManagerTestCase(unittest.TestCase):
@@ -90,6 +103,12 @@ class ManagerTestCase(unittest.TestCase):
             else:
                 os.environ['KC_SCANS_DIR'] = previous
         self.addCleanup(restore)
+
+        # The manager logs every start and stop; kept out of the test output.
+        # A test that asserts on the log redirects stderr itself, inside this.
+        quiet = contextlib.ExitStack()
+        quiet.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        self.addCleanup(quiet.close)
 
         self.backend = StubBackend()
         self.events = []
@@ -252,11 +271,91 @@ class AbsorbTests(ManagerTestCase):
         """A bad model or credential exits at once, before any output."""
         record = self.create()
         self.backend.state = None
-        self.backend.log = 'LLM CONNECTION FAILED\nauth error: invalid key'
+        self.backend.reason = ('The provider did not accept this key. The '
+                               'scanner said: invalid key')
         self.absorb(record['id'], alive=False)
         stored = scans.ScansManager.get(record['id'])
         self.assertEqual(stored['status'], 'failed')
-        self.assertIn('CONNECTION FAILED', stored['error'])
+        self.assertEqual(stored['error'], self.backend.reason)
+
+    def test_a_failure_the_backend_cannot_explain_still_says_something(self):
+        """What the user saw on the live workspace: a failed scan, and no
+        reason anywhere on the page."""
+        record = self.create()
+        self.backend.state = None
+        self.backend.reason = ''
+        self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertIn('did not say why', stored['error'])
+
+    def test_a_scan_the_scanner_failed_itself_gets_a_reason_too(self):
+        """The scanner can write `failed` into its own record — a crash
+        halfway — which reached the page with no reason at all, because only
+        the dead-process path ever asked for one."""
+        record = self.create()
+        self.backend.state = {'run': {'status': 'failed',
+                                      'llm_usage': {'requests': 40}},
+                              'findings': []}
+        self.backend.reason = 'The key has no quota left.'
+        self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertEqual(stored['error'], 'The key has no quota left.')
+
+    def test_a_scan_the_scanner_ended_early_by_itself_says_why(self):
+        """Its spending limit, or a provider refusing requests: the scanner
+        records `stopped`, but nobody pressed Stop."""
+        record = self.create()
+        self.backend.state = {'run': {'status': 'stopped'}, 'findings': []}
+        self.backend.reason = 'The scan reached its spending limit.'
+        self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'stopped')
+        self.assertEqual(stored['error'], 'The scan reached its spending limit.')
+        self.assertIn('scanner ended', scans.result_summary(stored))
+
+    def test_the_backends_cause_decides_the_end_reason(self):
+        """The page picks "Model settings" by this, never by the wording."""
+        record = self.create()
+        self.backend.state = None
+        self.backend.reason = 'The provider is busy right now.'
+        self.backend.cause = 'provider'
+        self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(scans.end_reason_of(stored), 'provider_error')
+        self.assertEqual(scans.public_view(stored)['end_reason'],
+                         'provider_error')
+
+    def test_a_cause_the_manager_does_not_know_is_not_stored(self):
+        record = self.create()
+        self.backend.state = None
+        self.backend.reason = 'Something odd.'
+        self.backend.cause = 'cosmic-rays'
+        self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertNotIn('end_cause', stored)
+        self.assertEqual(scans.end_reason_of(stored), 'scanner_error')
+
+    def test_a_scan_that_finished_is_not_asked_why(self):
+        record = self.create()
+        self.backend.state = {'run': {'status': 'completed'}, 'findings': []}
+        self.absorb(record['id'], alive=False)
+        self.assertEqual(self.backend.explained, 0)
+        self.assertIsNone(scans.ScansManager.get(record['id'])['error'])
+
+    def test_a_backend_that_raises_while_explaining_loses_no_status(self):
+        record = self.create()
+        self.backend.state = None
+
+        def boom(handle):
+            raise OSError('log vanished')
+        self.backend.explain_end = boom
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.absorb(record['id'], alive=False)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertTrue(stored['error'])
 
     def test_a_dead_process_that_was_working_is_interrupted_not_failed(self):
         record = self.create()
@@ -270,10 +369,14 @@ class AbsorbTests(ManagerTestCase):
     def test_a_credential_echoed_in_the_log_is_redacted_from_the_record(self):
         record = self.create()
         self.backend.state = None
-        self.backend.log = 'provider said: Authorization: Bearer sk-lmnopqrstuv'
-        self.absorb(record['id'], alive=False)
+        self.backend.reason = 'provider said: Authorization: Bearer sk-lmnopqrstuv'
+        self.backend.evidence = 'console: Authorization: Bearer sk-lmnopqrstuv'
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.absorb(record['id'], alive=False)
         stored = scans.ScansManager.get(record['id'])
         self.assertNotIn('sk-lmnopqrstuv', stored['error'])
+        self.assertNotIn('sk-lmnopqrstuv', err.getvalue())
 
     def test_a_terminal_scan_absorbs_nothing_further(self):
         record = self.create()
@@ -338,12 +441,38 @@ class PollerTests(ManagerTestCase):
         self.assertEqual(stored['status'], 'done')
         self.assertEqual(stored['counts']['medium'], 1)
 
+    def test_a_poller_that_crashes_ends_the_scan_instead_of_leaving_it_running(self):
+        """A crashed poller used to print one line and leave the scan on
+        "Scanning…" forever, still spending, with nothing reading it."""
+        scans.ScansManager.POLL_INTERVAL = 0.01
+        self.backend.state = {'run': {'status': 'running'}, 'findings': []}
+
+        def broken(handle):
+            raise RuntimeError('unexpected shape')
+        self.backend.is_alive = broken
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            record = self.create()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if scans.ScansManager.get(record['id'])['status'] != 'running':
+                    break
+                time.sleep(0.02)
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertEqual(scans.end_reason_of(stored), 'lost_track')
+        self.assertEqual(stored['error'], scans.ScansManager.LOST_TRACK_REASON)
+        self.assertEqual(len(self.backend.stopped), 1, 'it was left running')
+        self.assertIn('poller crashed', err.getvalue())
+        self.assertIn('RuntimeError: unexpected shape', err.getvalue())
+
 
 class AnnounceTests(ManagerTestCase):
 
-    def finish(self, findings, status='completed'):
+    def finish(self, findings, status='completed', report=None):
         record = self.create()
-        self.backend.state = {'run': {'status': status}, 'findings': findings}
+        self.backend.state = {'run': {'status': status}, 'findings': findings,
+                              'report': report}
         self.backend.alive = False
         scans.ScansManager._absorb(record['id'], self.backend.state,
                                    alive=False, backend=self.backend,
@@ -373,6 +502,33 @@ class AnnounceTests(ManagerTestCase):
         _, kwargs = self.finish([])
         self.assertIn('quick', kwargs['body_md'])
 
+    def test_a_failed_scan_tells_the_phone_why(self):
+        self.backend.reason = 'The provider is busy right now.'
+        _, kwargs = self.finish([], status='failed')
+        self.assertIn('could not run', kwargs['body_md'])
+        self.assertIn('The provider is busy right now.', kwargs['body_md'])
+
+    def test_a_failed_scan_is_not_titled_finished(self):
+        """The notification's first line is all most people read."""
+        args, _ = self.finish([], status='failed')
+        self.assertEqual(args[1], 'Security scan of shop could not finish')
+
+    def test_the_item_says_where_the_report_is_saved(self):
+        """The report outlives the notification, so it says where to find it."""
+        report = {'text': '# Summary', 'location': '/runs/r1/report.md'}
+        _, kwargs = self.finish([], report=report)
+        self.assertIn("report is saved at `/runs/r1/report.md`", kwargs['body_md'])
+
+    def test_no_report_means_no_location_line(self):
+        _, kwargs = self.finish([])
+        self.assertNotIn('report is saved', kwargs['body_md'])
+
+    def test_the_server_log_names_where_the_report_landed(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.finish([], report={'text': 'x', 'location': '/runs/r1/report.md'})
+        self.assertIn('report saved at /runs/r1/report.md', err.getvalue())
+
 
 class StopTests(ManagerTestCase):
 
@@ -400,9 +556,147 @@ class StopTests(ManagerTestCase):
         def boom(handle):
             raise OSError('no such process')
         self.backend.stop = boom
+        with contextlib.redirect_stderr(io.StringIO()):
+            scans.ScansManager.stop(record['id'])
+        self.assertEqual(scans.ScansManager.get(record['id'])['status'],
+                         'stopped')
+
+    def test_the_scanners_own_word_for_the_signal_does_not_turn_it_into_a_crash(self):
+        """Stopping the scanner makes it write `interrupted` into its run
+        record — its word for any signal, a crash included. Pressing Stop
+        on the live workspace therefore produced "the scanner process ended
+        unexpectedly"."""
+        record = self.create()
+
+        def scanner_exits():
+            self.backend.state = {'run': {'status': 'interrupted',
+                                          'llm_usage': {'cost': 0.63}},
+                                  'findings': []}
+        self.backend.on_stop = scanner_exits
+        scans.ScansManager.stop(record['id'])
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'stopped')
+        self.assertIsNone(stored['error'])
+        summary = scans.result_summary(stored)
+        self.assertIn('You stopped', summary)
+        self.assertNotIn('unexpectedly', summary)
+
+    def test_the_poller_reading_mid_stop_also_settles_it_as_stopped(self):
+        """The race itself: the scanner takes seconds to exit, and the
+        poller reads the record every few. Its read lands while stop() is
+        still waiting on the process."""
+        record = self.create()
+
+        def poller_reads_meanwhile():
+            scans.ScansManager._absorb(
+                record['id'], {'run': {'status': 'interrupted'}, 'findings': []},
+                alive=False, backend=self.backend, handle={})
+        self.backend.on_stop = poller_reads_meanwhile
+        scans.ScansManager.stop(record['id'])
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'stopped')
+        self.assertNotIn('interrupted_reason', stored)
+        self.assertEqual(self.backend.explained, 0,
+                         'a stop the user asked for owes no reason')
+        self.assertEqual(len(self.feed), 1, 'announced exactly once')
+
+    def test_a_process_that_simply_vanishes_mid_stop_is_still_stopped(self):
+        record = self.create()
+        self.backend.on_stop = lambda: scans.ScansManager._absorb(
+            record['id'], None, alive=False, backend=self.backend, handle={})
         scans.ScansManager.stop(record['id'])
         self.assertEqual(scans.ScansManager.get(record['id'])['status'],
                          'stopped')
+
+    def test_the_spend_the_scanner_saved_on_its_way_out_is_kept(self):
+        record = self.create()
+
+        def scanner_exits():
+            self.backend.state = {'run': {'status': 'interrupted',
+                                          'llm_usage': {'cost': 0.63}},
+                                  'findings': [{'id': 'v1', 'severity': 'low'}]}
+        self.backend.on_stop = scanner_exits
+        scans.ScansManager.stop(record['id'])
+        stored = scans.ScansManager.get(record['id'])
+        self.assertAlmostEqual(stored['usage']['cost_usd'], 0.63)
+        self.assertEqual(len(stored['findings']), 1)
+
+    def test_a_scan_that_completed_as_stop_was_pressed_says_it_completed(self):
+        record = self.create()
+
+        def scanner_finishes():
+            self.backend.state = {'run': {'status': 'completed'}, 'findings': []}
+        self.backend.on_stop = scanner_finishes
+        scans.ScansManager.stop(record['id'])
+        self.assertEqual(scans.ScansManager.get(record['id'])['status'], 'done')
+
+
+class ServerLogTests(ManagerTestCase):
+    """A scan that ends badly leaves its evidence in the server log — the
+    page shows only the plain reason."""
+
+    def fail(self):
+        record = self.create()
+        self.backend.state = None
+        self.backend.reason = 'The provider is busy right now.'
+        self.backend.evidence = ('exit status: 1\n'
+                                 'console output: /scans/x/scanner.log')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            scans.ScansManager._absorb(record['id'], None, alive=False,
+                                       backend=self.backend, handle={})
+        return record['id'], err.getvalue()
+
+    def test_a_failed_scan_is_logged_with_its_evidence(self):
+        scan_id, log = self.fail()
+        self.assertIn(f'[scan] {scan_id} ended failed after', log)
+        self.assertIn('reason shown: The provider is busy right now.', log)
+        self.assertIn('exit status: 1', log)
+        self.assertIn('/scans/x/scanner.log', log)
+        # Every line is tagged, so a grep for "[scan]" finds the whole entry.
+        self.assertTrue(all(ln.startswith('[scan]')
+                            for ln in log.strip().splitlines()), log)
+
+    def test_the_evidence_never_reaches_the_record(self):
+        scan_id, _ = self.fail()
+        stored = scans.ScansManager.get(scan_id)
+        self.assertNotIn('scanner.log', stored['error'])
+
+    def test_a_refused_start_is_logged(self):
+        self.backend.resolve_error = 'Nothing answered on port 3000.'
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            scans.ScansManager.create(self.spec())
+        self.assertIn('[scan] start refused for port 3000: Nothing answered',
+                      err.getvalue())
+
+    def test_a_stop_the_user_asked_for_is_not_logged_as_a_failure(self):
+        record = self.create()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            scans.ScansManager.stop(record['id'])
+        self.assertNotIn('ended', err.getvalue())
+        self.assertIn(f'[scan] {record["id"]} stop requested by the user',
+                      err.getvalue())
+        self.assertIn('stop complete: stopped (user_stopped)', err.getvalue())
+
+    def test_a_start_is_logged_with_what_it_will_cost_but_never_a_key(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            record = self.create(budget_usd=5)
+        self.assertIn(f'[scan] {record["id"]} started on port 3000 (shop): '
+                      f'quick scan, model prov/model, budget 5.0',
+                      err.getvalue())
+
+    def test_a_kill_that_did_not_take_is_logged_loudly(self):
+        record = self.create()
+        self.backend.stop = lambda handle: None     # the signal changed nothing
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            stored = scans.ScansManager.stop(record['id'])
+        self.assertIn('STILL RUNNING', err.getvalue())
+        # The user's stop still stands on the page.
+        self.assertEqual(stored['status'], 'stopped')
 
 
 class DispositionTests(ManagerTestCase):
@@ -463,6 +757,19 @@ class BootSweepTests(ManagerTestCase):
         stored = scans.ScansManager.get(record['id'])
         self.assertEqual(stored['status'], 'interrupted')
         self.assertIn('restarted', stored['error'])
+
+    def test_a_restart_in_the_middle_of_a_stop_keeps_it_a_stop(self):
+        record = self.create()
+
+        def mark(rec):
+            rec['stop_requested_at'] = time.time()
+        scans.ScansManager._record(record['id']).update(mark)
+        self.backend.alive = False
+        with contextlib.redirect_stderr(io.StringIO()):
+            scans.ScansManager.start()
+        stored = scans.ScansManager.get(record['id'])
+        self.assertEqual(stored['status'], 'stopped')
+        self.assertIsNone(stored['error'])
 
     def test_a_scan_still_genuinely_running_is_resumed_not_killed(self):
         record = self.create()

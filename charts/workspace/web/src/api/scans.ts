@@ -65,9 +65,40 @@ export interface ScanCounts {
   total: number;
 }
 
+/** The scanner's own verdict on whether its run covered the whole app.
+ *  Absent on an older record, which is "unknown" — never treat it as a yes. */
+export interface ScanCoverage {
+  complete: boolean;
+  /** The scanner's own sentences about what it did not get to. */
+  caveats: string[];
+}
+
+/** The scanner's write-up, plus where the file sits on the workspace. */
+export interface ScanReport {
+  text: string;
+  /** Path to the saved Markdown file, to show so the user can open it
+   *  themselves. Opaque — built by the backend, never parsed here. */
+  location: string;
+}
+
+/** Why a finished scan ended, as the server classifies it. The page picks its
+ *  headline and next step by this, never by the wording of `error`. Empty
+ *  while a scan runs. */
+export type EndReason =
+  | 'completed'
+  | 'user_stopped'
+  | 'budget_reached'
+  | 'provider_error'
+  | 'scanner_error'
+  | 'process_vanished'
+  | 'workspace_restarted'
+  | 'lost_track';
+
 export interface ScanSummary {
   id: string;
   status: ScanStatus;
+  /** Absent from an older server; `outcomeView` falls back on `status`. */
+  end_reason?: EndReason | '';
   backend: string;
   target: { port: number; name: string; url: string };
   mode: ScanMode;
@@ -79,6 +110,7 @@ export interface ScanSummary {
   started_at: number;
   ended_at: number | null;
   error: string | null;
+  coverage?: ScanCoverage;
 }
 
 export interface ScanDetail extends ScanSummary {
@@ -88,6 +120,12 @@ export interface ScanDetail extends ScanSummary {
   dispositions: Record<string, 'dismissed'>;
   /** One honest sentence about how the scan ended — never a bare "0 found". */
   summary: string;
+  /** The scanner's write-up. Absent until it finishes a run. */
+  report?: ScanReport;
+  /** What the scanner says it did not reach. Empty when it covered the app. */
+  caveats?: string[];
+  /** Said only when the spending limit is what cut the scan short. */
+  budget_note?: string;
 }
 
 export interface InstallState {
@@ -227,11 +265,54 @@ export function sortFindings(findings: Finding[]): Finding[] {
  */
 export function outcomeLabel(scan: ScanSummary): string {
   if (scan.status === 'running') return 'Scanning…';
+  if (scan.end_reason === 'user_stopped') return 'Stopped by you — partly checked';
+  if (scan.end_reason === 'budget_reached') return 'Hit its spending limit — partly checked';
   if (scan.status === 'failed') return 'Could not run — nothing was checked';
   if (scan.status === 'interrupted') return 'Interrupted — partly checked';
   if (scan.status === 'stopped') return 'Stopped early — partly checked';
   const n = scan.counts?.total ?? 0;
-  return n ? `${n} to look at` : 'Finished — nothing found';
+  if (n) return `${n} to look at`;
+  // A finished scan is only an all-clear when the scanner says it got
+  // through the app. It can finish, write its report, and separately record
+  // that it ran out of room — and that row must not read as "you are fine".
+  return scan.coverage?.complete === false
+    ? 'Finished — but not all of the app was checked'
+    : 'Finished — nothing found';
+}
+
+/** The message for a report that has just been written: where it is kept,
+ *  when the backend says. */
+export function reportSavedText(report: ScanReport): string {
+  return report.location
+    ? `The scanner’s report is ready. Saved to ${report.location}`
+    : 'The scanner’s report is ready.';
+}
+
+/**
+ * What an empty problems list says.
+ *
+ * A problem is listed only once the scanner has proven it, so a scan that
+ * ended before finishing usually lists none. "No problems were recorded"
+ * over one of those reads as an all-clear for a scan that never got that far.
+ */
+export function emptyFindingsText(scan: {
+  status: ScanStatus;
+  coverage?: ScanCoverage;
+  report?: ScanReport;
+}): string {
+  if (scan.status === 'running') {
+    return 'Nothing found yet. A problem shows up here the moment the scanner proves it is real.';
+  }
+  if (scan.status === 'done' && scan.coverage?.complete !== false) {
+    return 'No problems were recorded for this scan.';
+  }
+  // Pointing at the report only when there is one: a scan that failed at
+  // start never writes it, and pointing at nothing is a broken promise.
+  return (
+    'None confirmed before the scan ended. A problem is listed only once the ' +
+    'scanner has proven it, so a scan that ends early often shows none.' +
+    (scan.report ? ' The scanner’s report says what it did check.' : '')
+  );
 }
 
 /** Money already spent, as the scanner reports it. */
@@ -306,6 +387,99 @@ export function budgetFraction(scan: { usage?: ScanUsage; budget_usd: number | n
   if (!cap || cap <= 0) return null;
   const spent = scan.usage?.cost_usd ?? 0;
   return Math.min(1, Math.max(0, spent / cap));
+}
+
+/** The status pill, in words rather than the raw status. */
+export const STATUS_LABELS: Record<ScanStatus, string> = {
+  running: 'Scanning',
+  done: 'Finished',
+  stopped: 'Stopped',
+  failed: 'Failed',
+  interrupted: 'Cut short',
+};
+
+export type OutcomeTone = 'success' | 'neutral' | 'warn' | 'danger';
+
+/** How a finished scan's outcome card leads, and what it offers next. */
+export interface OutcomeView {
+  tone: OutcomeTone;
+  headline: string;
+  /** `retry` after something went wrong, `again` after an ordinary end. */
+  action: 'retry' | 'again' | null;
+  /** Offer the model settings — only when the model is what failed. */
+  settings: boolean;
+}
+
+/**
+ * The outcome card for a finished scan, keyed by `end_reason`.
+ *
+ * Keyed by the server's code, never by the wording of `error`: a reason is
+ * the scanner's own sentence and changes with every scanner version. A
+ * record from a server too old to send a code falls back on its status.
+ */
+export function outcomeView(scan: {
+  status: ScanStatus;
+  end_reason?: EndReason | '';
+  budget_usd: number | null;
+  coverage?: ScanCoverage;
+}): OutcomeView {
+  switch (scan.end_reason) {
+    case 'user_stopped':
+      return { tone: 'neutral', headline: 'You stopped this scan', action: 'again', settings: false };
+    case 'budget_reached':
+      return {
+        tone: 'warn',
+        headline: scan.budget_usd
+          ? `Reached its ${moneyLabel(scan.budget_usd)} spending limit`
+          : 'Reached its spending limit',
+        action: 'again',
+        settings: false,
+      };
+    case 'provider_error':
+      return { tone: 'danger', headline: 'Your AI model could not be used', action: 'retry', settings: true };
+    case 'scanner_error':
+      return { tone: 'danger', headline: 'The scanner ran into a problem', action: 'retry', settings: false };
+    case 'process_vanished':
+      return { tone: 'warn', headline: 'The scanner stopped unexpectedly', action: 'retry', settings: false };
+    case 'workspace_restarted':
+      return { tone: 'warn', headline: 'The workspace restarted mid-scan', action: 'again', settings: false };
+    case 'lost_track':
+      return { tone: 'danger', headline: 'Lost track of this scan', action: 'retry', settings: false };
+  }
+  if (scan.status === 'done') {
+    // Finishing is not an all-clear when the scanner says it ran out of room.
+    return scan.coverage?.complete === false
+      ? { tone: 'warn', headline: 'Finished, but not all of the app was checked', action: 'again', settings: false }
+      : { tone: 'success', headline: 'Scan finished', action: null, settings: false };
+  }
+  if (scan.status === 'failed') {
+    return { tone: 'danger', headline: 'The scan could not run', action: 'retry', settings: false };
+  }
+  if (scan.status === 'interrupted') {
+    return { tone: 'warn', headline: 'The scan was cut short', action: 'retry', settings: false };
+  }
+  return { tone: 'neutral', headline: 'The scan stopped early', action: 'again', settings: false };
+}
+
+/**
+ * The same scan again, as a create request.
+ *
+ * The model is left out on purpose: a retry after a model failure must use
+ * whatever the user has fixed in their settings since, not the model that
+ * just failed.
+ */
+export function retryBody(scan: {
+  target: { port: number };
+  mode: ScanMode;
+  budget_usd: number | null;
+  instruction: string;
+}): CreateScanBody {
+  return {
+    port: scan.target.port,
+    mode: scan.mode,
+    budget_usd: scan.budget_usd,
+    instruction: scan.instruction ?? '',
+  };
 }
 
 /**

@@ -414,6 +414,21 @@ class ProviderErrorTests(ConnectionTestCase):
     def test_an_empty_error_still_says_something(self):
         self.assertTrue(self.mod.explain_provider_error('').strip())
 
+    def test_the_hint_alone_is_shared_with_a_failed_scan(self):
+        """A scan that died on the same provider error gives the same advice
+        as the connection check, from the same table."""
+        hint = self.mod.provider_error_hint(
+            'litellm.ServiceUnavailableError: GeminiException - {"error": '
+            '{"code": 503, "status": "UNAVAILABLE"}}')
+        self.assertIn('busy', hint)
+        self.assertTrue(self.mod.explain_provider_error(
+            '503 UNAVAILABLE').startswith(hint))
+
+    def test_no_hint_for_an_error_the_table_does_not_know(self):
+        self.assertEqual(self.mod.provider_error_hint('Something new broke'), '')
+        self.assertEqual(self.mod.provider_error_hint(''), '')
+        self.assertEqual(self.mod.provider_error_hint(None), '')
+
 
 class KnownSecretRedactionTests(ConnectionTestCase):
     """Exact-value redaction, which is the half that cannot be fooled.

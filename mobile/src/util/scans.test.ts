@@ -3,6 +3,7 @@ import {
   FINDING_FACTS,
   FINDING_SECTIONS,
   MODE_LABELS,
+  emptyFindingsText,
   fieldText,
   isLiveScan,
   outcomeLabel,
@@ -60,6 +61,15 @@ describe('scan helpers', () => {
     expect(outcomeLabel(scan({ status: 'failed' }))).toMatch(/nothing was checked/i);
     expect(outcomeLabel(scan({ status: 'interrupted' }))).toMatch(/partly/i);
     expect(outcomeLabel(scan({ status: 'stopped' }))).toMatch(/partly/i);
+  });
+
+  it('tells a stop the user asked for apart from one the scanner made', () => {
+    expect(outcomeLabel(scan({ status: 'stopped', end_reason: 'user_stopped' }))).toBe(
+      'Stopped by you — partly checked',
+    );
+    expect(outcomeLabel(scan({ status: 'stopped', end_reason: 'budget_reached' }))).toBe(
+      'Hit its spending limit — partly checked',
+    );
   });
 
   it('says a clean scan finished rather than just "0"', () => {
@@ -142,5 +152,38 @@ describe('scanTitle', () => {
     expect(scanTitle(scan())).toBe('shop');
     const unnamed = scan({ target: { port: 3000, name: '', url: 'http://172.17.0.1:3000' } });
     expect(scanTitle(unnamed)).toBe('Port 3000');
+  });
+});
+
+describe('emptyFindingsText', () => {
+  it('never calls an empty list an all-clear for a scan that ended early', () => {
+    expect(emptyFindingsText(scan({ status: 'done' }))).toBe(
+      'No problems were recorded for this scan.',
+    );
+    for (const status of ['stopped', 'interrupted', 'failed'] as const) {
+      expect(emptyFindingsText(scan({ status }))).toContain(
+        'None confirmed before the scan ended',
+      );
+    }
+    expect(emptyFindingsText(scan({ status: 'running' }))).toContain('Nothing found yet');
+  });
+
+  it('points at the report only when there is one', () => {
+    expect(emptyFindingsText(scan({ status: 'failed' }))).not.toContain('report');
+    expect(emptyFindingsText({ status: 'stopped', report: { text: 'x' } })).toContain(
+      'report is below',
+    );
+  });
+
+  it('treats a finished-but-incomplete scan as not an all-clear', () => {
+    const cut = scan({ status: 'done', coverage: { complete: false, caveats: ['cut short'] } });
+    expect(emptyFindingsText(cut)).toContain('None confirmed before the scan ended');
+    expect(outcomeLabel(cut)).toBe('Finished — but not all checked');
+  });
+
+  it('still says plainly when the scanner did cover the app', () => {
+    const whole = scan({ status: 'done', coverage: { complete: true, caveats: [] } });
+    expect(emptyFindingsText(whole)).toBe('No problems were recorded for this scan.');
+    expect(outcomeLabel(whole)).toBe('Finished — nothing found');
   });
 });

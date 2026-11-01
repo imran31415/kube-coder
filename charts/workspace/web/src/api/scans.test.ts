@@ -12,6 +12,7 @@ import {
   agoLabel,
   budgetFraction,
   durationLabel,
+  emptyFindingsText,
   extraFields,
   modePhrase,
   moneyLabel,
@@ -19,6 +20,10 @@ import {
   startedLabel,
   isLiveScan,
   outcomeLabel,
+  outcomeView,
+  reportSavedText,
+  retryBody,
+  STATUS_LABELS,
   severityRank,
   sortFindings,
   spendLabel,
@@ -264,5 +269,126 @@ describe('live scan page helpers', () => {
     expect(budgetFraction(scan({ budget_usd: null }))).toBeNull();
     // A provider that overshoots the cap must not draw past the end of the bar.
     expect(budgetFraction(scan({ budget_usd: 1, usage: { ...scan().usage, cost_usd: 1.4 } }))).toBe(1);
+  });
+
+  it('never calls an empty list an all-clear for a scan that ended early', () => {
+    expect(emptyFindingsText(scan({ status: 'done' }))).toBe(
+      'No problems were recorded for this scan.',
+    );
+    for (const status of ['stopped', 'interrupted', 'failed'] as const) {
+      const text = emptyFindingsText(scan({ status }));
+      expect(text).toContain('None confirmed before the scan ended');
+      expect(text).not.toContain('No problems were recorded');
+    }
+    expect(emptyFindingsText(scan({ status: 'running' }))).toContain('Nothing found yet');
+  });
+
+  it('names where a new report is saved, when the backend says', () => {
+    expect(reportSavedText({ text: 'x', location: '/runs/r1/report.md' })).toBe(
+      'The scanner’s report is ready. Saved to /runs/r1/report.md',
+    );
+    expect(reportSavedText({ text: 'x', location: '' })).toBe('The scanner’s report is ready.');
+  });
+
+  it('points at the report only when there is one', () => {
+    // A scan that failed at start never writes a report.
+    expect(emptyFindingsText(scan({ status: 'failed' }))).not.toContain('report');
+    expect(
+      emptyFindingsText({ status: 'stopped', report: { text: '# Summary', location: '' } }),
+    ).toContain('The scanner’s report says what it did check.');
+  });
+
+  it('treats a finished-but-incomplete scan as not an all-clear', () => {
+    // The user's case: the scan reached `done` having proven nothing,
+    // because the scanner stopped testing near the spending limit and spent
+    // what was left writing its report.
+    const cut = scan({ status: 'done', coverage: { complete: false, caveats: ['cut short'] } });
+    expect(emptyFindingsText(cut)).toContain('None confirmed before the scan ended');
+    expect(outcomeLabel(cut)).toBe('Finished — but not all of the app was checked');
+  });
+
+  it('still says plainly when the scanner did cover the app', () => {
+    const whole = scan({ status: 'done', coverage: { complete: true, caveats: [] } });
+    expect(emptyFindingsText(whole)).toBe('No problems were recorded for this scan.');
+    expect(outcomeLabel(whole)).toBe('Finished — nothing found');
+  });
+
+  it('never reads an older record with no verdict as a yes or a no', () => {
+    // Absent coverage is unknown. It keeps the old wording rather than
+    // inventing either an all-clear or a warning.
+    expect(outcomeLabel(scan({ status: 'done' }))).toBe('Finished — nothing found');
+  });
+});
+
+describe('how a finished scan ended', () => {
+  it('says a stop the user asked for was theirs — never a crash', () => {
+    const view = outcomeView(scan({ status: 'stopped', end_reason: 'user_stopped' }));
+    expect(view.headline).toBe('You stopped this scan');
+    expect(view.headline).not.toMatch(/unexpected/i);
+    expect(view.tone).toBe('neutral');
+    expect(view.action).toBe('again');
+    expect(outcomeLabel(scan({ status: 'stopped', end_reason: 'user_stopped' }))).toBe(
+      'Stopped by you — partly checked',
+    );
+  });
+
+  it('offers the model settings only when the model is what failed', () => {
+    const provider = outcomeView(scan({ status: 'failed', end_reason: 'provider_error' }));
+    expect(provider).toMatchObject({ tone: 'danger', action: 'retry', settings: true });
+    const scanner = outcomeView(scan({ status: 'failed', end_reason: 'scanner_error' }));
+    expect(scanner).toMatchObject({ tone: 'danger', action: 'retry', settings: false });
+  });
+
+  it('names the spending limit in the headline', () => {
+    const view = outcomeView(scan({ status: 'stopped', end_reason: 'budget_reached', budget_usd: 5 }));
+    expect(view.headline).toBe('Reached its $5.00 spending limit');
+    expect(outcomeLabel(scan({ status: 'stopped', end_reason: 'budget_reached' }))).toBe(
+      'Hit its spending limit — partly checked',
+    );
+  });
+
+  it('gives every end reason a headline and a next step to match', () => {
+    const reasons = [
+      'user_stopped',
+      'budget_reached',
+      'provider_error',
+      'scanner_error',
+      'process_vanished',
+      'workspace_restarted',
+      'lost_track',
+    ] as const;
+    for (const end_reason of reasons) {
+      const view = outcomeView(scan({ status: 'failed', end_reason }));
+      expect(view.headline, end_reason).toBeTruthy();
+      expect(view.action, end_reason).not.toBeNull();
+    }
+  });
+
+  it('reads a finished scan by its coverage, not just its status', () => {
+    expect(outcomeView(scan({ status: 'done', end_reason: 'completed' }))).toMatchObject({
+      tone: 'success',
+      action: null,
+    });
+    const cut = scan({ status: 'done', end_reason: 'completed', coverage: { complete: false, caveats: [] } });
+    expect(outcomeView(cut)).toMatchObject({ tone: 'warn', action: 'again' });
+  });
+
+  it('falls back on the status for a server too old to send a reason', () => {
+    expect(outcomeView(scan({ status: 'failed' })).headline).toBe('The scan could not run');
+    expect(outcomeView(scan({ status: 'interrupted' })).headline).toBe('The scan was cut short');
+    expect(outcomeView(scan({ status: 'stopped' })).headline).toBe('The scan stopped early');
+  });
+
+  it('labels the status pill in words', () => {
+    expect(STATUS_LABELS.interrupted).toBe('Cut short');
+    expect(STATUS_LABELS.done).toBe('Finished');
+  });
+
+  it('retries the same scan without pinning the model that just failed', () => {
+    const body = retryBody(
+      scan({ mode: 'standard', budget_usd: 3, instruction: 'login page', model: 'old/model' }),
+    );
+    expect(body).toEqual({ port: 3000, mode: 'standard', budget_usd: 3, instruction: 'login page' });
+    expect(body).not.toHaveProperty('model');
   });
 });

@@ -1,0 +1,31 @@
+
+╭─ STRIX ──────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  Penetration test in progress                                                │
+│                                                                              │
+│  Agents 3 · Tools 41 · Vulnerabilities 0                                     │
+│  Tokens 412.3K in / 6.1K out · Cost $0.6301                                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Error during penetration test: litellm.RateLimitError: litellm.RateLimitError: 
+GeminiException - {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and 
+billing details.",
+    "status": "RESOURCE_EXHAUSTED"
+  }
+}
+Traceback (most recent call last):
+  File "/home/dev/.strix/venv/bin/strix", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/dev/.strix/venv/lib/python3.12/site-packages/strix/interface/main.py", line 486, in main
+    asyncio.run(run_cli(args))
+litellm.exceptions.RateLimitError: litellm.RateLimitError: litellm.RateLimitError: GeminiException - {
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details.",
+    "status": "RESOURCE_EXHAUSTED"
+  }
+}

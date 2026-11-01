@@ -250,9 +250,26 @@ export interface ScanCounts {
   total: number;
 }
 
+/** The scanner's own verdict on whether it covered the app. Absent on an
+ *  older record, which is "unknown" — never render unknown as a yes. */
+export interface ScanCoverage {
+  complete: boolean;
+  caveats: string[];
+}
+
+/** The scanner's write-up, and where the file sits on the workspace. */
+export interface ScanReport {
+  text: string;
+  /** Opaque path built by the server, shown so the file can be opened. */
+  location: string;
+}
+
 export interface ScanSummary {
   id: string;
   status: ScanStatus;
+  /** Why it ended, as the server classifies it ('' while running). Absent
+   *  from an older server. Same codes as the dashboard's `EndReason`. */
+  end_reason?: string;
   backend: string;
   target: { port: number; name: string; url: string };
   mode: ScanMode;
@@ -264,6 +281,7 @@ export interface ScanSummary {
   started_at: number;
   ended_at: number | null;
   error: string | null;
+  coverage?: ScanCoverage;
 }
 
 export interface ScanDetail extends ScanSummary {
@@ -272,6 +290,12 @@ export interface ScanDetail extends ScanSummary {
   dispositions: Record<string, 'dismissed'>;
   /** One honest sentence about how it ended — never a bare "0 found". */
   summary: string;
+  /** The scanner's write-up. Absent until it finishes a run. */
+  report?: ScanReport;
+  /** What the scanner says it did not reach. Empty when it covered the app. */
+  caveats?: string[];
+  /** Said only when the spending limit is what cut the scan short. */
+  budget_note?: string;
 }
 
 export interface ScanInstallState {

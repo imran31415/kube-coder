@@ -18,6 +18,7 @@ Run with:
 import ast
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -49,15 +50,23 @@ def inspect_output(*gateways):
 class StubRunner:
     """Records what the backend asked the OS to do, and answers as told."""
 
-    def __init__(self, *, network=None, runtime=(True, ''), answers=True):
+    def __init__(self, *, network=None, runtime=(True, ''), answers=True,
+                 exit_code=None):
         self.network = (network if network is not None
                         else (inspect_output('172.17.0.1'), ''))
         self.runtime = runtime
         self.answers = answers
+        self.exit_code = exit_code
         self.inspected = []
         self.probed = []
         self.spawned = []
         self.terminated = []
+
+    def alive(self, pid):
+        return scan_backends.process_alive(pid)
+
+    def exit_status(self, pid):
+        return self.exit_code
 
     def network_inspect(self, name):
         self.inspected.append(name)
@@ -420,7 +429,8 @@ class ArtifactReadingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.handle = {'scan_dir': self.tmp.name, 'pid': 1}
 
-    def write_run(self, name='target-run', run=None, findings=None):
+    def write_run(self, name='target-run', run=None, findings=None,
+                  report=None, coverage=None):
         d = os.path.join(self.tmp.name, scan_backends.RUNS_SUBDIR, name)
         os.makedirs(d, exist_ok=True)
         if run is not None:
@@ -429,6 +439,13 @@ class ArtifactReadingTests(unittest.TestCase):
         if findings is not None:
             with open(os.path.join(d, scan_backends.FINDINGS_RECORD), 'w') as f:
                 json.dump(findings, f)
+        if report is not None:
+            with open(os.path.join(d, scan_backends.REPORT_RECORD), 'w',
+                      encoding='utf-8') as f:
+                f.write(report)
+        if coverage is not None:
+            with open(os.path.join(d, scan_backends.END_RECORD), 'w') as f:
+                json.dump(coverage, f)
         return d
 
     def test_nothing_written_yet_reads_as_no_news(self):
@@ -488,11 +505,38 @@ class ArtifactReadingTests(unittest.TestCase):
         self.assertEqual(got['run']['status'], 'completed')
 
     def test_artifacts_hand_back_data_never_a_path(self):
-        """A path-shaped seam would be local-only in disguise."""
+        """A path-shaped seam would be local-only in disguise.
+
+        `report.location` is the one exception and is covered by its own
+        test below; everything the layer above actually reasons over — the
+        run record, the findings, the coverage verdict — stays free of this
+        machine.
+        """
         self.write_run(run={'status': 'running'}, findings=[])
         got = backend().artifacts(self.handle)
-        self.assertEqual(set(got), {'run', 'findings'})
-        self.assertNotIn(self.tmp.name, json.dumps(got))
+        self.assertEqual(set(got), {'run', 'findings', 'report', 'coverage'})
+        self.assertNotIn(self.tmp.name,
+                         json.dumps({k: v for k, v in got.items()
+                                     if k != 'report'}))
+
+    def test_the_report_location_is_the_one_label_allowed_through(self):
+        """And it is a LABEL, not an instruction.
+
+        The file is on the user's own workspace, outlives the page, and they
+        asked to be told where it is — so it travels. It is built here and
+        shown verbatim above; nothing over the seam parses it, joins to it or
+        opens it, which is what would make the seam local-only. A backend
+        running the scan on another machine returns its own location, or
+        none, and no caller changes.
+        """
+        self.write_run(run={'status': 'completed'}, findings=[],
+                       report='# Executive Summary\n\nLooked at the app.\n')
+        report = backend().artifacts(self.handle)['report']
+        self.assertTrue(report['location'].startswith(self.tmp.name))
+        self.assertTrue(report['location'].endswith(scan_backends.REPORT_RECORD))
+        # The pure layer accepts a report that has no location at all.
+        self.assertEqual(scans.parse_report({'text': 'written elsewhere'}),
+                         {'text': 'written elsewhere', 'location': ''})
 
     def test_the_parsed_artifacts_feed_straight_into_the_pure_layer(self):
         """The two halves agree on a shape — the seam's real acceptance test."""
@@ -507,6 +551,101 @@ class ArtifactReadingTests(unittest.TestCase):
         self.assertAlmostEqual(record['usage']['cost_usd'], 0.5)
         self.assertEqual(len(added), 1)
         self.assertEqual(changed, [])
+
+
+class ReportArtifactTests(unittest.TestCase):
+    """The scanner's write-up and its own coverage verdict.
+
+    Both are written once, at the end of a run, and neither was ever read —
+    so a scan that finished having proven nothing showed the user a page
+    with "done" on it and nothing else.
+    """
+
+    REPORT = ('# Security Penetration Test Report\n\n'
+              '# Executive Summary\n\nChecked the login page.\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.handle = {'scan_dir': self.tmp.name, 'pid': 1}
+
+    def write_run(self, **kw):
+        d = os.path.join(self.tmp.name, scan_backends.RUNS_SUBDIR, 'run-1')
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, scan_backends.RUN_RECORD), 'w') as f:
+            json.dump(kw.get('run', {'status': 'completed'}), f)
+        if 'report' in kw:
+            with open(os.path.join(d, scan_backends.REPORT_RECORD), 'w',
+                      encoding='utf-8') as f:
+                f.write(kw['report'])
+        if 'coverage' in kw:
+            with open(os.path.join(d, scan_backends.END_RECORD), 'w') as f:
+                json.dump(kw['coverage'], f)
+        return d
+
+    def test_the_report_comes_back_with_the_file_it_was_read_from(self):
+        """The path travels with the text: the file is on the user's own
+        workspace and outlives the page, so they can open it themselves."""
+        d = self.write_run(report=self.REPORT)
+        got = backend().artifacts(self.handle)
+        self.assertIn('Checked the login page.', got['report']['text'])
+        self.assertEqual(got['report']['location'],
+                         os.path.join(d, scan_backends.REPORT_RECORD))
+
+    def test_no_report_yet_is_not_an_error(self):
+        """It is written once, at the very end. Every read before that is an
+        ordinary mid-scan read."""
+        self.write_run()
+        self.assertIsNone(backend().artifacts(self.handle)['report'])
+
+    def test_an_empty_report_file_counts_as_none(self):
+        self.write_run(report='   \n')
+        self.assertIsNone(backend().artifacts(self.handle)['report'])
+
+    def test_a_runaway_report_is_capped(self):
+        self.write_run(report='x' * (scan_backends.REPORT_MAX_BYTES * 2))
+        text = backend().artifacts(self.handle)['report']['text']
+        self.assertLessEqual(len(text), scan_backends.REPORT_MAX_BYTES)
+
+    def test_a_credential_quoted_in_a_report_is_redacted(self):
+        fake = 'kc-test-credential-0002'
+        self.write_run(report=f'# Summary\n\nUsed key {fake} to sign in.\n')
+        b = backend(redactor=lambda t: t.replace(fake, '[redacted]'))
+        text = b.artifacts(self.handle)['report']['text']
+        self.assertNotIn(fake, text)
+        self.assertIn('[redacted]', text)
+
+    def test_the_coverage_verdict_is_read_down_to_two_fields(self):
+        self.write_run(coverage={
+            'completeness': {'complete': False, 'scan_status': 'completed',
+                             'exit_reason': None,
+                             'caveats': ['The run stopped early.', '', 9]},
+            'entries': [{'surface': 'anything'}], 'gaps': ['lots'],
+        })
+        got = backend().artifacts(self.handle)['coverage']
+        self.assertEqual(got, {'complete': False,
+                               'caveats': ['The run stopped early.']})
+
+    def test_a_report_alone_is_enough_to_be_worth_returning(self):
+        """run.json can be caught mid-rewrite while the report is already
+        there; returning None would hide it until the next poll."""
+        d = os.path.join(self.tmp.name, scan_backends.RUNS_SUBDIR, 'run-1')
+        os.makedirs(d)
+        with open(os.path.join(d, scan_backends.REPORT_RECORD), 'w') as f:
+            f.write(self.REPORT)
+        got = backend().artifacts(self.handle)
+        self.assertIsNotNone(got)
+        self.assertIn('Executive Summary', got['report']['text'])
+
+    def test_a_malformed_coverage_document_reads_as_no_verdict(self):
+        for bad in ({}, {'completeness': 'yes'}, {'completeness': None}):
+            self.assertIsNone(scan_backends.parse_completeness(bad), bad)
+        self.assertIsNone(scan_backends.parse_completeness(None))
+
+    def test_a_verdict_with_no_caveats_is_still_a_verdict(self):
+        self.assertEqual(
+            scan_backends.parse_completeness({'completeness': {'complete': True}}),
+            {'complete': True, 'caveats': []})
 
 
 class StopTests(unittest.TestCase):
@@ -528,6 +667,322 @@ class StopTests(unittest.TestCase):
 
     def test_this_process_reads_as_alive(self):
         self.assertTrue(backend().is_alive({'pid': os.getpid()}))
+
+
+FIXTURES = os.path.join(HERE, 'fixtures', 'scanner_logs')
+
+
+def scanner_log(name):
+    """A scanner console log, rendered with the scanner's own panel code by
+    the same terminal library on an 80-column, non-terminal console — what
+    `scanner.log` holds on the workspace. `llm_unavailable.log` carries the
+    provider message verbatim from the live workspace's first failed scan."""
+    with open(os.path.join(FIXTURES, name), encoding='utf-8') as f:
+        return f.read()
+
+
+class ScannerErrorTests(unittest.TestCase):
+    """The scanner's error, out of output written for a terminal."""
+
+    BOX = set('│┃╭╮╰╯┌┐└┘─━')
+
+    def test_a_boxed_provider_error_is_read_whole_not_cut_at_the_border(self):
+        """What the live workspace showed was the last six lines of this box:
+        `"status": "UNAVAILABLE"`, two closing braces and three lines of
+        border. The headline and the provider's sentence were above the cut."""
+        error = scan_backends.scanner_error(scanner_log('llm_unavailable.log'))
+        self.assertTrue(error.startswith('LLM connection failed:'), error)
+        # The box wrapped this sentence across two lines; it reads as one.
+        self.assertIn('Spikes in demand are usually temporary.', error)
+        self.assertFalse(self.BOX & set(error), error)
+
+    def test_a_setup_error_box_is_read(self):
+        error = scan_backends.scanner_error(scanner_log('docker_missing.log'))
+        self.assertEqual(
+            error, "Docker not installed: The 'docker' CLI was not found in "
+                   "your PATH. Please install Docker and ensure the 'docker' "
+                   "command is available.")
+
+    def test_a_crash_mid_scan_is_read_from_its_traceback(self):
+        """The last thing printed is the exception, after a final status box
+        that is not an error at all."""
+        error = scan_backends.scanner_error(scanner_log('crash_quota.log'))
+        self.assertIn('RateLimitError', error)
+        self.assertIn('You exceeded your current quota', error)
+        self.assertNotIn('Penetration test in progress', error)
+
+    def test_a_warning_box_is_not_mistaken_for_the_error(self):
+        """MODEL QUALITY WARNING is printed and the scan carries on. A scan
+        later killed from outside printed no error, and must not be told the
+        warning was why."""
+        self.assertEqual(
+            scan_backends.scanner_error(scanner_log('warning_then_killed.log')),
+            '')
+
+    def test_a_process_killed_from_outside_printed_no_error(self):
+        self.assertEqual(scan_backends.scanner_error(scanner_log('killed.log')),
+                         '')
+
+    def test_a_logged_error_is_the_last_resort(self):
+        text = ('2026-10-26 21:54:03.120 ERROR   scn agt strix.core.runner: '
+                'sandbox did not start: image pull refused\n')
+        self.assertEqual(scan_backends.scanner_error(text),
+                         'sandbox did not start: image pull refused')
+
+    def test_nothing_in_gives_nothing_out(self):
+        for text in ('', None, '\n\n'):
+            self.assertEqual(scan_backends.scanner_error(text), '')
+
+    def test_a_long_error_is_clipped(self):
+        text = 'Error during penetration test: ' + 'x' * 2000 + '\n'
+        self.assertLessEqual(len(scan_backends.scanner_error(text)), 300)
+
+    def test_the_provider_message_is_lifted_out_of_its_json(self):
+        error = scan_backends.scanner_error(scanner_log('llm_unavailable.log'))
+        self.assertEqual(
+            scan_backends.provider_message(error),
+            'This model is currently experiencing high demand. Spikes in '
+            'demand are usually temporary. Please try again later.')
+        self.assertEqual(scan_backends.provider_message('no json here'), '')
+
+    def test_only_a_provider_error_counts_as_one(self):
+        self.assertTrue(scan_backends.is_provider_error(
+            'litellm.RateLimitError: GeminiException - {}'))
+        self.assertTrue(scan_backends.is_provider_error(
+            'LLM connection failed: timed out'))
+        self.assertFalse(scan_backends.is_provider_error(
+            "Docker not installed: The 'docker' CLI was not found"))
+
+
+class EndReasonTests(unittest.TestCase):
+    """What the user reads, from what the backend found."""
+
+    def test_the_scanners_own_stated_reason_comes_first(self):
+        reason = scan_backends.end_reason(
+            scanner_reason='budget_exceeded', exit_code=0,
+            error='litellm.Something: whatever')
+        self.assertIn('spending limit', reason)
+        self.assertIn('rate limit', scan_backends.end_reason(
+            scanner_reason='rate_limited'))
+
+    def test_a_kill_by_the_system_outranks_an_older_printed_error(self):
+        reason = scan_backends.end_reason(
+            exit_code=-signal.SIGKILL, error='litellm.Timeout: retried')
+        self.assertIn('killed by the system', reason)
+        self.assertIn('memory', reason)
+
+    def test_a_signal_the_scanner_caught_is_not_called_a_bare_exit_code(self):
+        """It records `interrupted` and exits 1 — the code alone reads as a
+        crash with nothing printed."""
+        reason = scan_backends.end_reason(exit_code=1,
+                                          scanner_status='interrupted')
+        self.assertIn('from outside kube-coder', reason)
+        self.assertNotIn('code 1', reason)
+
+    def test_another_signal_is_named(self):
+        self.assertIn('SIGHUP', scan_backends.end_reason(
+            exit_code=-signal.SIGHUP))
+
+    def test_a_printed_error_leads_with_its_hint_then_the_providers_words(self):
+        error = scan_backends.scanner_error(scanner_log('llm_unavailable.log'))
+        reason = scan_backends.end_reason(error=error,
+                                          hint='The provider is busy.')
+        self.assertEqual(
+            reason,
+            'The provider is busy. The scanner said: This model is currently '
+            'experiencing high demand. Spikes in demand are usually '
+            'temporary. Please try again later.')
+
+    def test_a_bare_exit_code_is_still_a_reason(self):
+        self.assertIn('code 1', scan_backends.end_reason(exit_code=1))
+
+    def test_nothing_known_is_an_empty_reason_not_a_guess(self):
+        self.assertEqual(scan_backends.end_reason(), '')
+        self.assertEqual(scan_backends.end_reason(exit_code=0), '')
+        self.assertEqual(scan_backends.end_reason(scanner_reason='new_thing'),
+                         '')
+
+
+class EndCauseTests(unittest.TestCase):
+    """What kind of end it was — the page's next step hangs on this, so it
+    must agree with the sentence `end_reason` writes for the same inputs."""
+
+    def cause(self, **kw):
+        return scan_backends.end_cause(**kw)
+
+    def test_the_scanners_stated_reason_comes_first(self):
+        self.assertEqual(self.cause(scanner_reason='budget_exceeded',
+                                    error='litellm.Timeout: x'), 'budget')
+        self.assertEqual(self.cause(scanner_reason='rate_limited'), 'provider')
+
+    def test_a_provider_error_is_a_provider_cause(self):
+        error = scan_backends.scanner_error(scanner_log('llm_unavailable.log'))
+        self.assertEqual(self.cause(exit_code=1, error=error), 'provider')
+
+    def test_a_setup_error_is_the_scanners(self):
+        error = scan_backends.scanner_error(scanner_log('docker_missing.log'))
+        self.assertEqual(self.cause(exit_code=1, error=error), 'scanner')
+
+    def test_a_signal_outranks_an_older_provider_error(self):
+        """Same order as `end_reason`, whose sentence then says "killed by the
+        system" — a headline blaming the model over that would contradict
+        it."""
+        self.assertEqual(self.cause(exit_code=-signal.SIGKILL,
+                                    error='litellm.Timeout: retried'), '')
+
+    def test_nothing_known_is_no_cause(self):
+        self.assertEqual(self.cause(), '')
+        self.assertEqual(self.cause(exit_code=1), '')
+        self.assertEqual(self.cause(scanner_reason='new_thing'), '')
+
+
+class ExplainEndTests(unittest.TestCase):
+    """`LocalStrixBackend.explain_end` over a real scan folder."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.handle = {'scan_dir': self.tmp.name, 'pid': 4242}
+
+    def write_log(self, text):
+        with open(os.path.join(self.tmp.name, scan_backends.LOG_NAME), 'w',
+                  encoding='utf-8') as f:
+            f.write(text)
+
+    def write_end_record(self, exit_reason):
+        run = os.path.join(self.tmp.name, scan_backends.RUNS_SUBDIR, 'run-1')
+        os.makedirs(run)
+        with open(os.path.join(run, scan_backends.END_RECORD), 'w') as f:
+            json.dump({'completeness': {'complete': False,
+                                        'exit_reason': exit_reason}}, f)
+        return run
+
+    def explain(self, *, exit_code=1, explainer=None, redactor=None):
+        b = backend(runner=StubRunner(exit_code=exit_code),
+                    explainer=explainer, redactor=redactor)
+        return b.explain_end(self.handle)
+
+    def test_a_provider_failure_reads_as_a_sentence_with_the_hint(self):
+        self.write_log(scanner_log('llm_unavailable.log'))
+        reason, detail, _ = self.explain(
+            explainer=lambda e: 'The provider is busy right now.')
+        self.assertTrue(reason.startswith('The provider is busy right now. '
+                                          'The scanner said: This model'),
+                        reason)
+
+    def test_the_hint_table_is_not_applied_to_a_setup_error(self):
+        """The provider table reads "not found" as a wrong model name; the
+        docker CLI being missing is not that."""
+        self.write_log(scanner_log('docker_missing.log'))
+        reason, _, _ = self.explain(explainer=lambda e: 'Wrong model name.')
+        self.assertNotIn('Wrong model name', reason)
+        self.assertIn("The 'docker' CLI was not found", reason)
+
+    def test_the_scanners_end_record_names_a_rate_limit(self):
+        self.write_log(scanner_log('killed.log'))
+        self.write_end_record('rate_limited')
+        reason, detail, _ = self.explain(exit_code=0)
+        self.assertIn('rate limit', reason)
+        self.assertIn('scanner end reason: rate_limited', detail)
+
+    def test_an_out_of_memory_kill_says_so(self):
+        self.write_log(scanner_log('killed.log'))
+        reason, detail, _ = self.explain(exit_code=-signal.SIGKILL)
+        self.assertIn('ran out of memory', reason)
+        self.assertIn('exit status: -9 (SIGKILL)', detail)
+
+    def test_the_detail_says_where_everything_is_kept(self):
+        """For the server log: whoever debugs this needs the files, not a
+        paraphrase."""
+        self.write_log(scanner_log('crash_quota.log'))
+        run = self.write_end_record('')
+        _, detail, _ = self.explain()
+        self.assertIn(os.path.join(self.tmp.name, scan_backends.LOG_NAME),
+                      detail)
+        self.assertIn(os.path.join(run, scan_backends.RUN_LOG), detail)
+        self.assertIn('exit status: 1', detail)
+        self.assertIn('RESOURCE_EXHAUSTED', detail)
+
+    def test_an_unknown_exit_status_is_said_to_be_unknown(self):
+        self.write_log('')
+        reason, detail, _ = self.explain(exit_code=None)
+        self.assertEqual(reason, '')
+        self.assertIn('exit status: unknown', detail)
+
+    def test_the_credential_is_redacted_from_both_halves(self):
+        fake = 'kc-test-credential-0001'
+        self.write_log(f'Error during penetration test: litellm.AuthError: '
+                       f'key {fake} rejected\n')
+        reason, detail, _ = self.explain(
+            redactor=lambda t: t.replace(fake, '[redacted]'))
+        self.assertNotIn(fake, reason + detail)
+        self.assertIn('[redacted]', reason)
+
+    def test_the_cause_travels_with_the_reason(self):
+        self.write_log(scanner_log('llm_unavailable.log'))
+        self.assertEqual(self.explain()[2], 'provider')
+        self.write_log(scanner_log('docker_missing.log'))
+        self.assertEqual(self.explain()[2], 'scanner')
+
+    def test_a_spent_budget_is_a_budget_cause(self):
+        self.write_log(scanner_log('killed.log'))
+        self.write_end_record('budget_exceeded')
+        reason, _, cause = self.explain(exit_code=0)
+        self.assertEqual(cause, 'budget')
+        self.assertIn('spending limit', reason)
+
+    def test_a_backend_that_cannot_explain_satisfies_the_contract(self):
+        """Not abstract: the base answer is "nothing known"."""
+        b = SeamConformanceTests.FakeRemoteBackend()
+        self.assertEqual(b.explain_end({}), ('', '', ''))
+
+
+class ProcessTrackingTests(unittest.TestCase):
+    """The runner holds each scan's `Popen`, so its exit status survives the
+    process and the process is reaped rather than left a zombie."""
+
+    class FakeProc:
+        def __init__(self, pid, returncode=None):
+            self.pid = pid
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+    def setUp(self):
+        self.runner = scan_backends._SubprocessRunner()
+        saved = dict(self.runner._children)
+        self.runner._children.clear()
+
+        def restore():
+            self.runner._children.clear()
+            self.runner._children.update(saved)
+        self.addCleanup(restore)
+
+    def test_a_tracked_scan_is_alive_until_its_process_exits(self):
+        proc = self.FakeProc(90001)
+        self.runner._children[90001] = proc
+        self.assertTrue(self.runner.alive(90001))
+        self.assertIsNone(self.runner.exit_status(90001))
+        proc.returncode = -signal.SIGKILL
+        self.assertFalse(self.runner.alive(90001))
+        self.assertEqual(self.runner.exit_status(90001), -signal.SIGKILL)
+
+    def test_a_scan_from_an_earlier_server_process_falls_back_to_a_signal(self):
+        """A restart leaves no `Popen` to ask."""
+        self.assertTrue(self.runner.alive(os.getpid()))
+        self.assertIsNone(self.runner.exit_status(os.getpid()))
+
+    def test_spawning_registers_the_child_and_drops_finished_ones(self):
+        self.runner._children[90002] = self.FakeProc(90002, returncode=0)
+        self.runner._children[90003] = self.FakeProc(90003)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(scan_backends.subprocess, 'Popen',
+                                  return_value=self.FakeProc(90004)):
+            pid = self.runner.spawn(['true'], cwd=tmp, env={},
+                                    log_path=os.path.join(tmp, 'log'))
+        self.assertEqual(pid, 90004)
+        self.assertEqual(sorted(self.runner._children), [90003, 90004])
 
 
 class SeamConformanceTests(unittest.TestCase):
