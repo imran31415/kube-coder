@@ -133,6 +133,56 @@ export function sameTranscript(
   return a.seq === b.seq && a.type === b.type && a.text === b.text;
 }
 
+/** The transcript the Hypervisor screen holds, and which source it came from. */
+export interface HeldTranscript {
+  events: HvEvent[];
+  source: TranscriptSource | null;
+}
+
+/** The `since` cursor for the next poll of an open thread (#833).
+ *
+ * The screen used to re-read the whole transcript every 2 s — 2.5 MB for a
+ * long chat on a real workspace — for as long as the thread stayed open. Now
+ * it asks for what follows the event before its last one: an idle chat
+ * answers with that one event (the overlap the merge checks), a busy one with
+ * the overlap plus whatever is new. 0 (read it all) when there is nothing to
+ * stitch onto yet, the source is unknown, or the tail is the optimistic,
+ * negative-seq user turn that only a full read replaces. */
+export function transcriptSince(held: HeldTranscript): number {
+  const last = held.events[held.events.length - 1];
+  if (!held.source || !last || !Number.isInteger(last.seq) || last.seq < 1) return 0;
+  return last.seq - 1;
+}
+
+function sameEvent(a: HvEvent, b: HvEvent): boolean {
+  return a.seq === b.seq && a.type === b.type && a.role === b.role && a.text === b.text;
+}
+
+/** Fold a poll's answer (`got`, asked with `since`) into the transcript held.
+ *
+ *   'unchanged'  nothing new: keep the state as it is, and do not set it —
+ *                React keeps every bailed-out update queued (with its
+ *                closure) until the component renders again, which an idle
+ *                chat never does;
+ *   'refetch'    the answer cannot be stitched on (the source flipped, which
+ *                re-stamps seqs, or the overlap event is not the one held):
+ *                ask again with since = 0;
+ *   a transcript the new state, sharing the held events it kept. */
+export function mergeTranscript(
+  held: HeldTranscript,
+  since: number,
+  got: { events: HvEvent[]; source?: TranscriptSource | null },
+): HeldTranscript | 'unchanged' | 'refetch' {
+  const source = got.source ?? null;
+  if (since === 0) {
+    return sameTranscript(held.events, got.events, held.source, source) ? 'unchanged' : { events: got.events, source };
+  }
+  const last = held.events[held.events.length - 1];
+  if (source !== held.source || !last || !got.events[0] || !sameEvent(got.events[0], last)) return 'refetch';
+  if (got.events.length === 1) return 'unchanged';
+  return { events: held.events.concat(got.events.slice(1)), source };
+}
+
 /** Turns rendered from the tail of a long transcript by default (#525). React
  *  Native's ScrollView mounts every child, so a long founder/ops chat kept
  *  every turn — and every inline WebView embed — alive until the app went
@@ -300,4 +350,22 @@ export function buildTurns(events: HvEvent[]): HvTurn[] {
     // 'status' events carry no chat content.
   }
   return turns;
+}
+
+/** One poll of an open thread: read what follows the held transcript and fold
+ *  it in, re-reading from the start when the answer cannot be stitched on.
+ *  `next` is null when nothing changed, which is the caller's cue to leave
+ *  its state alone. */
+export async function syncTranscript<T extends { events: HvEvent[]; source?: TranscriptSource | null }>(
+  held: HeldTranscript,
+  read: (since: number) => Promise<T>,
+): Promise<{ detail: T; next: HeldTranscript | null }> {
+  const since = transcriptSince(held);
+  let detail = await read(since);
+  let merged = mergeTranscript(held, since, detail);
+  if (merged === 'refetch') {
+    detail = await read(0);
+    merged = mergeTranscript(held, 0, detail);
+  }
+  return { detail, next: typeof merged === 'string' ? null : merged };
 }

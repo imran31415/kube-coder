@@ -13,7 +13,8 @@ import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
 import { splitNavGroups } from '../navGroups';
 import { listFeed } from '../api/client';
-import { onLiveEvent } from '../store/liveEvents';
+import { onLiveEventDebounced } from '../store/liveEvents';
+import { useWindowVisible } from '../util/useWindowVisible';
 import { countBoardsAwaitingReview } from '../util/feed';
 import { SIDEBAR_WIDTH } from '../util/wideLayout';
 import type { NavItemDef } from '../navGroups';
@@ -200,30 +201,35 @@ function NavPanelBody({
 /** The desktop app's wide layout (#833): the drawer's panel, always shown.
  *  Its Board badge is counted the way the drawer counts it — from the Feed,
  *  never from the boards API — on mount, on each navigation and when the
- *  desktop core reports a Feed event. Never on a timer. */
+ *  desktop core reports a Feed event (a burst of them is one read). Never on a
+ *  timer, and not while the window is hidden: showing it counts again. */
 export function NavSidebar() {
   const active = useActiveTab();
+  const visible = useWindowVisible();
   const [boardWaiting, setBoardWaiting] = React.useState(0);
+  // Set only on a change: React queues even a no-op update until the next
+  // render, and the sidebar can go a long time without one.
+  const shown = React.useRef(0);
 
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
+    const show = (n: number) => {
+      if (cancelled || n === shown.current) return;
+      shown.current = n;
+      setBoardWaiting(n);
+    };
     const count = () =>
       listFeed()
-        .then((items) => {
-          if (!cancelled) setBoardWaiting(countBoardsAwaitingReview(items));
-        })
-        .catch(() => {
-          if (!cancelled) setBoardWaiting(0);
-        });
+        .then((items) => show(countBoardsAwaitingReview(items)))
+        .catch(() => show(0));
     void count();
-    const off = onLiveEvent((e) => {
-      if (e.type.startsWith('feed.')) void count();
-    });
+    const off = onLiveEventDebounced(['feed.'], () => void count());
     return () => {
       cancelled = true;
       off();
     };
-  }, [active]);
+  }, [active, visible]);
 
   return (
     <View style={[styles.sidebar, { width: SIDEBAR_WIDTH }]}>
