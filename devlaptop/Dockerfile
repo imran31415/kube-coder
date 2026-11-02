@@ -45,9 +45,9 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # the dashboard SPA build under it at the same time, so instead we ship a SECOND,
 # side-by-side Node purely for `dsh` (installed under /opt/node22 below, never on
 # PATH). Same digest-pinned-official-image supply chain as node-dist above.
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node22-dist
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS node22-dist
 
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
