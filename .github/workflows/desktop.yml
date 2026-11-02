@@ -66,7 +66,11 @@ jobs:
   # Tauri bridge; no Rust build needed. See desktop/scripts/soak.mjs.
   soak:
     name: Memory soak (UI)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04, where
+    # Playwright 1.58 refuses to install Chromium's dependencies ("does not
+    # support chromium on ubuntu26.04-x64"). Move this when mobile/'s
+    # playwright supports the newer image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -83,8 +87,41 @@ jobs:
         run: npm ci --no-audit --no-fund
         working-directory: mobile
 
+      # The browser soak.mjs drives is the one mobile/'s playwright pins, so the
+      # cache is keyed on that exact version.
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+        working-directory: mobile
+
+      - name: Cache Chromium
+        id: pw-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      # System libraries come from apt, which the cache does not cover; retry
+      # a mirror flake rather than fail the soak on it.
+      - name: Chromium system dependencies
+        run: |
+          for i in 1 2 3; do
+            npx playwright install-deps chromium && exit 0
+            echo "::warning::playwright install-deps failed (attempt $i), retrying"
+            sleep $((i * 15))
+          done
+          exit 1
+        working-directory: mobile
+
       - name: Chromium
-        run: npx playwright install --with-deps chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium && exit 0
+            echo "::warning::playwright install failed (attempt $i), retrying"
+            sleep $((i * 15))
+          done
+          exit 1
         working-directory: mobile
 
       - name: Export the desktop UI
