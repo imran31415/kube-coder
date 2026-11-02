@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # devlaptop/Dockerfile
 #
 # Multi-stage:
@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=11.19.1
+ARG NPM_VERSION=11.21.1
 # Pin Yarn (classic) explicitly instead of installing floating `latest` — a
 # supply-chain hardening from the July 2026 review (finding 7). npm verifies the
 # package integrity/signature against the registry on install.
@@ -116,7 +116,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
-ARG COMPOSE_VERSION=v5.5.1
+ARG COMPOSE_VERSION=v5.6.1
 # Checksum-verified against the vendor-published .sha256 before it is made
 # executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
@@ -134,7 +134,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # release path and verified before install, so a corrupted/tampered binary fails
 # the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.37.0
+ARG KUBECTL_VERSION=v1.37.2
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
   && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
@@ -177,7 +177,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.310
+ARG CLAUDE_CODE_VERSION=2.1.316
 RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -186,7 +186,7 @@ RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.19.4
+ARG OPENCODE_VERSION=1.19.5
 RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -196,7 +196,7 @@ RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.164.0
+ARG CODEX_VERSION=0.166.0
 RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
@@ -352,7 +352,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # behaviour) and fall back to glibc, verifying whichever one we actually pulled
 # against its own sidecar.
 # renovate: datasource=github-releases depName=librefang/librefang
-ARG LIBREFANG_VERSION=v2026.7.31
+ARG LIBREFANG_VERSION=v2026.10.16
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
@@ -418,7 +418,7 @@ RUN apt-get update && apt-get install -y wget \
 # controlled with the repo it describes.
 #
 # renovate: datasource=github-releases depName=redhat-et/ripwire
-ARG RIPWIRE_VERSION=v0.4.0
+ARG RIPWIRE_VERSION=v0.6.9
 # Checksum-verified against the vendor-published .sha256, same posture as
 # docker-compose and kubectl above. The published .sha256 names the asset, so
 # only the digest is taken from it and re-paired with the local path.
