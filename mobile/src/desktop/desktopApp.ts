@@ -11,13 +11,23 @@
  * - Sleep (#728): when the core finds the workspace asleep the WakeBanner
  *   shows; when the user's tap wakes it, the core is told to reconnect now.
  *   Nothing here ever wakes the workspace.
+ * - The last screen: the core drops the webview when the window is closed or
+ *   long hidden, and a rebuilt UI comes back on the screen it was on
+ *   (navSession.ts).
  */
-import { handleNotificationTap } from '../push/notifications';
+import { handleNotificationTap } from '../push/tapRouter';
+import { navigationRef } from '../store/nav';
 import { emitLiveEvent, setLiveConnected, type LiveEvent } from '../store/liveEvents';
 import { reportDown, subscribeWorkspaceState } from '../store/workspaceState';
 import { SLEEPING } from '../util/workspaceReach';
 import { invoke, isDesktop, listen, type DesktopTarget, type LiveStatus } from './bridge';
 import { pushDataFromTarget } from './deepLink';
+import { NAV_STATE_KEY, parseNavState, serializeNavState, type SavedNavState } from './navSession';
+
+/** The saved screen, read as the UI boots; used once, when the navigator is
+ *  ready. */
+let savedNav: Promise<SavedNavState | null> | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function applyStatus(s: LiveStatus): void {
   setLiveConnected(s.mode === 'stream');
@@ -44,6 +54,9 @@ export function initDesktop(): () => void {
   keep(listen<LiveEvent>('kc://event', emitLiveEvent));
   keep(listen<null>('kc://targets', () => void drainTargets()));
   invoke<LiveStatus>('kc_live_status').then(applyStatus).catch(() => {});
+  savedNav = invoke<string | null>('kc_item_get', { key: NAV_STATE_KEY })
+    .then(parseNavState)
+    .catch(() => null);
   // Whatever launched the app (a link, a notification) is already queued.
   void drainTargets();
 
@@ -63,4 +76,43 @@ export function initDesktop(): () => void {
     disposed = true;
     offs.forEach((off) => off());
   };
+}
+
+/** App's NavigationContainer `onReady`: on desktop, put a rebuilt UI back on
+ *  the screen it was on, THEN route whatever opened the window (a parked
+ *  notification click or link), so the target lands on top. Elsewhere, and
+ *  on a fresh launch with nothing saved, this is just `replayTap`. */
+export function onNavigatorReady(replayTap: () => void): void {
+  const pending = savedNav;
+  savedNav = null;
+  if (!isDesktop() || !pending) {
+    replayTap();
+    return;
+  }
+  pending
+    .then((state) => {
+      if (state && navigationRef.isReady()) {
+        // A state from another build of the UI (a route that no longer
+        // exists) is the navigator's to refuse; starting on the home screen
+        // is the fallback either way.
+        try {
+          navigationRef.resetRoot(state);
+        } catch {
+          // keep the home screen
+        }
+      }
+    })
+    .finally(replayTap);
+}
+
+/** App's NavigationContainer `onStateChange`: remember the screen, at most a
+ *  couple of times a second. A no-op outside the desktop app. */
+export function saveDesktopNavState(state: unknown): void {
+  if (!isDesktop()) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const value = serializeNavState(state);
+    if (value) invoke('kc_item_set', { key: NAV_STATE_KEY, value }).catch(() => {});
+  }, 400);
 }

@@ -15,28 +15,8 @@ import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import OnboardingScreen from './src/screens/OnboardingScreen';
-import TasksScreen from './src/screens/TasksScreen';
-import TaskDetailScreen from './src/screens/TaskDetailScreen';
-import NewTaskScreen from './src/screens/NewTaskScreen';
-import AppsScreen from './src/screens/AppsScreen';
-import AppViewScreen from './src/screens/AppViewScreen';
 import DesktopScreen from './src/screens/DesktopScreen';
-import HypervisorScreen from './src/screens/HypervisorScreen';
-import WalkieScreen from './src/screens/WalkieScreen';
-import MissionControlScreen from './src/screens/MissionControlScreen';
-import FeedScreen from './src/screens/FeedScreen';
-import BoardScreen from './src/screens/BoardScreen';
-import SecurityScreen from './src/screens/SecurityScreen';
-import ScanDetailScreen from './src/screens/ScanDetailScreen';
-import MemoryScreen from './src/screens/MemoryScreen';
-import FilesScreen from './src/screens/FilesScreen';
-import SkillsScreen from './src/screens/SkillsScreen';
-import TriggersScreen from './src/screens/TriggersScreen';
-import DocsScreen from './src/screens/DocsScreen';
-import DocsArticleScreen from './src/screens/DocsArticleScreen';
-import MetricsScreen from './src/screens/MetricsScreen';
-import SettingsScreen from './src/screens/SettingsScreen';
-import ControllerScreen from './src/screens/ControllerScreen';
+import { lazyScreen } from './src/components/LazyScreen';
 import { NavDrawer, NavSidebar } from './src/components/NavDrawer';
 import { useWideLayout } from './src/components/WideLayout';
 import { WakeBanner } from './src/components/WakeBanner';
@@ -55,8 +35,32 @@ import {
   replayParkedNotificationTap,
 } from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
-import { initDesktop } from './src/desktop/desktopApp';
+import { initDesktop, onNavigatorReady, saveDesktopNavState } from './src/desktop/desktopApp';
 import { colors, font } from './src/theme';
+
+// The home screen and Onboarding load with the shell; every other screen
+// loads the first time it is opened (#833, src/screenRegistry.ts).
+const TasksScreen = lazyScreen('TaskList');
+const TaskDetailScreen = lazyScreen('TaskDetail');
+const NewTaskScreen = lazyScreen('NewTask');
+const AppsScreen = lazyScreen('AppList');
+const AppViewScreen = lazyScreen('AppView');
+const HypervisorScreen = lazyScreen('Hypervisor');
+const WalkieScreen = lazyScreen('Walkie');
+const MissionControlScreen = lazyScreen('MissionControl');
+const FeedScreen = lazyScreen('Feed');
+const BoardScreen = lazyScreen('Board');
+const SecurityScreen = lazyScreen('ScanList');
+const ScanDetailScreen = lazyScreen('ScanDetail');
+const MemoryScreen = lazyScreen('Memory');
+const FilesScreen = lazyScreen('Files');
+const SkillsScreen = lazyScreen('Skills');
+const TriggersScreen = lazyScreen('Triggers');
+const DocsScreen = lazyScreen('DocsList');
+const DocsArticleScreen = lazyScreen('DocsArticle');
+const MetricsScreen = lazyScreen('Metrics');
+const SettingsScreen = lazyScreen('Settings');
+const ControllerScreen = lazyScreen('Controller');
 
 const navTheme = {
   ...DefaultTheme,
@@ -237,11 +241,13 @@ export default function App() {
   return (
     <SafeAreaProvider>
       {/* A cold-start tap lands while Gate still shows the boot screen, with
-          no navigator to route to; onReady is when it can be replayed. */}
+          no navigator to route to; onReady is when it can be replayed. In the
+          desktop app a rebuilt window first returns to its last screen. */}
       <NavigationContainer
         theme={navTheme}
         ref={navigationRef}
-        onReady={replayParkedNotificationTap}
+        onReady={() => onNavigatorReady(replayParkedNotificationTap)}
+        onStateChange={saveDesktopNavState}
       >
         <StatusBar style="light" />
         <Gate />

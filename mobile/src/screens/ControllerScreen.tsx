@@ -3,7 +3,7 @@
  *  controller admin token (a second connection, separate from the workspace).
  *  Mirrors the web console's core actions (list / start-stop / capacity);
  *  provisioning + resource edits stay web-only for now. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';

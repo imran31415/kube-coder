@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { listFeed, markFeedRead, dismissFeedItem } from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StaleNote } from '../components/ui';
 import { Markdown } from '../components/Markdown';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import type { FeedItem, FeedKind, FeedLink } from '../api/types';
 import { colors, font, radius, space } from '../theme';
 import { relativeTime } from '../util/format';

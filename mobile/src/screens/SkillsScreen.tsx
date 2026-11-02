@@ -1,7 +1,7 @@
 /** Multi-harness skills browser (read-only) — searchable, expandable rows.
  *  Shows every SKILL.md-defined capability discovered across the workspace's
  *  agent harnesses (Claude Code, OpenCode, …) with per-system badges. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';

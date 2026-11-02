@@ -2,7 +2,7 @@
  *  its masked status (set · …cc18 / not set) and opens a small modal to paste a
  *  new key or clear it. Keys are stored on the workspace disk and used the next
  *  time an assistant runs — no redeploy. Mirrors ControllerConnectModal. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,

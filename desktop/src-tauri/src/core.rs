@@ -32,6 +32,7 @@ use crate::scope;
 use crate::secrets::{self, Token};
 use crate::settings::{self, Settings};
 use crate::sse::SseParser;
+use crate::unload::{self, HiddenUnload};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -129,6 +130,8 @@ pub struct Core {
     notes: Mutex<HashMap<i32, Target>>,
     next_note: AtomicI32,
     data_dir: PathBuf,
+    /// When a hidden window's webview is dropped (macOS; see unload.rs).
+    unload: Mutex<HiddenUnload>,
 }
 
 impl Core {
@@ -163,6 +166,9 @@ impl Core {
             notes: Mutex::new(HashMap::new()),
             next_note: AtomicI32::new(1),
             data_dir,
+            unload: Mutex::new(HiddenUnload::new(unload::after_from(
+                std::env::var("KC_DESKTOP_UNLOAD_AFTER_MIN").ok().as_deref(),
+            ))),
         });
         core.seed_dev_connection();
         core.refresh_conn();
@@ -337,6 +343,28 @@ impl Core {
         } else {
             Some(self.release_after.saturating_sub(since.elapsed()))
         }
+    }
+
+    // ---- the window's lifetime (unload.rs) ---------------------------------
+
+    /// The window was hidden: when to ask `take_unload`, if ever.
+    pub fn on_hidden(&self) -> Option<(u64, Duration)> {
+        lock(&self.unload).hidden()
+    }
+
+    pub fn on_shown(&self) {
+        lock(&self.unload).shown();
+    }
+
+    /// Whether the timer holding `ticket` should drop the webview now. A yes
+    /// is final: the caller destroys the window.
+    pub fn take_unload(&self, ticket: u64) -> bool {
+        let mut u = lock(&self.unload);
+        let due = u.due(ticket);
+        if due {
+            u.unloaded(ticket);
+        }
+        due
     }
 
     // ---- targets (deep links + notification clicks) ------------------------
@@ -737,8 +765,9 @@ fn host_slug(base: &url::Url) -> String {
 }
 
 /// Bring the UI forward, rebuilding the window if closing it destroyed it
-/// (see `close_to_tray` in lib.rs). A rebuilt UI boots, hydrates and drains
-/// the target queue, so whatever asked for the window still lands.
+/// (see `close_to_tray` in lib.rs) or it was dropped after a while hidden
+/// (unload.rs). A rebuilt UI boots, hydrates, restores the screen it was on
+/// and drains the target queue, so whatever asked for the window still lands.
 pub fn show_main(app: &AppHandle) {
     let window = match app.get_webview_window(MAIN) {
         Some(w) => w,
@@ -758,6 +787,9 @@ pub fn show_main(app: &AppHandle) {
             }
         }
     };
+    if let Some(core) = app.try_state::<Arc<Core>>() {
+        core.on_shown();
+    }
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();

@@ -3,7 +3,7 @@
  *  (text inline + copy, images inline, binary → info). The write actions call
  *  the same endpoints as the dashboard Files route; the server enforces the
  *  path-traversal guard and the read-only gate. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import React, { useCallback, useState } from 'react';
 import {

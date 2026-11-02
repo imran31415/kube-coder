@@ -6,7 +6,7 @@
  *  pause/resume (cron), edit, delete. Create/edit happens in a bottom sheet
  *  rather than a side drawer, and a webhook's signing secret is surfaced once
  *  in a copyable panel because the server only ever returns it on write. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useMemo, useState } from 'react';

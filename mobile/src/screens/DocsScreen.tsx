@@ -4,7 +4,7 @@
  *  two halves as two steps instead: this list (manifest sections → pages, with
  *  an instant title/summary filter), then DocsArticleScreen for the markdown.
  *  Same /api/docs endpoints, no VS Code detour. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';

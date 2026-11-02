@@ -3,7 +3,7 @@
  *  data-driven provider form (fields come from the registry catalog), masked
  *  credential status, test-connection, a webhook helper, and pairing-code link
  *  management. Talks to the same /api/gateway/* endpoints as the web app. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import React, { useEffect, useRef, useState } from 'react';
 import {

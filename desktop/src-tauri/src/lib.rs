@@ -15,10 +15,11 @@ mod secrets;
 mod settings;
 mod sse;
 mod tray;
+mod unload;
 
 use crate::core::{accept_deep_link, show_main, Core, LiveStatus, Target, MAIN};
 use std::sync::Arc;
-use tauri::{Manager, State, Webview, WindowEvent};
+use tauri::{AppHandle, Manager, State, Webview, WindowEvent};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 
@@ -181,6 +182,10 @@ pub fn run() {
                 WindowEvent::Focused(f) => {
                     if let Some(core) = window.try_state::<Arc<Core>>() {
                         core.on_focus(*f);
+                        if *f {
+                            // Focused means on screen, however it got there.
+                            core.on_shown();
+                        }
                     }
                 }
                 // Closing the window keeps the app in the tray, still
@@ -192,6 +197,7 @@ pub fn run() {
                     if !close_to_tray() {
                         api.prevent_close();
                         let _ = window.hide();
+                        unload_when_hidden(window.app_handle());
                     }
                 }
                 _ => {}
@@ -199,13 +205,36 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building kube-coder desktop")
-        .run(|_app, event| {
+        .run(|_app, event| match event {
             // The last window closing is not quitting: the core keeps running
             // in the tray. Only an explicit exit (the tray's Quit) ends it.
-            if let tauri::RunEvent::ExitRequested { api, code: None, .. } = event {
-                api.prevent_exit();
-            }
+            tauri::RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+            // A click on the dock icon with no window on screen: open it,
+            // rebuilding it if it was dropped while hidden.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { has_visible_windows: false, .. } => show_main(_app),
+            _ => {}
         });
+}
+
+/// After the window has stayed hidden for `KC_DESKTOP_UNLOAD_AFTER_MIN`
+/// minutes, destroy it, and the webview with it (unload.rs). The core keeps
+/// the stream, the alerts and the badge; `show_main` rebuilds the window.
+fn unload_when_hidden(app: &AppHandle) {
+    let Some(core) = app.try_state::<Arc<Core>>() else { return };
+    let Some((ticket, wait)) = core.on_hidden() else { return };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(wait).await;
+        let Some(core) = app.try_state::<Arc<Core>>() else { return };
+        let Some(window) = app.get_webview_window(MAIN) else { return };
+        if window.is_visible().unwrap_or(true) || !core.take_unload(ticket) {
+            return;
+        }
+        if let Err(e) = window.destroy() {
+            eprintln!("[kc] could not drop the hidden window: {e}");
+        }
+    });
 }
 
 /// Whether closing the window destroys it rather than hiding it.
@@ -214,8 +243,9 @@ pub fn run() {
 /// window does not need a live webview behind it — and the webview is nearly
 /// all of the app's memory (desktop/README.md). On Linux and Windows the
 /// window is destroyed, leaving only the core in the tray; it is rebuilt when
-/// opened again. macOS keeps it hidden instead: the dock badge is set through
-/// a window, and a Mac app that stays in the dock is expected to keep it.
+/// opened again. macOS hides it instead, because a Mac app that stays in the
+/// dock is expected to come back as it was left, and drops it only after it
+/// has stayed hidden a while (`unload_when_hidden`).
 fn close_to_tray() -> bool {
     !cfg!(target_os = "macos")
 }
