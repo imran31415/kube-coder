@@ -261,6 +261,10 @@ class MergedViewTests(unittest.TestCase):
         self._orig = AM.PINS_PATH
         AM.PINS_PATH = os.path.join(self.tmp, 'apps.json')
         self.addCleanup(lambda: setattr(AM, 'PINS_PATH', self._orig))
+        # Never ask this machine's container runtime what it is running.
+        ps = mock.patch.object(AM, '_ps_containers', classmethod(lambda cls: ''))
+        ps.start()
+        self.addCleanup(ps.stop)
 
     def test_list_apps_merges_pins_and_listeners(self):
         AM.add_pin(8000, 'My App')  # pinned but not listening -> stopped

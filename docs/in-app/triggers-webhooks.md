@@ -92,6 +92,17 @@ synthetic payload you can paste in. Bypasses signature verification
 (you're already authenticated to the dashboard) but uses the same
 template path.
 
+## Permissions
+
+Nobody watches a webhook's task, so a signed call (and the **Test**
+button) starts the agent with its permission prompts turned off;
+otherwise the first prompt would stall it forever. An unsigned webhook
+keeps the prompts, because anyone who finds its URL could fire it.
+
+A signature proves who sent the call, not that what it carries is safe.
+Text in a pull request or issue body reaches an agent that will not stop
+to ask, so only connect senders whose content you trust.
+
 ## Suspend / resume
 
 The list view has a switch per trigger. Suspended triggers return 200

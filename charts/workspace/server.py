@@ -46,6 +46,14 @@ except ImportError:      # pragma: no cover - module always ships beside server.
 # Fail closed.
 import safe_http
 
+# What the workspace tells the always-on keeper (#728 step 4): which trigger
+# ids exist, and the hash of the API token. Unguarded because a silent failure
+# here is a webhook that answers 404 for ever while the workspace sleeps, which
+# looks like a broken trigger rather than a missing module. Every entry point
+# is a no-op without KEEPER_CONTROL_URL, so a keeper-less workspace is
+# unaffected.
+import keeper_push
+
 # Page-watch content extraction, normalization and hashing (#681). Pure and
 # dependency-free. Unguarded for the same reason as safe_http: scan_excerpt is
 # part of the defence that keeps untrusted page text out of an agent's prompt,
@@ -112,6 +120,7 @@ handlers.bind(sys.modules[__name__])
 try:
     import boards.engine
     import boards.limits
+    import boards.outcome
     import boards.review
     import boards.runs
     import boards.schema
@@ -412,13 +421,15 @@ HYPERVISOR_PREAMBLE = (
     "it; when you create or reference a doc (a plan, README, report), show_file it. "
     "Prefer these tools for any question about, or action on, the workspace. "
     "Answer from tool results, not memory. Be concise and conversational. "
-    "IMPORTANT: background watchers armed inside your turn (Bash "
-    "run_in_background, Monitor) do not survive it — each of your turns runs "
+    "IMPORTANT: background work armed inside your turn (Bash "
+    "run_in_background, Monitor, and Agent-tool subagents — which run in the "
+    "background BY DEFAULT) does not survive it — each of your turns runs "
     "in a fresh headless CLI process, and a later 'no completion record / may "
     "have been stopped' notification means exactly that (not a user action). "
     "To wait on something across turns, arm a runner-owned watcher with the "
     "dashboard `watch` tool: kind 'task' with a task_id (fires when the task "
-    "completes, errors, is killed, or goes waiting-for-input), kind 'command' "
+    "completes, errors, is killed or terminated, or goes waiting-for-input), "
+    "kind 'command' "
     "with a shell predicate (fires when it exits 0), or kind 'file' with a "
     "path (fires when it appears/changes). The workspace runner polls it after "
     "your turn ends and posts the outcome into this chat as a new message — "
@@ -435,6 +446,14 @@ HYPERVISOR_PREAMBLE = (
     "end your turn, and answer when the runner posts the outcome. "
     "run_in_background is only for work you will collect later in the SAME "
     "turn while you keep doing other things — never as a way to wait. "
+    "The same rule governs the Agent tool: NEVER launch background subagents "
+    "(a guard refuses them, because they are killed with the turn and their "
+    "work and tokens are lost). For short fan-out you will synthesize THIS "
+    "turn, pass run_in_background:false — parallel Agent calls in one message "
+    "still run concurrently and the turn waits for them. For anything "
+    "minutes-plus (coding, builds, reviews), use create_task instead "
+    "(tmux-backed, survives turns; isolate:true for parallel work on one "
+    "repo) and arm a `watch` of kind 'task' on each, then end your turn. "
     "A blocking wait is refused by a guard before it runs; when that happens, "
     "arm a `watch` or take a one-shot reading instead (drop the "
     "--watch/--wait flag), and do not look for another way to block. Note the "
@@ -509,8 +528,13 @@ CTO_PREAMBLE = (
     "the memory tools. Destructive tools (kill_task, delete_memory) require "
     "confirm=true — describe the action, get explicit approval in chat, then "
     "call again with confirm=true. "
-    "Background watchers armed inside your turn (Bash run_in_background, "
-    "Monitor) do NOT survive it — each turn is a fresh headless CLI process. To "
+    "Background work armed inside your turn (Bash run_in_background, Monitor, "
+    "and Agent-tool subagents — which run in the background BY DEFAULT) does "
+    "NOT survive it — each turn is a fresh headless CLI process. NEVER launch "
+    "background subagents (a guard refuses them; they are killed with the "
+    "turn, losing their work and tokens): for short fan-out you will "
+    "synthesize this turn pass run_in_background:false, and for real work "
+    "(coding, builds) dispatch a create_task Build instead. To "
     "wait on something across turns, arm a runner-owned `watch` (kind 'task' / "
     "'command' / 'file'); the runner polls it after your turn ends and posts "
     "the outcome here as a new message — so after arming one, just end your "
@@ -1376,7 +1400,7 @@ class PrometheusMetricsCollector:
 
     ── CARDINALITY ───────────────────────────────────────────────────────────
     Every label here is drawn from a fixed, small vocabulary: scope (2), token
-    class (4), coverage (3), task status (6), hook outcome (2), section (4).
+    class (4), coverage (3), task status (7), hook outcome (2), section (4).
     The one label with values from data rather than code is `model`, and it is
     capped at MAX_MODELS with the tail folded into `model="other"`. Nothing is
     ever labelled by task id, thread id, session id, workdir, project or URL:
@@ -1399,7 +1423,8 @@ class PrometheusMetricsCollector:
 
     #: Terminal + live statuses ClaudeTaskManager writes. Anything else is
     #: folded into `unknown` so a stray value can't mint a new series.
-    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error', 'killed')
+    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error',
+                     'killed', 'terminated')
     UNKNOWN_STATUS = 'unknown'
 
     #: Where agent spend happened. Summing over this gives the workspace total;
@@ -2113,6 +2138,18 @@ Host github.com
         }
 
 
+def _resolve_claude_config_path(env=None):
+    """`$KC_CLAUDE_CONFIG_PATH`, or `~/.claude.json` when unset/blank (#762).
+
+    Same blank-means-default contract as `$KC_FEED_DIR`: every test that
+    launches a Build pre-answers Claude Code's dialogs in this file, and the
+    auto-mode answer is global, so a test run must not reach the developer's
+    real config. Leave it unset in every deployment."""
+    src = os.environ if env is None else env
+    return ((src.get('KC_CLAUDE_CONFIG_PATH') or '').strip()
+            or os.path.expanduser('~/.claude.json'))
+
+
 class ClaudeTaskManager:
     """Manages Claude Code tasks running in tmux sessions"""
 
@@ -2126,8 +2163,38 @@ class ClaudeTaskManager:
     TOKEN_FILE = os.path.join(TASKS_DIR, '.api-token')
     # Claude Code's per-user config; we pre-accept folder-trust here so a freshly
     # launched interactive task doesn't block on the trust dialog (see
-    # _ensure_claude_trust).
-    CLAUDE_CONFIG_PATH = os.path.expanduser('~/.claude.json')
+    # _ensure_claude_trust). Tests redirect it (_resolve_claude_config_path).
+    CLAUDE_CONFIG_PATH = _resolve_claude_config_path()
+
+    #: Cached pod-boot identity (#792). See boot_id() below.
+    _boot_id = None
+
+    @staticmethod
+    def boot_id():
+        """Identity of the pod boot this process belongs to, '' if unknowable.
+
+        Stamped into task.json at birth and back-stamped onto any live task
+        that predates this process, which is what lets a dead tmux session be
+        told apart from a WIPED one: a session can vanish because the agent's
+        CLI exited (`completed`), or because the pod restarted and took every
+        session with it (`terminated`). Nothing in the task dir distinguishes
+        those after the fact — the pod that watched the agent work is gone —
+        so the task has to carry the boot that last saw it alive.
+
+        '' means we could not determine a boot identity. Callers must then
+        fall back to the old behaviour rather than guess: a FALSE `terminated`
+        would make an orchestrator re-run work that actually finished, which
+        is the mirror image of the bug this fixes.
+        """
+        if ClaudeTaskManager._boot_id is None:
+            boot = ''
+            if _DEVCONTAINER_AVAILABLE:
+                try:
+                    boot = devcontainer.boot_id() or ''
+                except Exception as e:   # pragma: no cover - defensive
+                    print(f'[tasks] boot_id unavailable: {e}', file=sys.stderr)
+            ClaudeTaskManager._boot_id = boot
+        return ClaudeTaskManager._boot_id
 
     @staticmethod
     def ensure_tasks_dir():
@@ -2240,7 +2307,7 @@ class ClaudeTaskManager:
     #   1. Claude Code   — always available (anthropic-hosted)
     #   2. Ante CLI      — always available (pre-installed in the image)
     #   3. Antigravity   — `agy` CLI; listed when its binary is present (OAuth login)
-    #   4. LibreFang     — agent-OS CLI; listed when its binary is present
+    #   4. LibreFang     — agent-OS CLI; opt-in (#754), then binary-gated
     #   5. OpenRouter    — OpenCode CLI proxied through OpenRouter
     #   6. DeepSeek      — OpenCode CLI against DeepSeek's native API
     #   7. Opensource GPU — kc-harness against the configured Ollama endpoint
@@ -2346,11 +2413,16 @@ class ClaudeTaskManager:
                 'deepseek-harness', 'DEEPSEEK_API_KEY',
                 model=os.environ.get('KC_DSH_MODEL', _DSH_DEFAULT_MODEL),
             ))
-        # LibreFang — listed only when its CLI is actually resolvable (older
-        # images predate it, and /usr/local/bin/librefang is a symlink to a
-        # PVC path that start.sh seeds), so the dropdown never advertises a
-        # dead option.
-        if shutil.which('librefang'):
+        # LibreFang — OPT-IN (#754), and then listed only when its CLI is
+        # actually resolvable (older images predate it, and
+        # /usr/local/bin/librefang is a symlink to a PVC path start.sh seeds),
+        # so the dropdown never advertises a dead option. The chart value
+        # (assistant.librefang.enabled → KC_LIBREFANG_ENABLED) is the same one
+        # that makes start.sh seed its home and start its kernel daemon: a
+        # workspace that didn't opt in has neither, so the honest answer is
+        # that the assistant isn't here — not a not-ready entry (#702) waiting
+        # on a key it would still not be able to use.
+        if runtimes.is_enabled('librefang') and shutil.which('librefang'):
             out.append(dict(ClaudeTaskManager.ASSISTANTS['librefang']))
         if keys.get('OPENROUTER_API_KEY'):
             out.append(dict(
@@ -2764,11 +2836,22 @@ class ClaudeTaskManager:
     def resolve_auto_approve(source, explicit=None):
         """Decide whether a new task launches its CLI with skip-permissions.
 
-        An explicit request (the body's `auto_approve` flag) always wins, in
-        both directions. When it is absent (None), fall back to the source
-        default: unattended sources (hypervisor-tool, webhook:*, cron:*,
-        desktop:*) auto-approve so they don't stall on prompts; the interactive
-        Build tab (source null / 'manual') stays off. See issue #296."""
+        An explicit value always wins, in both directions. When it is None,
+        the source decides: unattended sources (hypervisor-tool, webhook:*,
+        cron:*, desktop:*, board:*) auto-approve so a launch nobody watches
+        doesn't stall on a prompt or dialog; everything else stays off,
+        including the interactive Build tab (source null / 'manual') and
+        page-watch:*. See issues #296 and #769.
+
+        Who asks, and with what `explicit`:
+          * POST /api/claude/tasks: the body's `auto_approve` flag.
+          * The cron fire (handlers/triggers.py): None.
+          * The webhook fire: None when the sender proved itself (a verified
+            HMAC, or the owner's Test button), False for an unsigned webhook.
+          * Board runs: None.
+        The page-watch fire never asks; it passes False outright (see
+        PageWatchManager). The desktop launcher doesn't ask yet either, so
+        `desktop:` only takes effect through POST /api/claude/tasks."""
         if explicit is not None:
             return bool(explicit)
         return ClaudeTaskManager._is_unattended_source(source)
@@ -3134,6 +3217,11 @@ class ClaudeTaskManager:
             'project_id': project_id or '',
             'status': 'running',
             'created_at': time.time(),
+            # The pod boot that launched this task (#792). A tmux session that
+            # vanishes while this is still the current boot means the agent's
+            # CLI exited; one that vanishes after a restart means the session
+            # was wiped, and the task is `terminated`, not `completed`.
+            'boot_id': ClaudeTaskManager.boot_id(),
             'tmux_session': session_name,
             'assistant': assistant,
             # Effective model / reasoning effort for this build (#483, #362).
@@ -3221,10 +3309,23 @@ class ClaudeTaskManager:
         # so the auto-pasted initial prompt below isn't swallowed by either
         # (see _ensure_claude_trust / _api_key_to_reject, #375). Only
         # relevant for the Claude CLI.
+        # The seed is verified by read-back, and its verdict is NOT discarded
+        # (#800): a seed that didn't stick means this launch will meet the
+        # dialog, which is worth a loud line in the server log and a mark on
+        # the task — the post-launch watchdog in send_prompt() answers it.
         if assistant == 'claude':
-            ClaudeTaskManager._ensure_claude_trust(
+            trusted = ClaudeTaskManager._ensure_claude_trust(
                 workdir,
                 reject_api_key=ClaudeTaskManager._api_key_to_reject())
+            if not trusted:
+                print(f'[ClaudeTaskManager] WARNING: folder-trust for {workdir} '
+                      'is NOT recorded in Claude\'s config after retries — a '
+                      'concurrent CLI is likely rewriting it; relying on the '
+                      'post-launch trust-dialog watchdog (#800)',
+                      file=sys.stderr)
+                meta['trust_seed_failed'] = True
+                with open(meta_path, 'w') as f:
+                    json.dump(meta, f, indent=2)
 
         cli_cmd = ClaudeTaskManager.assistant_command(
             assistant, auto_approve=auto_approve, model=model, effort=effort,
@@ -3310,19 +3411,32 @@ class ClaudeTaskManager:
             # Claude we insist on a real composer-ready signal (issue #288)
             # rather than mere screen stability, which its staggered startup
             # notices trip falsely.
+            saw_dialog = False
             try:
-                ClaudeTaskManager._wait_for_pane_ready(
-                    session_name, expect_composer=(assistant == 'claude'))
-                delivered = ClaudeTaskManager._deliver_prompt(
-                    session_name, prompt_file, f'prompt-{task_id}')
+                delivered, saw_dialog = ClaudeTaskManager._deliver_launch_prompt(
+                    session_name, prompt_file, f'prompt-{task_id}',
+                    expect_composer=(assistant == 'claude'))
             except Exception as e:
                 print(f"[ClaudeTaskManager] Failed to send prompt: {e}")
                 delivered = False
+            if saw_dialog:
+                print(f'[ClaudeTaskManager] {task_id}: answered Claude\'s '
+                      f'folder-trust dialog in {workdir}; prompt '
+                      f'{"delivered" if delivered else "STILL UNDELIVERED"} (#800)',
+                      file=sys.stderr)
             # Surface delivery so the dashboard can flag an idle task whose
-            # initial prompt never landed (composer stayed empty).
+            # initial prompt never landed (composer stayed empty) — and say
+            # WHY when the trust dialog is what ate it, since `waiting-for-
+            # input` is also the state of a task that finished (#800).
+            def record(m):
+                m['prompt_delivered'] = delivered
+                if saw_dialog:
+                    m['trust_dialog_answered'] = True
+                if saw_dialog and not delivered:
+                    m['stalled_at_trust_dialog'] = True
+
             try:
-                ClaudeTaskManager._atomic_update_meta(
-                    task_dir, lambda m: m.__setitem__('prompt_delivered', delivered))
+                ClaudeTaskManager._atomic_update_meta(task_dir, record)
             except Exception as e:
                 print(f"[ClaudeTaskManager] prompt_delivered update failed: {e}",
                       file=sys.stderr)
@@ -3398,6 +3512,7 @@ class ClaudeTaskManager:
             'workdir': workdir,
             'status': 'running',
             'created_at': time.time(),
+            'boot_id': ClaudeTaskManager.boot_id(),   # see Build meta above (#792)
             'tmux_session': session_name,
         }
 
@@ -3482,6 +3597,15 @@ class ClaudeTaskManager:
                     'memory_injected': meta.get('memory_injected', []),
                     'memory_injection_disabled':
                         bool(meta.get('memory_injection_disabled')),
+                    # "Launched but never actually started" (#800). An
+                    # orchestrator polling twenty Builds can only tell a wedged
+                    # one from a finished one if these are on the LIST, not
+                    # just the detail endpoint: both report waiting-for-input.
+                    # None (not False) while the delivery thread is still in
+                    # flight, so "unknown yet" stays distinct from "failed".
+                    'prompt_delivered': meta.get('prompt_delivered'),
+                    'stalled_at_trust_dialog':
+                        bool(meta.get('stalled_at_trust_dialog')),
                     # Token spend for this Build (#574) — zero-but-marked when
                     # the assistant isn't instrumented.
                     'usage': ClaudeTaskManager.usage_view(meta),
@@ -3534,6 +3658,218 @@ class ClaudeTaskManager:
                 print(f'[task-reconciler] reconcile {entry} failed: {e}',
                       file=sys.stderr)
         return reconciled
+
+    # ── Undelivered-prompt reaper (#813) ─────────────────────────────────
+    # A Build whose first prompt never reached the agent idles at
+    # `waiting-for-input` forever: it cannot finish, so it cannot self-kill,
+    # and enough of them pin every slot under KC_MAX_TASKS until each new POST
+    # is a 429. The reaper re-delivers the prompt a bounded number of times and
+    # then fails the Build so its slot comes back.
+    #
+    # The decision rests ONLY on what this server recorded in task.json --
+    # `prompt_delivered` (the delivery path's own verdict) and `status` (its
+    # own quiescence derivation). Never on captured screen text: an empty
+    # composer shows greyed ghost-suggestion text that reads as static content,
+    # and a screen-scraping nudger was fooled by exactly that.
+
+    @staticmethod
+    def _env_number(name, default, cast=float, minimum=0):
+        try:
+            return max(minimum, cast(os.environ.get(name, default)))
+        except (TypeError, ValueError):
+            return cast(default)
+
+    #: Master switch. On by default; `KC_PROMPT_REAPER=0` turns the reaper off.
+    PROMPT_REAPER_ENABLED = (os.environ.get('KC_PROMPT_REAPER', '1').strip().lower()
+                             not in ('0', 'false', 'no', 'off', ''))
+
+    #: Seconds a Build must sit idle with its prompt undelivered before the
+    #: reaper touches it, so a delivery still working through a slow start is
+    #: never raced.
+    PROMPT_REAP_GRACE = _env_number.__func__('KC_PROMPT_REAP_GRACE_S', 120)
+
+    #: Re-delivery attempts before the Build is failed.
+    PROMPT_REAP_RETRIES = _env_number.__func__('KC_PROMPT_REAP_RETRIES', 3, int)
+
+    #: Minimum seconds between two re-delivery attempts at one Build.
+    PROMPT_REAP_RETRY_GAP = _env_number.__func__('KC_PROMPT_REAP_RETRY_GAP_S', 60)
+
+    _redelivering = set()
+    _redelivering_lock = threading.Lock()
+
+    @staticmethod
+    def _reap_candidate(meta, now):
+        """True when task.json says this Build is idle with an undelivered
+        prompt. `prompt_delivered` must be literally False: absent means
+        delivery is still in flight (or the Build predates the field), and
+        True means the prompt landed."""
+        if meta.get('status') != 'waiting-for-input':
+            return False
+        if meta.get('prompt_delivered') is not False:
+            return False
+        # A follow-up the server pasted AND submitted means someone is driving
+        # this session: re-pasting the original prompt on top of that work, or
+        # killing the session under it, would be the reaper's own damage.
+        if meta.get('followups'):
+            return False
+        idle_since = meta.get('last_activity_at') or 0
+        return now - idle_since >= ClaudeTaskManager.PROMPT_REAP_GRACE
+
+    @staticmethod
+    def _redeliver_prompt(task_id, task_dir, meta):
+        """Run one re-delivery attempt and record the verdict. Blocking; the
+        reaper calls it from a daemon thread."""
+        session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+        try:
+            delivered, saw_dialog = ClaudeTaskManager._deliver_launch_prompt(
+                session_name, os.path.join(task_dir, 'prompt.txt'),
+                f'prompt-{task_id}',
+                expect_composer=(meta.get('assistant') == 'claude'))
+        except Exception as e:
+            print(f'[prompt-reaper] {task_id}: redelivery raised: {e}',
+                  file=sys.stderr)
+            delivered, saw_dialog = False, False
+        finally:
+            with ClaudeTaskManager._redelivering_lock:
+                ClaudeTaskManager._redelivering.discard(task_id)
+
+        def record(m):
+            if m.get('status') not in ('running', 'waiting-for-input'):
+                return False
+            if delivered:
+                m['prompt_delivered'] = True
+                m['prompt_redelivered_at'] = time.time()
+            if saw_dialog:
+                m['trust_dialog_answered'] = True
+
+        try:
+            ClaudeTaskManager._atomic_update_meta(task_dir, record)
+        except Exception as e:
+            print(f'[prompt-reaper] {task_id}: could not record redelivery: {e}',
+                  file=sys.stderr)
+        print(f'[prompt-reaper] {task_id}: redelivery '
+              f'{"succeeded" if delivered else "failed"} (#813)',
+              file=sys.stderr)
+        return delivered
+
+    @staticmethod
+    def _fail_undelivered(task_id, task_dir, meta, attempts):
+        """Mark an unrecoverable Build `error` and free its tmux slot."""
+        failed_at = time.time()
+        fire_hook = False
+        reason = (f'the initial prompt was never delivered to the agent after '
+                  f'{attempts} re-delivery attempt(s)')
+
+        def mutate(m):
+            nonlocal fire_hook
+            # Re-check inside the lock: the Build may have recovered or been
+            # killed while the reaper was deciding.
+            if m.get('status') != 'waiting-for-input' or \
+                    m.get('prompt_delivered') is not False:
+                return False
+            m['status'] = 'error'
+            m['error'] = reason
+            m['finished_at'] = failed_at
+            m['prompt_undelivered_reaped_at'] = failed_at
+            m.pop('waiting_for_input', None)
+            m.pop('last_input_prompt', None)
+            if m.get('response_url') and not m.get('hook_fired_at'):
+                m['hook_fired_at'] = failed_at
+                fire_hook = True
+
+        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        if updated is None or updated.get('status') != 'error' or \
+                updated.get('prompt_undelivered_reaped_at') != failed_at:
+            return False
+        # Status first, kill second: the reconciler skips a terminal task, so
+        # it cannot race the session's disappearance into `completed`.
+        subprocess.run(
+            ['tmux', 'kill-session', '-t',
+             meta.get('tmux_session') or f'kube-coder-{task_id}'],
+            capture_output=True, text=True,
+        )
+        if fire_hook:
+            ClaudeTaskManager._fire_completion_hook(updated)
+        EventBroker.publish('task.status', {
+            'task_id': task_id, 'status': 'error', 'finished_at': failed_at,
+        })
+        FeedManager.emit_task_terminal(updated, 'error')
+        if updated.get('worktree'):
+            WorktreeManager.snapshot_async(task_id)
+        print(f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
+              file=sys.stderr)
+        return True
+
+    @staticmethod
+    def reap_undelivered(now=None):
+        """One reaper pass. Returns `{'retried': n, 'errored': n}`.
+
+        Each idle Build with `prompt_delivered is False` gets up to
+        PROMPT_REAP_RETRIES re-deliveries, PROMPT_REAP_RETRY_GAP apart; the
+        pass after the last one fails it and kills its session. Attempts are
+        counted in task.json BEFORE they run, so a crash mid-delivery still
+        spends the attempt and the loop cannot go on forever.
+        """
+        ClaudeTaskManager.ensure_tasks_dir()
+        now = time.time() if now is None else now
+        out = {'retried': 0, 'errored': 0}
+        try:
+            entries = sorted(os.listdir(ClaudeTaskManager.TASKS_DIR), reverse=True)
+        except OSError:
+            return out
+        for entry in entries:
+            task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, entry)
+            try:
+                with open(os.path.join(task_dir, 'task.json')) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or \
+                    not ClaudeTaskManager._reap_candidate(meta, now):
+                continue
+            task_id = meta.get('task_id') or entry
+            with ClaudeTaskManager._redelivering_lock:
+                if task_id in ClaudeTaskManager._redelivering:
+                    continue
+            session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+            alive = subprocess.run(['tmux', 'has-session', '-t', session_name],
+                                   capture_output=True, text=True)
+            if alive.returncode != 0:
+                continue  # the reconciler settles a gone session
+            attempts = int(meta.get('prompt_redelivery_attempts') or 0)
+            if attempts >= ClaudeTaskManager.PROMPT_REAP_RETRIES:
+                if ClaudeTaskManager._fail_undelivered(
+                        task_id, task_dir, meta, attempts):
+                    out['errored'] += 1
+                continue
+            last = float(meta.get('prompt_redelivery_at') or 0)
+            if now - last < ClaudeTaskManager.PROMPT_REAP_RETRY_GAP:
+                continue
+
+            def spend(m, _now=now):
+                if m.get('status') != 'waiting-for-input' or \
+                        m.get('prompt_delivered') is not False:
+                    return False
+                m['prompt_redelivery_attempts'] = \
+                    int(m.get('prompt_redelivery_attempts') or 0) + 1
+                m['prompt_redelivery_at'] = _now
+
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, spend)
+            if updated is None or \
+                    updated.get('prompt_redelivery_at') != now:
+                continue
+            with ClaudeTaskManager._redelivering_lock:
+                ClaudeTaskManager._redelivering.add(task_id)
+            print(f'[prompt-reaper] {task_id}: idle with an undelivered prompt; '
+                  f'redelivery {updated["prompt_redelivery_attempts"]}/'
+                  f'{ClaudeTaskManager.PROMPT_REAP_RETRIES} (#813)',
+                  file=sys.stderr)
+            threading.Thread(
+                target=ClaudeTaskManager._redeliver_prompt,
+                args=(task_id, task_dir, updated), daemon=True,
+            ).start()
+            out['retried'] += 1
+        return out
 
     @staticmethod
     def task_status(task_id):
@@ -3838,7 +4174,7 @@ class ClaudeTaskManager:
         return env_key
 
     @staticmethod
-    def _ensure_claude_trust(workdir, config_path=None, reject_api_key=None):
+    def _write_claude_trust(workdir, config_path=None, reject_api_key=None):
         """Pre-accept Claude Code's folder-trust + onboarding for `workdir`.
 
         A freshly launched interactive `claude` shows "Do you trust the files
@@ -3854,12 +4190,17 @@ class ClaudeTaskManager:
         Claude Code records answers as the key's LAST 20 CHARACTERS (verified
         against a live config — not a hash) under
         `customApiKeyResponses.{approved,rejected}`; an existing answer in
-        either list is the user's and is respected. Idempotent:
+        either list is the user's and is respected. The auto-mode setup nudge
+        is pre-dismissed too (#762, _dismiss_auto_mode_setup). Idempotent:
         only writes when a value is actually missing, so steady-state launches
         do zero writes and don't race a live Claude rewriting the same file.
         Best-effort — never raises, never clobbers an unreadable/invalid config.
 
-        Returns True if the file was written, False otherwise.
+        Returns True if the file was written, False otherwise — which is NOT
+        the same question as "is `workdir` trusted now?": False covers both
+        "already seeded, nothing to do" and "the write failed". Callers want
+        the latter question, so they go through `_ensure_claude_trust`, which
+        reads the file back (#800).
         """
         path = config_path or ClaudeTaskManager.CLAUDE_CONFIG_PATH
         lock_path = path + '.kc.lock'
@@ -3891,6 +4232,8 @@ class ClaudeTaskManager:
                     if proj.get('hasTrustDialogAccepted') is not True:
                         proj['hasTrustDialogAccepted'] = True
                         changed = True
+
+                    changed |= ClaudeTaskManager._dismiss_auto_mode_setup(cfg)
 
                     if reject_api_key:
                         tail = reject_api_key[-20:]
@@ -3924,6 +4267,88 @@ class ClaudeTaskManager:
             return False
 
     @staticmethod
+    def _trust_accepted(workdir, config_path=None):
+        """True when Claude's config records `workdir` as a trusted folder.
+
+        The read half of the seed. Unreadable, invalid or non-dict configs
+        answer False — if we cannot see the entry we must assume the CLI
+        cannot either.
+        """
+        path = config_path or ClaudeTaskManager.CLAUDE_CONFIG_PATH
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(cfg, dict):
+            return False
+        projects = cfg.get('projects')
+        if not isinstance(projects, dict):
+            return False
+        proj = projects.get(workdir)
+        return isinstance(proj, dict) and proj.get('hasTrustDialogAccepted') is True
+
+    #: Seed → read-back rounds before we give up on the shared config (#800).
+    TRUST_SEED_TRIES = 3
+    #: Pause between them, long enough for a concurrent CLI's own wholesale
+    #: rewrite to land so our re-seed is the later writer.
+    TRUST_SEED_RETRY_DELAY = 0.3
+
+    @staticmethod
+    def _ensure_claude_trust(workdir, config_path=None, reject_api_key=None,
+                             tries=None, delay=None):
+        """Seed folder-trust for `workdir` and CONFIRM the seed survived.
+
+        `~/.claude.json` is a single mutable file that EVERY running Claude
+        CLI rewrites wholesale, and those rewrites take no part in our flock.
+        A CLI that loaded the config before our seed and wrote it back after
+        silently drops `projects[workdir]` — last-writer-wins. On a workspace
+        with 8–10 concurrent Builds that is not rare: three of them wedged on
+        the trust dialog for 12 hours with their workdir absent from the
+        config entirely (#800).
+
+        So we don't trust the write: we read the file back, and re-seed up to
+        `tries` times while the entry is missing. Returns True when `workdir`
+        is trusted at the end, False when it is not — in which case the launch
+        is expected to hit the dialog and `_clear_trust_dialog` answers it.
+        Best-effort, never raises.
+        """
+        tries = ClaudeTaskManager.TRUST_SEED_TRIES if tries is None else tries
+        delay = ClaudeTaskManager.TRUST_SEED_RETRY_DELAY if delay is None else delay
+        for attempt in range(max(1, tries)):
+            ClaudeTaskManager._write_claude_trust(
+                workdir, config_path=config_path, reject_api_key=reject_api_key)
+            if ClaudeTaskManager._trust_accepted(workdir, config_path=config_path):
+                return True
+            if attempt + 1 < max(1, tries):
+                print(f'[ClaudeTaskManager] trust seed for {workdir} did not '
+                      f'stick (attempt {attempt + 1}) — re-seeding',
+                      file=sys.stderr)
+                time.sleep(delay)
+        return False
+
+    @staticmethod
+    def _dismiss_auto_mode_setup(cfg):
+        """Answer "Don't show again" to the auto-mode setup nudge in `cfg`.
+
+        The nudge is "Set up auto mode for your environment?" in Claude Code
+        2.1.233 and "Teach auto mode about your environment?" in 2.1.284. It
+        appears after a turn ends in an auto-mode session, so an unattended
+        Build finishes its work and then sits on the dialog forever (#762).
+        The answer is GLOBAL, not per-project: the CLI stores it as top-level
+        `autoModeEnvSetup.dismissed` (verified against both shipped CLIs). The
+        CLI's own fields in that object (`denials`, `dismissedAt`) are kept;
+        a malformed value is replaced. Returns True if `cfg` changed.
+        """
+        setup = cfg.get('autoModeEnvSetup')
+        if not isinstance(setup, dict):
+            setup = {}
+        if setup.get('dismissed') is True:
+            return False
+        cfg['autoModeEnvSetup'] = {**setup, 'dismissed': True}
+        return True
+
+    @staticmethod
     def _capture_pane(session_name):
         """Return the rendered tmux pane text, or None if capture failed."""
         r = subprocess.run(
@@ -3951,6 +4376,116 @@ class ClaudeTaskManager:
             return False
         return '> ' in pane or '❯' in pane
 
+    # Claude Code's folder-trust dialog as it RENDERS, lowercased (#800):
+    #
+    #     Quick safety check: Is this a project you created or one you trust?
+    #     ❯ 1. Yes, I trust this folder
+    #       2. No, exit
+    #
+    # Matched on the prose, not the box drawing or the option numbering, and on
+    # several independent needles — the question and the affirmative option are
+    # worded differently across CLI versions ("Do you trust the files in this
+    # folder?" in older ones), so a wording change to one line still leaves the
+    # others. Every needle is specific enough that no ordinary agent output
+    # trips it.
+    TRUST_DIALOG_MARKERS = (
+        'a project you created or one you trust',
+        'yes, i trust this folder',
+        'do you trust the files in this folder',
+    )
+
+    @staticmethod
+    def _pane_shows_trust_dialog(pane):
+        """True when the pane is parked on Claude's folder-trust dialog.
+
+        This is the robust half of the #800 fix: it reads the SCREEN, so it is
+        immune to whatever a concurrent CLI did to the shared config.
+        """
+        if not pane:
+            return False
+        low = strip_ansi(pane).lower()
+        return any(m in low for m in ClaudeTaskManager.TRUST_DIALOG_MARKERS)
+
+    #: Answer attempts before we declare the dialog un-clearable (#800).
+    #: Four, not three: on a dialog whose selector starts on "No, exit"
+    #: (Claude Code >= 2.1.310) the answer is two keystrokes across two
+    #: attempts (arrow, then Enter), and a mid-redraw capture may spend one.
+    TRUST_DIALOG_ANSWER_TRIES = 4
+
+    #: The affirmative option's wording across CLI generations. Current CLIs
+    #: say "Yes, I trust this folder"; older ones said "Yes, proceed".
+    TRUST_DIALOG_YES_NEEDLES = ('yes, i trust this folder', 'yes, proceed')
+
+    @staticmethod
+    def _trust_dialog_answer_keys(pane):
+        """The next tmux keystroke(s) that move the trust dialog toward "Yes".
+
+        Claude Code 2.1.310 reordered the dialog: the selector now STARTS on
+        "No, exit", and the options lost their `1.`/`2.` numbering — so the
+        historical `1` + Enter answer types an ignored character and then
+        confirms the WRONG option, exiting the CLI and killing the task it was
+        meant to rescue. Read the pane instead of assuming a layout:
+
+          * selector already on the affirmative option  ->  ('Enter',)
+          * selector on some other option               ->  one arrow toward
+            the affirmative line (the next attempt re-reads and confirms)
+          * no selector at all (oldest numbered prompt) ->  ('1', 'Enter'),
+            the historical answer, still correct there
+
+        Only option lines (the affirmative wording or "No, exit") are
+        considered when locating the selector, so a `❯` composer prompt
+        elsewhere on screen can never be mistaken for it.
+        """
+        yes_i = sel_i = None
+        for i, raw in enumerate((pane or '').splitlines()):
+            line = strip_ansi(raw).strip().lower()
+            is_yes = any(n in line for n in
+                         ClaudeTaskManager.TRUST_DIALOG_YES_NEEDLES)
+            if is_yes and yes_i is None:
+                yes_i = i
+            if (is_yes or 'no, exit' in line) and sel_i is None \
+                    and line.lstrip('│| ').startswith('❯'):
+                sel_i = i
+        if yes_i is None or sel_i is None:
+            return ('1', 'Enter')
+        if sel_i == yes_i:
+            return ('Enter',)
+        return ('Down',) if yes_i > sel_i else ('Up',)
+
+    @staticmethod
+    def _clear_trust_dialog(session_name, tries=None, settle=0.6):
+        """Answer "Yes, I trust this folder" if the session is on the dialog.
+
+        The folder is one the workspace itself just created for this task, so
+        the trust question has a known-safe answer — and the alternative is the
+        Build sitting on the modal forever while reporting the same
+        `waiting-for-input` as a task that finished (#800). Each attempt sends
+        whatever keystroke the CURRENT pane calls for (see
+        _trust_dialog_answer_keys — the dialog's layout changed across CLI
+        versions, and a layout-blind answer can confirm "No, exit"), then
+        re-reads the pane to confirm.
+
+        Returns `(seen, cleared)`: whether a dialog was on screen at all, and
+        whether the screen is free of it now. No dialog ⇒ `(False, True)`, so
+        the common path costs one capture and sends no keys.
+        """
+        tries = (ClaudeTaskManager.TRUST_DIALOG_ANSWER_TRIES
+                 if tries is None else tries)
+        seen = False
+        for _ in range(max(1, tries)):
+            pane = ClaudeTaskManager._capture_pane(session_name)
+            if not ClaudeTaskManager._pane_shows_trust_dialog(pane):
+                return seen, True
+            seen = True
+            keys = ClaudeTaskManager._trust_dialog_answer_keys(pane)
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, *keys],
+                capture_output=True, text=True,
+            )
+            time.sleep(settle)
+        still = ClaudeTaskManager._capture_pane(session_name)
+        return seen, not ClaudeTaskManager._pane_shows_trust_dialog(still)
+
     @staticmethod
     def _screen_advanced(before, after):
         """True if the pane visibly changed between two captures.
@@ -3965,28 +4500,317 @@ class ClaudeTaskManager:
             return True
         return after != before
 
+    # Claude Code swaps a long or multi-line paste for a placeholder in the
+    # input box — `[Pasted text #1 +14 lines]` — so the prompt's own words are
+    # NOT on screen. The `#N` counter is also what makes a STACKED paste
+    # visible: two placeholders in one box means two copies of the prompt
+    # waiting to be sent as one message (#805). Matched against
+    # whitespace-free text (see `_match_text`) because the placeholder wraps
+    # inside the box like any other content.
+    PASTE_PLACEHOLDER_RE = re.compile(r'\[pastedtext#\d+')
+
+    #: Characters of the prompt used as its on-screen fingerprint. The TAIL,
+    #: not the head: a prompt longer than the box scrolls, and the end is what
+    #: stays visible.
+    PASTE_NEEDLE_CHARS = 48
+
+    @staticmethod
+    def _match_text(text):
+        """Whitespace-free, lowercased text, for substring matching on a pane.
+
+        The composer wraps a pasted prompt across lines and pads each one, so
+        the prompt is never on screen verbatim. Dropping ALL whitespace makes a
+        wrapped line indistinguishable from an unwrapped one, which is what
+        lets delivery look for the prompt ITSELF rather than for "the screen
+        changed since we pasted" (#805).
+        """
+        if text is None:
+            return None
+        return re.sub(r'\s+', '', strip_ansi(text)).lower()
+
+    @staticmethod
+    def _paste_needle(prompt_file, chars=None):
+        """Fingerprint of the prompt we are about to paste, or None.
+
+        None means "no fingerprint available" (unreadable or near-empty file),
+        and every caller then falls back to the older screen-changed signal
+        rather than guessing.
+        """
+        chars = ClaudeTaskManager.PASTE_NEEDLE_CHARS if chars is None else chars
+        try:
+            with open(prompt_file, encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except OSError:
+            return None
+        norm = ClaudeTaskManager._match_text(text) or ''
+        if len(norm) < 2:
+            return None
+        return norm[-chars:]
+
+    @staticmethod
+    def _strip_composer_affordance(line):
+        """One input-box line without its borders or its `> ` prompt marker."""
+        s = _normalize_prompt_line(line)
+        return s[1:].strip() if s[:1] in ('>', '❯') else s
+
+    @staticmethod
+    def _pane_composer_text(pane):
+        """The text sitting in the TUI's input box right now, or None.
+
+        Reads the composer REGION, not the whole screen, and that distinction
+        is the heart of the #805 fix: a submitted prompt is still on screen in
+        the transcript above, so a whole-pane search can never tell "submitted"
+        from "still sitting unsent in the box". The box is the bottom-most
+        complete one on screen (Claude draws the shortcuts footer below it);
+        CLIs that draw a bare `> ` line instead fall back to that line.
+
+        Returns '' for an input box that is readable and holds nothing —
+        distinct from None, which means "no input box found on this screen" and
+        leaves the caller on its older screen-changed heuristic.
+        """
+        if not pane:
+            return None
+        lines = strip_ansi(pane).splitlines()
+        bottom = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith('╰'):
+                bottom = i
+        if bottom is not None:
+            for top in range(bottom - 1, -1, -1):
+                if lines[top].strip().startswith('╭'):
+                    return '\n'.join(
+                        ClaudeTaskManager._strip_composer_affordance(l)
+                        for l in lines[top + 1:bottom]).strip()
+        for line in reversed(lines):
+            if _normalize_prompt_line(line)[:1] in ('>', '❯'):
+                return ClaudeTaskManager._strip_composer_affordance(line)
+        return None
+
+    @staticmethod
+    def _paste_copies(pane, needle):
+        """How many copies of the pasted prompt the input box is holding.
+
+        `0` — the box is readable and does not hold it: empty before a paste,
+        emptied by the Enter that sent it. `>= 1` — it does, and more than one
+        is a stacked paste. `-1` — unreadable (capture failed, or a UI whose
+        box we cannot find), so the caller must fall back to `_screen_advanced`
+        rather than act on a number it does not have.
+        """
+        text = ClaudeTaskManager._pane_composer_text(pane)
+        if text is None:
+            return -1
+        norm = ClaudeTaskManager._match_text(text) or ''
+        placeholders = len(ClaudeTaskManager.PASTE_PLACEHOLDER_RE.findall(norm))
+        if placeholders:
+            return placeholders
+        if not needle:
+            # No fingerprint: an empty box still proves the prompt is not in
+            # it, but anything else on screen (Claude's own greyed hint text,
+            # for one) is not evidence either way.
+            return 0 if not norm else -1
+        return norm.count(needle)
+
+    #: Key sequences tried, in order, to empty an input box that still holds a
+    #: previous attempt's paste. `C-u` kills the line; Escape is Claude Code's
+    #: own "clear the composer" and gets a multi-line paste placeholder that a
+    #: single kill-line leaves behind. Before a submit both are no-ops on an
+    #: already-empty box, so the cheap path costs one capture and no keys.
+    COMPOSER_CLEAR_KEYS = (('C-u',), ('C-u', 'C-u'), ('Escape', 'C-u'))
+
+    @staticmethod
+    def _clear_composer(session_name, needle, settle=0.4):
+        """Empty the input box so a re-paste cannot stack a second copy (#805).
+
+        Returns True once the box is known not to hold the prompt (or cannot be
+        read, which is unverifiable either way); False when copies are still
+        there after every clear attempt — the caller must NOT paste again then,
+        because that is exactly how a box ends up holding the prompt three
+        times.
+        """
+        for keys in ClaudeTaskManager.COMPOSER_CLEAR_KEYS:
+            if ClaudeTaskManager._paste_copies(
+                    ClaudeTaskManager._capture_pane(session_name), needle) <= 0:
+                return True
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, *keys],
+                capture_output=True, text=True,
+            )
+            time.sleep(settle)
+        return ClaudeTaskManager._paste_copies(
+            ClaudeTaskManager._capture_pane(session_name), needle) <= 0
+
+    # How long a pasted prompt may take to SHOW UP in the input box before we
+    # call it dropped. The old check was 0.4s, which is a race rather than a
+    # test: a cold Claude Code start (every #728 wake, or a busy node) ingests
+    # the paste long after that, and reading "not yet" as "lost" pasted the
+    # prompt two more times and then gave up without ever pressing Enter — the
+    # Build sat at `prompt_delivered: false` with three copies in its box
+    # (#805). Still bounded, because a paste that genuinely never arrives has
+    # to be pasted again (#288).
+    PASTE_APPEAR_TIMEOUT = float(os.environ.get('KC_PASTE_APPEAR_TIMEOUT', '45'))
+
+    #: How often to look for it. Also the settle before the FIRST look, so the
+    #: bracketed paste is ingested before anything judges the screen.
+    PASTE_POLL_INTERVAL = 0.4
+
+    #: Floor for a re-paste's own wait once the first attempt has spent the
+    #: whole appear budget. Without it a retry would look once and declare
+    #: failure; with it, total delivery stays well inside the Board run's
+    #: quiet-settle window instead of multiplying the ceiling by `retries`.
+    PASTE_RETRY_FLOOR = 4.0
+
+    @staticmethod
+    def _wait_for_paste(session_name, needle, before, timeout=None,
+                        interval=None):
+        """Wait for a pasted prompt to appear in the input box.
+
+        Returns `(landed, pane)`. `landed` is True as soon as the box holds the
+        prompt — the positive signal the 0.4s screen-diff never had. An
+        unreadable box falls back to `_screen_advanced`, and a session whose
+        captures keep failing is treated as landed: it cannot be observed, and
+        pasting again into a session we cannot see is how text gets duplicated.
+        Gives up at once on the folder-trust dialog — nothing is going to
+        appear in a composer that is covered by a modal, so waiting out the
+        ceiling only delays the caller that can answer it (#800).
+        """
+        timeout = (ClaudeTaskManager.PASTE_APPEAR_TIMEOUT
+                   if timeout is None else timeout)
+        interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
+                    if interval is None else interval)
+        deadline = time.time() + max(0.0, timeout)
+        pane = None
+        misses = 0
+        while True:
+            time.sleep(interval)
+            pane = ClaudeTaskManager._capture_pane(session_name)
+            if pane is None:
+                misses += 1
+                if misses >= ClaudeTaskManager.PANE_GONE_STRIKES:
+                    return True, None
+            else:
+                misses = 0
+                copies = ClaudeTaskManager._paste_copies(pane, needle)
+                if copies > 0:
+                    return True, pane
+                if ClaudeTaskManager._pane_shows_trust_dialog(pane):
+                    return False, pane
+                if copies < 0 and ClaudeTaskManager._screen_advanced(before, pane):
+                    return True, pane
+            if time.time() >= deadline:
+                return False, pane
+
+    #: Submit attempts per delivery: a bare Enter, plus nudges for the one the
+    #: bracketed paste absorbs. A nudge on an emptied box is a no-op, so this
+    #: only bounds how long we insist.
+    SUBMIT_ENTER_TRIES = 3
+
+    #: Pause between the Escape and the Enter of a nudge. Claude Code v2.1.310
+    #: stopped submitting on a bare Enter right after a bracketed paste (the
+    #: text just sits in the box, and a re-Enter changes nothing); Escape, a
+    #: beat, then Enter does submit it with its full content (#813). Older
+    #: CLIs simply see a harmless Escape.
+    SUBMIT_ESCAPE_SETTLE = 0.5
+
+    #: `_submit_and_confirm` result: the nudge's Escape emptied the box rather
+    #: than sending it, so the prompt is gone and has to be pasted again.
+    SUBMIT_CLEARED = 'cleared'
+
+    #: How long one Enter gets to empty the box before the next nudge.
+    SUBMIT_CONFIRM_TIMEOUT = 2.5
+
+    @staticmethod
+    def _submit_and_confirm(session_name, needle, pasted, tries=None,
+                            timeout=None, interval=None):
+        """Press Enter until the input box empties — the proof of a submit.
+
+        The box emptying is the only observable that distinguishes "sent" from
+        "sitting there typed but unsent", which is the state a Build used to be
+        left in. Bounded nudges cover the Enter that gets absorbed into the
+        bracketed paste (#288). The first attempt is a bare Enter; every nudge
+        after it is Escape + pause + Enter, because on Claude Code v2.1.310 a
+        bare Enter after a paste never submits and repeating it never helps
+        (#813).
+
+        Returns True (sent), False (never registered), or `SUBMIT_CLEARED`.
+        """
+        tries = ClaudeTaskManager.SUBMIT_ENTER_TRIES if tries is None else tries
+        timeout = (ClaudeTaskManager.SUBMIT_CONFIRM_TIMEOUT
+                   if timeout is None else timeout)
+        interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
+                    if interval is None else interval)
+        for attempt in range(max(1, tries)):
+            if attempt:
+                subprocess.run(
+                    ['tmux', 'send-keys', '-t', session_name, 'Escape'],
+                    capture_output=True, text=True,
+                )
+                time.sleep(ClaudeTaskManager.SUBMIT_ESCAPE_SETTLE)
+                # Some CLIs treat Escape as "clear the composer". An emptied
+                # box here was NOT sent -- reading it as a submit would report
+                # a delivery that never happened -- so hand it back to be
+                # pasted again.
+                if ClaudeTaskManager._paste_copies(
+                        ClaudeTaskManager._capture_pane(session_name),
+                        needle) == 0:
+                    return ClaudeTaskManager.SUBMIT_CLEARED
+            subprocess.run(
+                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
+                capture_output=True, text=True,
+            )
+            deadline = time.time() + max(0.0, timeout)
+            while True:
+                time.sleep(interval)
+                pane = ClaudeTaskManager._capture_pane(session_name)
+                copies = ClaudeTaskManager._paste_copies(pane, needle)
+                if copies == 0:
+                    return True
+                if copies < 0 and ClaudeTaskManager._screen_advanced(pasted, pane):
+                    return True
+                if time.time() >= deadline:
+                    break
+        return False
+
     @staticmethod
     def _deliver_prompt(session_name, prompt_file, buf_name, submit=True,
-                        retries=3):
+                        retries=3, appear_timeout=None):
         """Paste a prompt file into a live tmux TUI and verify delivery.
 
         Shared path for the initial prompt (create_task) and follow-ups
-        (send_followup). Loads `prompt_file` into a tmux buffer, pastes it
-        into the session's composer, and — when `submit` — presses Enter.
+        (send_followup). Loads `prompt_file` into a tmux buffer, pastes it into
+        the session's input box, and — when `submit` — presses Enter until the
+        box empties.
 
-        Claude/OpenCode wrap pasted text in bracketed-paste escapes; a paste
-        into a still-initializing TUI is silently *dropped*, and re-sending
-        Enter cannot recover a dropped paste (the composer is empty). So we
-        verify the paste landed by comparing pane captures; if it didn't, we
-        retry the whole load+paste — safe precisely because a dropped paste
-        left the composer empty, so there's nothing to duplicate. Once the
-        paste lands we send Enter and, if the submit doesn't register (Enter
-        absorbed into the bracketed paste), nudge Enter once more.
+        Claude/OpenCode wrap pasted text in bracketed-paste escapes. A paste
+        into a still-initializing TUI can be silently *dropped*, and re-sending
+        Enter cannot recover that (the box is empty), so a dropped paste has to
+        be pasted again (#288). But a paste into a SLOW TUI is only late, not
+        lost: it is queued and shows up seconds later. Telling those apart is
+        what this does — it waits, up to `appear_timeout`, for the prompt
+        itself to appear in the box, and only re-pastes if it never does. Every
+        re-paste empties the box first, so a late arrival can never leave two
+        copies stacked in it (#805).
 
         Returns True once the prompt is delivered (and submitted, when
-        `submit`), else False after exhausting `retries`.
+        `submit`), else False — and a False is loud, because the honest state
+        is a Build that visibly never received its prompt rather than one
+        quietly holding it unsent.
         """
-        for _ in range(max(1, retries)):
+        needle = ClaudeTaskManager._paste_needle(prompt_file)
+        attempts = max(1, retries)
+        budget = (ClaudeTaskManager.PASTE_APPEAR_TIMEOUT
+                  if appear_timeout is None else appear_timeout)
+        spend_by = time.time() + max(0.0, budget)
+        reason = 'no attempt ran'
+        for attempt in range(attempts):
+            # Never paste on top of a copy of this prompt. On the first attempt
+            # that can only be a previous delivery round's leftovers (the
+            # launch path retries around the trust dialog); on a retry it is
+            # our own paste, which may have landed late after all.
+            if attempt or ClaudeTaskManager._paste_copies(
+                    ClaudeTaskManager._capture_pane(session_name), needle) > 0:
+                if not ClaudeTaskManager._clear_composer(session_name, needle):
+                    reason = 'the input box could not be emptied for a re-paste'
+                    break
             try:
                 subprocess.run(
                     ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
@@ -3997,46 +4821,110 @@ class ClaudeTaskManager:
                     ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
                     capture_output=True, text=True, check=True,
                 )
-                # Settle so the bracketed paste is fully ingested before we
-                # look (and before Enter — otherwise Enter is absorbed into
-                # the paste and the prompt never submits).
-                time.sleep(0.4)
-                pasted = ClaudeTaskManager._capture_pane(session_name)
             except subprocess.CalledProcessError as e:
                 print(f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
                 ClaudeTaskManager._delete_buffer(buf_name)
+                reason = f'tmux refused the paste: {e}'
                 continue
-
-            if not ClaudeTaskManager._screen_advanced(before, pasted):
-                # Paste was dropped (composer unchanged) — retry the whole
-                # load+paste. The empty composer means no risk of duplication.
-                ClaudeTaskManager._delete_buffer(buf_name)
-                continue
-
-            if not submit:
-                ClaudeTaskManager._delete_buffer(buf_name)
-                return True
-
-            subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                capture_output=True, text=True,
-            )
-            time.sleep(0.8)
-            after = ClaudeTaskManager._capture_pane(session_name)
-            if ClaudeTaskManager._screen_advanced(pasted, after):
-                ClaudeTaskManager._delete_buffer(buf_name)
-                return True
-            # Enter likely absorbed into the paste — nudge once more. An
-            # extra Enter on an empty input is a harmless no-op.
-            subprocess.run(
-                ['tmux', 'send-keys', '-t', session_name, 'Enter'],
-                capture_output=True, text=True,
-            )
-            time.sleep(0.6)
-            after2 = ClaudeTaskManager._capture_pane(session_name)
+            landed, pasted = ClaudeTaskManager._wait_for_paste(
+                session_name, needle, before,
+                timeout=max(ClaudeTaskManager.PASTE_RETRY_FLOOR,
+                            spend_by - time.time()))
             ClaudeTaskManager._delete_buffer(buf_name)
-            return ClaudeTaskManager._screen_advanced(pasted, after2)
+            if not landed:
+                if ClaudeTaskManager._pane_shows_trust_dialog(pasted):
+                    # The modal has the keyboard, so the prompt never reached
+                    # the composer. Re-pasting would just feed the dialog
+                    # again; the launch path answers it and comes back (#800).
+                    reason = ('the folder-trust dialog is covering the input '
+                              'box')
+                    break
+                # The box is still empty at the deadline, so this paste really
+                # was dropped rather than late — paste it again (#288).
+                print(f'[ClaudeTaskManager] {session_name}: pasted prompt never '
+                      f'appeared in the input box after '
+                      f'{attempt + 1}/{attempts} attempt(s) (#805)',
+                      file=sys.stderr)
+                reason = 'the paste never appeared in the input box'
+                continue
+            if not submit:
+                return True
+            sent = ClaudeTaskManager._submit_and_confirm(
+                session_name, needle, pasted)
+            if sent is True:
+                return True
+            if sent == ClaudeTaskManager.SUBMIT_CLEARED:
+                reason = 'Escape emptied the input box before it was sent'
+                continue
+            # The prompt IS in the box and Enter did not clear it. Say so and
+            # stop: another paste would only add a second copy of a prompt that
+            # is already sitting there, and the box is now the one thing a
+            # human (or the /key endpoint) can submit by hand.
+            reason = ('the prompt is in the input box but Enter never '
+                      'submitted it')
+            break
+        print(f'[ClaudeTaskManager] {session_name}: PROMPT NOT DELIVERED — '
+              f'{reason} (#805)', file=sys.stderr)
         return False
+
+    #: Clear-the-dialog-and-deliver-again rounds at launch (#800).
+    LAUNCH_PROMPT_ROUNDS = 2
+
+    @staticmethod
+    def _deliver_launch_prompt(session_name, prompt_file, buf_name,
+                               expect_composer=True, rounds=None):
+        """Deliver a freshly launched task's initial prompt, dialog and all.
+
+        The seed in `_ensure_claude_trust` can be clobbered between the seed
+        and the CLI reading it, so this is the post-launch half of #800 and it
+        does not depend on the config at all:
+
+          1. wait for the composer,
+          2. answer the folder-trust dialog if it is in the way,
+          3. paste + submit the prompt,
+          4. if the dialog is STILL on screen, it ate the paste — go round
+             again rather than leaving the prompt unsent.
+
+        Step 4 is the part the old one-shot paste lacked: the dialog swallowed
+        the text and the following Enter dismissed it, which is precisely how a
+        Build ended up idle with `prompt_delivered: False` and an empty
+        worktree. Re-pasting is safe here because a prompt that landed in the
+        dialog never reached the composer.
+
+        Returns `(delivered, saw_dialog)`.
+        """
+        rounds = ClaudeTaskManager.LAUNCH_PROMPT_ROUNDS if rounds is None else rounds
+        saw_dialog = False
+        delivered = False
+        for _ in range(max(1, rounds)):
+            ClaudeTaskManager._wait_for_pane_ready(
+                session_name, expect_composer=expect_composer)
+            seen = False
+            if expect_composer:
+                seen, cleared = ClaudeTaskManager._clear_trust_dialog(session_name)
+                saw_dialog = saw_dialog or seen
+                if seen and cleared:
+                    # The composer was behind the dialog; it has to paint
+                    # before a paste can land in it.
+                    ClaudeTaskManager._wait_for_pane_ready(
+                        session_name, expect_composer=True)
+            delivered = ClaudeTaskManager._deliver_prompt(
+                session_name, prompt_file, buf_name)
+            if not expect_composer:
+                break
+            still_up = ClaudeTaskManager._pane_shows_trust_dialog(
+                ClaudeTaskManager._capture_pane(session_name))
+            if delivered and not still_up:
+                break
+            if not still_up and not seen:
+                # Nothing trust-related in the way — `_deliver_prompt` already
+                # retried its own paste, so another round just repeats it.
+                break
+            # A dialog was (or still is) in front of the composer, so whatever
+            # `_deliver_prompt` thought it saw was the dialog reacting.
+            saw_dialog = True
+            delivered = False
+        return delivered, saw_dialog
 
     @staticmethod
     def _delete_buffer(buf_name):
@@ -4083,7 +4971,9 @@ class ClaudeTaskManager:
         falls back to the old settle heuristic — two identical captures
         `interval` apart — so those launches don't stall. Gives up after
         `ceiling` seconds either way so a perpetually-animating UI still gets
-        the prompt (the paste path then verifies + retries delivery).
+        the prompt (the paste path then verifies + retries delivery). Returns
+        False straight away on Claude's folder-trust modal: no composer is
+        coming while it is up, and the caller has to answer it first (#800).
         Best-effort; safe if capture fails.
         """
         if ceiling is None:
@@ -4093,6 +4983,13 @@ class ClaudeTaskManager:
         prev = ClaudeTaskManager._capture_pane(session_name)
         if ClaudeTaskManager._pane_input_ready(prev):
             return True
+        # A composer behind the folder-trust modal is never going to appear, so
+        # waiting out the ceiling for it just delays the answer by 45s per
+        # wedged launch — and with 8–10 Builds starting at once that is the
+        # whole problem (#800). Hand back to the caller, which answers the
+        # dialog and then waits again for the composer it was covering.
+        if ClaudeTaskManager._pane_shows_trust_dialog(prev):
+            return False
         # A capture that FAILS is not a pane that is still drawing — tmux says
         # "can't find session". Waiting out the full ceiling for a session that
         # no longer exists buys nothing: the paste that follows cannot land
@@ -4104,6 +5001,8 @@ class ClaudeTaskManager:
             cur = ClaudeTaskManager._capture_pane(session_name)
             if ClaudeTaskManager._pane_input_ready(cur):
                 return True
+            if ClaudeTaskManager._pane_shows_trust_dialog(cur):
+                return False
             if cur is None:
                 misses += 1
                 if misses >= ClaudeTaskManager.PANE_GONE_STRIKES:
@@ -4183,6 +5082,10 @@ class ClaudeTaskManager:
             'source': meta.get('source'),
             'created_at': meta.get('created_at'),
             'finished_at': meta.get('finished_at') or meta.get('killed_at'),
+            # Only set on `terminated` (#792). A receiver that cares just about
+            # done-ness can keep reading `status`; one that auto-recovers needs
+            # to know the run was wiped rather than finished.
+            'termination_reason': meta.get('termination_reason'),
             'output': tail_output,
         }
         body = json.dumps(payload).encode('utf-8')
@@ -4513,9 +5416,51 @@ class ClaudeTaskManager:
         return (updated or meta).get('usage')
 
     @staticmethod
+    def _note_trust_stall(meta, task_dir, screen):
+        """Record — or retract — `stalled_at_trust_dialog` for a live task.
+
+        `waiting-for-input` is also the normal state of a task that finished
+        its turn and went idle, so a Build wedged on Claude's folder-trust
+        modal looks exactly like one that ran to completion. That ambiguity
+        cost an orchestrator 12 hours of throughput across three Builds
+        (#800); this makes the two states tell apart in the task record, for
+        the dashboard and for anything polling the API.
+
+        Writes only when the flag actually flips, so a steady screen — the
+        overwhelmingly common case, on every poll of every task — costs
+        nothing beyond the capture the reconciler already took.
+        """
+        stalled = ClaudeTaskManager._pane_shows_trust_dialog(screen)
+        if stalled == bool(meta.get('stalled_at_trust_dialog')):
+            return
+
+        def mutate(m):
+            if stalled:
+                m['stalled_at_trust_dialog'] = True
+            else:
+                m.pop('stalled_at_trust_dialog', None)
+
+        try:
+            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        except Exception as e:
+            print(f'[ClaudeTaskManager] trust-stall flag update failed: {e}',
+                  file=sys.stderr)
+            return
+        if updated is None:
+            return
+        if stalled:
+            meta['stalled_at_trust_dialog'] = True
+        else:
+            meta.pop('stalled_at_trust_dialog', None)
+
+    @staticmethod
     def _reconcile_status(meta, task_dir):
         """If task.json says running but tmux session is gone, update status.
-        Also check for waiting-for-input patterns in running tasks."""
+        Also check for waiting-for-input patterns in running tasks.
+
+        A gone session resolves to `completed` or, when the pod restarted out
+        from under the task, `terminated` (#792) — see boot_id().
+        """
         current_status = meta.get('status', 'unknown')
         # Token accounting (#574) — best-effort, never blocking. Throttled while
         # the Build is live; runs once unthrottled after it goes terminal so the
@@ -4535,18 +5480,36 @@ class ClaudeTaskManager:
             capture_output=True, text=True,
         )
         
-        # If tmux session is gone, mark as completed
+        # If tmux session is gone, the task is over — but HOW it ended is only
+        # knowable from the boot stamp (#792). Same boot ⇒ this process watched
+        # the session go away, so the CLI exited: `completed`. Different boot ⇒
+        # the pod restarted and took every tmux session with it, so no result
+        # was ever emitted and nothing here saw the agent finish: `terminated`.
+        # An unknown boot on either side resolves to `completed`, the old
+        # behaviour — a false `terminated` would have an orchestrator redo work
+        # that had actually been done.
         if check.returncode != 0:
             finished_at = time.time()
             fire_hook = False
+            boot = ClaudeTaskManager.boot_id()
+            task_boot = meta.get('boot_id') or ''
+            wiped = bool(boot) and bool(task_boot) and task_boot != boot
+            new_status = 'terminated' if wiped else 'completed'
 
             def mutate(m):
                 nonlocal fire_hook
                 # Re-check inside the lock; another reconcile may have run already.
                 if m.get('status') not in ('running', 'waiting-for-input'):
                     return False
-                m['status'] = 'completed'
+                m['status'] = new_status
                 m['finished_at'] = finished_at
+                if wiped:
+                    # Why it ended, for an orchestrator deciding whether to
+                    # recover. Separate from `finished_at` because a terminated
+                    # task did not finish — this is when we NOTICED, which is
+                    # boot time, not the moment the work stopped.
+                    m['terminated_at'] = finished_at
+                    m['termination_reason'] = 'pod_restart'
                 # Clear waiting state fields
                 m.pop('waiting_for_input', None)
                 m.pop('last_input_prompt', None)
@@ -4562,6 +5525,9 @@ class ClaudeTaskManager:
             if updated is not None:
                 meta['status'] = updated.get('status', meta.get('status'))
                 meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
+                if wiped:
+                    meta['terminated_at'] = updated.get('terminated_at')
+                    meta['termination_reason'] = updated.get('termination_reason')
                 meta.pop('waiting_for_input', None)
                 meta.pop('last_input_prompt', None)
                 # The CLI is gone: settle the token figure now (#574) rather than
@@ -4572,7 +5538,7 @@ class ClaudeTaskManager:
                     ClaudeTaskManager._fire_completion_hook(updated)
                 EventBroker.publish('task.status', {
                     'task_id': meta.get('task_id'),
-                    'status': 'completed',
+                    'status': meta.get('status') or new_status,
                     'finished_at': meta.get('finished_at'),
                 })
                 # Feed (#469): one coalesced activity item per task terminal.
@@ -4583,7 +5549,19 @@ class ClaudeTaskManager:
                     WorktreeManager.snapshot_async(meta.get('task_id'))
             return
         
-        # Session is alive — derive waiting-for-input from render *quiescence*
+        # Session is alive. Adopt it into this boot if it predates us (#792):
+        # task.json may have been written by an older image that never stamped
+        # a boot, or by a process whose /tmp marker was unreadable. Stamping it
+        # now means the NEXT restart is still detectable. Guarded, so this is
+        # one write per task per boot rather than one per poll.
+        boot = ClaudeTaskManager.boot_id()
+        if boot and (meta.get('boot_id') or '') != boot:
+            def adopt(m):
+                m['boot_id'] = boot
+            if ClaudeTaskManager._atomic_update_meta(task_dir, adopt) is not None:
+                meta['boot_id'] = boot
+
+        # Derive waiting-for-input from render *quiescence*
         # rather than scraping prompt text (which never worked across the
         # full-screen TUIs Claude/Ante/OpenCode render). While an agent works
         # it streams output / animates a spinner+timer, so the captured screen
@@ -4598,6 +5576,10 @@ class ClaudeTaskManager:
         if capture_cmd.returncode != 0:
             return
         screen = strip_ansi(capture_cmd.stdout or '')
+        # Before anything else: is this screen the folder-trust dialog? A Build
+        # parked on it is otherwise indistinguishable from one that finished
+        # and went idle — both read `waiting-for-input` (#800).
+        ClaudeTaskManager._note_trust_stall(meta, task_dir, screen)
         digest = hashlib.sha1(screen.encode('utf-8', 'replace')).hexdigest()
         now = time.time()
 
@@ -4730,21 +5712,38 @@ class WorktreeManager:
         return set((r.stdout or '').split())
 
     @classmethod
-    def liveness(cls):
-        """`is_live(task_id)` for the span of one operation."""
-        sessions = None
+    def liveness(cls, sessions=None):
+        """`is_live(task_id)` for the span of one operation. Pass `sessions`
+        to share one `tmux list-sessions` with `occupancy()`."""
+        known = sessions
 
         def is_live(task_id):
-            nonlocal sessions
+            nonlocal known
             if not task_id:
                 return False
-            if sessions is None:
-                sessions = cls.live_sessions()
+            if known is None:
+                known = cls.live_sessions()
             meta = ClaudeTaskManager.read_meta(task_id) or {}
             names = {meta.get('tmux_session') or f'kube-coder-{task_id}',
                      f'claude-{task_id}'}
-            return bool(names & sessions)
+            return bool(names & known)
         return is_live
+
+    @classmethod
+    def occupancy(cls, sessions=None):
+        """`occupied_by(path) -> task_id` — which live task is working in a
+        worktree, whether or not the manifest says it owns it (#791).
+
+        A worktree a Build was launched into with `workdir=` (the `kc-issue`
+        script mode, a hand-made one from the shell skill) carries no owner in
+        its manifest, so seconds after launch it is clean, has nothing to push
+        and has no remote branch — indistinguishable from finished work by
+        anything on disk. Only task liveness tells the two apart, so every
+        removal path asks this before it deletes a folder.
+        """
+        return worktrees.occupancy(
+            cls.live_sessions() if sessions is None else sessions,
+            ClaudeTaskManager.read_meta)
 
     # ── creating ───────────────────────────────────────────────────────────
 
@@ -4801,17 +5800,21 @@ class WorktreeManager:
         `(None, refusal)`. At the cap, dead pristine worktrees are reclaimed
         before anything is refused."""
         root = cls.root()
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
+        occupied = cls.occupancy(sessions)
         try:
             info = worktrees.ensure(
                 plan['repo'], plan['slug'] or f't-{task_id}', wt_root=root,
                 base_ref=plan['base_ref'], base_sha=plan['base_sha'],
                 task_id=task_id, created_by='server',
                 max_worktrees=cls.max_worktrees(), is_owner_live=live,
+                occupied_by=occupied,
                 reclaim=worktrees.reclaimer(
                     root, is_owner_live=live,
                     owner_meta=ClaudeTaskManager.read_meta,
-                    grace_s=cls.grace_s(), gc_days=cls.gc_days()))
+                    grace_s=cls.grace_s(), gc_days=cls.gc_days(),
+                    occupied_by=occupied))
         except worktrees.WorktreeError as e:
             return None, cls.refusal(e)
         return info, None
@@ -4881,7 +5884,7 @@ class WorktreeManager:
                     wt_root=root, is_owner_live=cls.liveness(),
                     owner_meta=ClaudeTaskManager.read_meta,
                     gc_days=cls.gc_days(), grace_s=cls.grace_s(),
-                    pristine_only=True)
+                    occupied_by=cls.occupancy(), pristine_only=True)
             except worktrees.WorktreeError:
                 pass
             existing, free = census()
@@ -5053,10 +6056,14 @@ class WorktreeManager:
         path, root, branch = wt['path'], wt.get('repo_root') or '', wt.get('branch') or ''
         exists = os.path.isdir(path)
         repo_exists = bool(root) and os.path.isdir(root)
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
         manifest = worktrees.read_manifest(path) if exists else None
         owner = (manifest or {}).get('task_id') or task_id
-        owner_live = live(owner)
+        # Either the owner runs, or some other live task is working in the
+        # folder (#791) — both make removal refuse, so both say so here.
+        owner_live = live(owner) or bool(
+            exists and cls.occupancy(sessions)(path))
         st, st_err = None, ''
         if exists:
             try:
@@ -5142,7 +6149,8 @@ class WorktreeManager:
                     'branch': manifest.get('branch'), 'branch_kept': True}, 200
         try:
             out = worktrees.remove(path, wt_root=cls.root(), force=force,
-                                   is_owner_live=cls.liveness())
+                                   is_owner_live=cls.liveness(),
+                                   occupied_by=cls.occupancy())
         except worktrees.WorktreeError as e:
             status = {'live': 409, 'dirty': 409, 'repo_missing': 409,
                       'not_worktree': 404, 'lock_timeout': 503}.get(e.code, 500)
@@ -5173,12 +6181,21 @@ class WorktreeManager:
             return {'worktrees': [], 'count': 0, 'max': cls.max_worktrees(),
                     'root': cls.root(), 'available': False,
                     'sweep': WorktreeSweeper.status()}
-        live = cls.liveness()
+        sessions = cls.live_sessions()
+        live = cls.liveness(sessions)
+        occupied_by = cls.occupancy(sessions)
         reasons = {k.get('path'): k.get('reason')
                    for k in (WorktreeSweeper.last_report() or {}).get('kept', [])}
         rows = []
         for m in worktrees.list_all(cls.root()):
             owner = m.get('task_id') or ''
+            # A worktree a Build was launched INTO never claims the manifest
+            # (#791). Attribute the row to the task actually working there, so
+            # "made by hand" never hides a running agent and Remove is
+            # disabled before it can 409.
+            tenant = occupied_by(m['path'])
+            if not owner and tenant:
+                owner = tenant
             meta = ClaudeTaskManager.read_meta(owner) if owner else None
             owned = (meta or {}).get('worktree') or {}
             stat = owned.get('stat') if owned.get('path') == m['path'] else None
@@ -5190,7 +6207,7 @@ class WorktreeManager:
                 'owner_name': ((meta or {}).get('name')
                                or ((meta or {}).get('prompt') or '')[:80]),
                 'owner_status': (meta or {}).get('status') or '',
-                'live': live(owner) if owner else False,
+                'live': bool(tenant) or (live(owner) if owner else False),
                 'created_by': m.get('created_by') or '',
                 'created_at': m.get('created_at'), 'stat': stat,
                 'keep_reason': reasons.get(m['path'], ''),
@@ -5224,6 +6241,7 @@ class WorktreeManager:
             wt_root=cls.root(), is_owner_live=cls.liveness(),
             owner_meta=ClaudeTaskManager.read_meta, gc_days=cls.gc_days(),
             grace_s=cls.grace_s(), dry_run=dry_run,
+            occupied_by=cls.occupancy(),
             delete_pristine_branches=not keep_branches)
         if not dry_run:
             for r in report['removed']:
@@ -6459,8 +7477,11 @@ class FeedManager:
             except Exception:
                 pass
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
-        verb = {'completed': 'finished', 'error': 'failed', 'killed': 'was stopped'}.get(
-            status, status)
+        verb = {'completed': 'finished', 'error': 'failed',
+                'killed': 'was stopped',
+                # #792: the pod restarted under it. Named for what the user
+                # has to do about it, which is not 'read the result'.
+                'terminated': 'was wiped by a restart'}.get(status, status)
         # FIRST, when there is one: `push_notify` sends the first ref as the
         # notification's target, and both clients resolve a `board:` ref to the
         # item's approval card.
@@ -6522,6 +7543,27 @@ class FeedManager:
             source='system:trigger',
             project_id=FeedManager._project_for_workdir(workdir),
             dedupe_key=None,  # each firing is its own event
+        )
+
+    @staticmethod
+    def emit_trigger_failed(trigger_kind, trigger_id, reason):
+        """A trigger's Board run did not start (#709 part 2) → a WAITING item.
+
+        Waiting because nobody was watching when it fired: a schedule that has
+        failed every night for a week is otherwise visible only to someone who
+        opens its ledger. Coalesced per trigger, so a burst of refused
+        deliveries is one row that updates rather than a stack. No `board:`
+        link — the waiting badge counts those as approvals to decide.
+        """
+        reason = (reason or 'unknown error').strip()
+        return FeedManager.emit(
+            'activity',
+            f"{trigger_id} Board run didn't start: {reason}",
+            body_md=(f'The {trigger_kind} trigger `{trigger_id}` fired, but its '
+                     f'Board run did not start:\n\n> {reason}'),
+            source='system:trigger',
+            waiting=True,
+            dedupe_key=f'trigger:{trigger_kind}:{trigger_id}:board_run_failed',
         )
 
     @staticmethod
@@ -6621,6 +7663,30 @@ class FeedManager:
     @staticmethod
     def mark_read(item_id):
         return FeedManager._set_flag(item_id, 'read')
+
+    @staticmethod
+    def mark_unread(item_id):
+        return FeedManager._clear_flag(item_id, 'read')
+
+    @staticmethod
+    def by_dedupe_key(keys):
+        """`{dedupe_key: {id, title, waiting, read}}` for the live
+        (undismissed) items carrying one of `keys` — one pass over the log, for
+        a caller that has to join many rows to their Feed items (#709)."""
+        wanted = set(keys or ())
+        if not wanted:
+            return {}
+        state = FeedManager._load_state()
+        out = {}
+        for it in FeedManager._collapse(FeedManager._read_raw()):
+            key = it.get('dedupe_key')
+            if key not in wanted or key in out \
+                    or it.get('id') in state['dismissed']:
+                continue
+            out[key] = {'id': it['id'], 'title': it.get('title') or '',
+                        'waiting': bool(it.get('waiting')),
+                        'read': it['id'] in state['read']}
+        return out
 
     @staticmethod
     def dismiss(item_id):
@@ -6763,7 +7829,8 @@ class TriggerRunsManager:
     @classmethod
     def record(cls, kind, trigger_id, outcome, *, task_id=None, reason=None,
                error=None, source_ip=None, forwarded_for=None,
-               signature_verified=None, provider=None, manual=False, ts=None):
+               signature_verified=None, provider=None, manual=False, ts=None,
+               run_id=None, board_id=None):
         """Append one entry. Returns whether it was written.
 
         Never raises. Every call site is a fire that has already been decided,
@@ -6786,6 +7853,11 @@ class TriggerRunsManager:
             entry['reason'] = str(reason)[:64]
         if task_id:
             entry['task_id'] = str(task_id)[:128]
+        # A Board-run trigger (#709 part 2) starts a run, not a task.
+        if run_id:
+            entry['run_id'] = str(run_id)[:128]
+        if board_id:
+            entry['board_id'] = str(board_id)[:64]
         if error:
             # `error` is for a message this code did not author — what the task
             # manager or the fetch said — plus the two branches carrying a
@@ -6856,6 +7928,250 @@ class TriggerRunsManager:
             return bool(log.delete())
         except OSError:
             return False
+
+
+class TriggerBoardRuns:
+    """A cron or webhook whose `action` is `board_run` (#709 part 2).
+
+    A trigger has a *when* (a schedule, an inbound POST) and a *what*. The
+    original *what* is "start a Build with this prompt", and a config with no
+    `action` field still means exactly that. `board_run` is the second one:
+    start a run on a saved board, with the board's own selection rules.
+
+    Three rules this class exists to keep in one place, so the cron and the
+    webhook path cannot drift apart:
+
+    - **Always propose mode.** Nobody is watching when a schedule or a public
+      URL starts work, so every write a trigger-started run makes is staged
+      for a human. A saved `mode` other than propose is refused at save time,
+      and `start` forces propose regardless, so a hand-edited config cannot
+      opt out either.
+    - **The origin is ours, not the config's.** `origin` is the trigger KIND,
+      passed to `BoardRunsManager.create` as a server-side argument — the same
+      contract send-back uses. Nothing in a saved trigger names it.
+    - **A run that does not start is never silent.** The caller gets an error,
+      and the Feed gets a *waiting* item, because a nightly cron that has been
+      failing for a week is otherwise only visible to someone who goes looking.
+    """
+
+    ACTIONS = ('build', 'board_run')
+    _BOARD_RUN_KEYS = ('board_id', 'select', 'concurrency', 'mode')
+    _MATCH_KEYS = ('event', 'payload')
+    # A dot-path into a webhook payload: `issue.id`, `label.name`. Segments are
+    # dict keys only — no list indexes, no expressions (#709: "keep it simple").
+    _DOT_PATH_RE = re.compile(
+        r'^[A-Za-z0-9_-]{1,64}(?:\.[A-Za-z0-9_-]{1,64}){0,15}$')
+    _EVENT_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+    MAX_MATCH_PATHS = 16
+    MAX_MATCH_VALUE = 256
+
+    @staticmethod
+    def action_of(cfg):
+        """`board_run` only when the config says so exactly. Everything else —
+        no field, which is every trigger written before this existed — is a
+        Build."""
+        return 'board_run' if (cfg or {}).get('action') == 'board_run' else 'build'
+
+    @staticmethod
+    def validate_action(data):
+        """`(action, error)`."""
+        action = data.get('action') or 'build'
+        if action not in TriggerBoardRuns.ACTIONS:
+            return None, f'action must be one of {", ".join(TriggerBoardRuns.ACTIONS)}'
+        return action, None
+
+    @staticmethod
+    def validate_board_run(raw):
+        """`(board_run, error)` for a trigger's `board_run` block.
+
+        Validated when the trigger is SAVED: a typo'd select key is an error on
+        the form, not a nightly run that quietly works the whole board.
+        """
+        if not isinstance(raw, dict):
+            return None, 'board_run must be an object with a board_id'
+        unknown = sorted(k for k in raw if k not in TriggerBoardRuns._BOARD_RUN_KEYS)
+        if unknown:
+            return None, (f'board_run: unknown field(s) {", ".join(unknown)} '
+                          f'(allowed: board_id, select, concurrency)')
+        mode = raw.get('mode')
+        if mode not in (None, '', 'propose'):
+            return None, ('board_run.mode: a run a trigger starts is always '
+                          'propose mode — every write waits for your approval')
+        if not _BOARDS_AVAILABLE:
+            return None, 'Boards are not available on this workspace'
+        board_id = raw.get('board_id')
+        if not isinstance(board_id, str) or not board_id:
+            return None, 'board_run.board_id is required'
+        if not BoardsManager.valid_id(board_id) or BoardsManager.get(board_id) is None:
+            return None, f'board_run.board_id: no board named {board_id!r}'
+        select, errors = boards.runs.validate_select(raw.get('select'))
+        if errors:
+            return None, '; '.join(errors[:8])
+        if select.get('ignore_processed'):
+            # The processed log is what stops a nightly run re-commenting on
+            # every ticket it already answered. Only send-back may bypass it.
+            return None, 'select.ignore_processed is not allowed on a trigger'
+        concurrency = raw.get('concurrency', 1)
+        board_max = boards.runs.BOARD_MAX_CONCURRENCY
+        if (isinstance(concurrency, bool) or not isinstance(concurrency, int)
+                or not 1 <= concurrency <= board_max):
+            return None, f'board_run.concurrency must be an integer from 1 to {board_max}'
+        return {'board_id': board_id, 'select': select,
+                'concurrency': concurrency}, None
+
+    @staticmethod
+    def validate_match(raw):
+        """`(match, error)` for a webhook's optional `match` filter. `match` is
+        None when absent or empty."""
+        if raw in (None, {}):
+            return None, None
+        if not isinstance(raw, dict):
+            return None, 'match must be an object'
+        unknown = sorted(k for k in raw if k not in TriggerBoardRuns._MATCH_KEYS)
+        if unknown:
+            return None, f'match: unknown field(s) {", ".join(unknown)} (allowed: event, payload)'
+        out = {}
+        event = raw.get('event')
+        if event not in (None, ''):
+            if not isinstance(event, str) or not TriggerBoardRuns._EVENT_RE.match(event):
+                return None, 'match.event must be an event name such as "issues"'
+            out['event'] = event
+        payload = raw.get('payload')
+        if payload not in (None, {}):
+            if not isinstance(payload, dict):
+                return None, 'match.payload must be an object of "dot.path": "value"'
+            if len(payload) > TriggerBoardRuns.MAX_MATCH_PATHS:
+                return None, f'match.payload: at most {TriggerBoardRuns.MAX_MATCH_PATHS} paths'
+            for path, want in payload.items():
+                if not TriggerBoardRuns._DOT_PATH_RE.match(path):
+                    return None, f'match.payload: {path!r} is not a dot-path like "label.name"'
+                # Exact STRING match, on purpose: no numbers-vs-strings
+                # coercion rules to learn, and no expressions.
+                if not isinstance(want, str) or len(want) > TriggerBoardRuns.MAX_MATCH_VALUE:
+                    return None, f'match.payload[{path!r}] must be a string'
+            out['payload'] = dict(payload)
+        return (out or None), None
+
+    @staticmethod
+    def validate_item_id_from(raw):
+        """`(path, error)` for a webhook's optional `item_id_from`."""
+        if raw in (None, ''):
+            return None, None
+        if not isinstance(raw, str) or not TriggerBoardRuns._DOT_PATH_RE.match(raw):
+            return None, 'item_id_from must be a dot-path like "issue.id"'
+        return raw, None
+
+    @staticmethod
+    def resolve(payload, path):
+        """The scalar at `path` as a string, or None when any segment is
+        missing or the leaf is not a scalar. Unlike `WebhookManager._lookup`,
+        missing is None rather than '' — "the delivery has no issue" must not
+        look like an issue whose id is the empty string."""
+        cur = payload
+        for part in path.split('.'):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return None
+        if isinstance(cur, bool):
+            return 'true' if cur else 'false'
+        if isinstance(cur, (str, int, float)):
+            return str(cur)
+        return None
+
+    @staticmethod
+    def skip_reason(cfg, payload, event):
+        """'' when this delivery should fire, else the ledger slug for why not.
+
+        GitHub's `ping` (sent once when a webhook is created) is skipped for any
+        webhook that filters or starts a Board run. A plain Build webhook with
+        no `match` keeps firing on it, exactly as before.
+        """
+        match = cfg.get('match') or {}
+        board_run = TriggerBoardRuns.action_of(cfg) == 'board_run'
+        if (match or board_run) and event == 'ping':
+            return 'ping'
+        if match.get('event') and event != match['event']:
+            return 'event_mismatch'
+        payload = payload if isinstance(payload, dict) else {}
+        for path, want in (match.get('payload') or {}).items():
+            if TriggerBoardRuns.resolve(payload, path) != want:
+                return 'payload_mismatch'
+        if board_run and cfg.get('item_id_from'):
+            if not TriggerBoardRuns.resolve(payload, cfg['item_id_from']):
+                return 'no_item_id'
+        return ''
+
+    @staticmethod
+    def http_status(error):
+        """The status a refused start answers with. A run already in flight
+        conflicts with the board's state; a full pod is a retry-later; anything
+        else (a missing board, an expired credential) is upstream of the
+        caller, and must not read as their bad request."""
+        if error.startswith('a run is already in flight'):
+            return 409
+        if error.startswith('cannot start: the workspace is at its task limit'):
+            return 429
+        return 502
+
+    @staticmethod
+    def start(kind, trigger_cfg, *, item_id=None):
+        """Start the trigger's run. Returns `(run, error)`, and on error posts a
+        waiting Feed item before returning it."""
+        trigger_id = trigger_cfg.get('id') or ''
+        spec = trigger_cfg.get('board_run')
+        spec = spec if isinstance(spec, dict) else {}
+        board_id = spec.get('board_id') or ''
+        run, err = None, None
+        board = (BoardsManager.get(board_id)
+                 if _BOARDS_AVAILABLE and isinstance(board_id, str) else None)
+        if not _BOARDS_AVAILABLE:
+            err = 'Boards are not available on this workspace'
+        elif board is None:
+            err = f'board {board_id!r} no longer exists'
+        else:
+            select = dict(spec.get('select') or {})
+            # A hand-edited config is not save-validated, so this is enforced
+            # again here rather than trusted.
+            select.pop('ignore_processed', None)
+            if item_id is not None:
+                select['item_ids'] = [str(item_id)]
+            data = {'select': select,
+                    'concurrency': spec.get('concurrency', 1),
+                    # Forced, whatever the config says (see the class docstring).
+                    'mode': 'propose'}
+            try:
+                run, err = BoardRunsManager.create(
+                    board, data, origin=kind, trigger={'id': trigger_id})
+            except Exception as e:      # a trigger must answer, not 500
+                run, err = None, f'internal error: {e}'
+        if err:
+            FeedManager.emit_trigger_failed(kind, trigger_id, err)
+        return run, err
+
+
+def _push_triggers_to_keeper():
+    """Tell the keeper which trigger ids exist now (#728 step 4).
+
+    Called after every create and delete across the three trigger kinds. The
+    keeper replaces its whole set from each push, so this is idempotent: a
+    rapid sequence of edits sending several pushes is harmless, and a push lost
+    to a keeper restart self-heals at the workspace's next boot.
+
+    It matters most on delete. The keeper's "is this id real?" answer is what
+    stops a stranger's request waking the pod, so an id that stays behind after
+    its trigger is gone is a webhook that still costs money. Hence: push the
+    whole set, and push it from the delete path, not only the create path.
+
+    Never raises — a keeper that is down must not turn into a failed save.
+    """
+    try:
+        keeper_push.KeeperPush.push_triggers(
+            WebhookManager.WEBHOOKS_DIR,
+            CronManager.CRONS_DIR,
+            PageWatchManager.PAGE_WATCHES_DIR)
+    except Exception as e:
+        print(f'[keeper-push] could not start a trigger push: {e}', file=sys.stderr)
 
 
 class WebhookManager:
@@ -6959,9 +8275,27 @@ class WebhookManager:
         webhook_id = existing_id or data.get('id', '')
         if not WebhookManager.valid_id(webhook_id):
             return None, 'invalid id (1-64 chars, [a-zA-Z0-9_-])'
+        # What a delivery does (#709 part 2): start a Build (the default, and
+        # every config written before this) or start a Board run.
+        action, err = TriggerBoardRuns.validate_action(data)
+        if err:
+            return None, err
+        board_run = None
+        if action == 'board_run':
+            board_run, err = TriggerBoardRuns.validate_board_run(data.get('board_run'))
+            if err:
+                return None, err
         prompt_template = (data.get('prompt_template') or '').strip()
-        if not prompt_template:
+        if action == 'build' and not prompt_template:
             return None, 'prompt_template is required'
+        match, err = TriggerBoardRuns.validate_match(data.get('match'))
+        if err:
+            return None, err
+        item_id_from, err = TriggerBoardRuns.validate_item_id_from(data.get('item_id_from'))
+        if err:
+            return None, err
+        if item_id_from and action != 'board_run':
+            return None, 'item_id_from only applies to a Board run webhook'
 
         mode = data.get('interpolate_mode', 'attach')
         if mode not in ('attach', 'interpolate'):
@@ -6990,6 +8324,7 @@ class WebhookManager:
         }[provider]
         cfg = {
             'id': webhook_id,
+            'action': action,
             'prompt_template': prompt_template,
             'workdir': data.get('workdir') or '/home/dev',
             'interpolate_mode': mode,
@@ -6998,6 +8333,12 @@ class WebhookManager:
             'signature_algo': algo,
             'created_at': time.time(),
         }
+        if board_run:
+            cfg['board_run'] = board_run
+        if match:
+            cfg['match'] = match
+        if item_id_from:
+            cfg['item_id_from'] = item_id_from
         # Optional secret-bearing fields. Auto-mint hmac_secret on create if
         # caller didn't provide one — never want to silently land an open webhook.
         if data.get('hmac_secret'):
@@ -7018,12 +8359,21 @@ class WebhookManager:
             if 'hmac_secret' not in cfg and prior.get('hmac_secret'):
                 cfg['hmac_secret'] = prior['hmac_secret']
 
+        # A Board-run webhook is never open (#709 part 2). verify_signature
+        # already refuses it unsigned even under KC_ALLOW_UNSIGNED_WEBHOOKS;
+        # refusing the save as well means the form says so, instead of every
+        # delivery 404ing for a reason nobody can see.
+        if action == 'board_run' and not cfg.get('hmac_secret'):
+            return None, ('a Board run webhook needs an HMAC secret — every '
+                          'delivery must be signed')
+
         path = WebhookManager._config_path(webhook_id)
         tmp = path + '.tmp'
         with open(tmp, 'w') as f:
             json.dump(cfg, f, indent=2)
         os.chmod(tmp, 0o600)
         os.rename(tmp, path)
+        _push_triggers_to_keeper()
         return cfg, None
 
     @staticmethod
@@ -7037,6 +8387,7 @@ class WebhookManager:
         TriggerRunsManager.delete('webhook', webhook_id)
         try:
             os.remove(path)
+            _push_triggers_to_keeper()
             return True
         except FileNotFoundError:
             return False
@@ -7070,12 +8421,19 @@ class WebhookManager:
         """
         secret = cfg.get('hmac_secret')
         if not secret:
-            if WebhookManager._allow_unsigned():
+            # A webhook that starts a Board run is never open, escape hatch or
+            # not (#709 part 2): a public URL that dispatches agents against a
+            # customer's tracker must prove who is calling.
+            if (WebhookManager._allow_unsigned()
+                    and TriggerBoardRuns.action_of(cfg) != 'board_run'):
                 return True
+            hint = ('a Board run webhook is never open'
+                    if TriggerBoardRuns.action_of(cfg) == 'board_run'
+                    else 'set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow')
             print(
                 f"[webhook] rejecting unsigned POST to webhook "
                 f"'{cfg.get('id', '?')}' — no hmac_secret configured "
-                f"(set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow)",
+                f"({hint})",
                 file=sys.stderr,
             )
             return False
@@ -7187,9 +8545,14 @@ class WebhookManager:
         """Apply the prompt template to the inbound payload.
 
         Two modes, chosen by the config:
-          * 'attach' (default, safe): prompt = template + fenced JSON of payload.
-            No interpolation, so payload contents can't smuggle instructions
-            into the rendered prompt — they appear as data in a code fence.
+          * 'attach' (default): prompt = template + fenced JSON of payload.
+            No interpolation, so payload contents can't rewrite the template's
+            instruction line — they appear as data in a code fence. It is
+            still text the model reads, though: a fence is a convention, not a
+            boundary, and words inside a payload (a PR title, an issue body)
+            can still steer the agent. A signed webhook's task launches with
+            skip-permissions (#769), and the HMAC proves who sent the call,
+            not that what it carries is safe.
           * 'interpolate': substitute {{ payload.x.y }} references with the
             matching JSON value. Caller-controlled values land verbatim in the
             instruction line — only use when the payload source is trusted.
@@ -7780,9 +9143,11 @@ class BoardRunsManager:
     # imported, because the hypervisor package is optional and a run must not
     # stop working when it is absent.
     TERMINAL_TASK_STATUSES = frozenset(
-        {'completed', 'error', 'killed', 'waiting-for-input'})
+        {'completed', 'error', 'killed', 'terminated', 'waiting-for-input'})
     # Items whose Build ended cleanly are recorded as processed; these did not.
-    FAILED_TASK_STATUSES = frozenset({'error', 'killed'})
+    # `terminated` (#792) belongs here: a Build the pod restart wiped never
+    # reached its work, so the item must not be marked processed.
+    FAILED_TASK_STATUSES = frozenset({'error', 'killed', 'terminated'})
     MAX_RUNS_KEPT = 200
 
     _lock = threading.Lock()
@@ -7838,11 +9203,38 @@ class BoardRunsManager:
             out.append(boards.runs.summary(run))
         return out
 
+    #: The read endpoint's default and ceiling on how many runs it reads back.
+    RECENT_RUNS_DEFAULT = 10
+    RECENT_RUNS_MAX = 50
+
+    @classmethod
+    def recent_items(cls, board_id, *, runs=RECENT_RUNS_DEFAULT):
+        """The phone's Working and Done rows for one board (#709 Part 3).
+
+        One call instead of the list plus a detail fetch per run, with each
+        row's review state and Feed read flag already joined in. LOCAL reads
+        only — run records, staged records and the Feed log on the PVC — so
+        the phone may poll it with the review queue at no cost to anybody's
+        rate limit.
+        """
+        full = []
+        for summary in cls.list_runs(board_id)[:max(1, int(runs))]:
+            run = cls.get(summary.get('id') or '')
+            if run:
+                full.append(run)
+        records = {r['item_id']: r
+                   for r in BoardReviewManager.list_records(board_id)}
+        keys = {boards.outcome.feed_key(board_id, item_id)
+                for run in full for item_id in (run.get('items') or {})}
+        rows = boards.outcome.recent_rows(
+            full, records, FeedManager.by_dedupe_key(keys))
+        return {'rows': rows, 'runs': len(full)}
+
     # ── creating a run ─────────────────────────────────────────────────────
 
     @classmethod
     def create(cls, cfg, data, *, origin='manual', resume=None,
-               allow_concurrent=False):
+               allow_concurrent=False, trigger=None):
         """Select items and start working them. Returns `(run, error)`.
 
         The item listing happens HERE, synchronously, rather than in the driver
@@ -7853,6 +9245,10 @@ class BoardRunsManager:
         `origin` / `resume` are set only by the send-back round trip (#588
         Phase 6) and are NOT readable from `data`: a caller who could name them
         could attach an arbitrary note — and a resume prompt — to any run.
+        `trigger` (`{'id': ...}`) is the same kind of argument for a run a
+        cron or webhook started (#709 part 2): `TriggerBoardRuns.start` passes
+        it with `origin='cron'|'webhook'`, so the Runs tab can name the
+        trigger, and nothing reachable from a run route can set it.
         """
         board_id = cfg['id']
         # One live run per board (#712). Leases are per BOARD, so a second run
@@ -7967,7 +9363,8 @@ class BoardRunsManager:
         run = boards.runs.new_run(
             run_id, board_id, mode=mode, select=select, concurrency=effective,
             requested_concurrency=requested, clamp_reason=clamp_reason,
-            stop_on=stop_on, origin=origin, workdir=repo['workdir'],
+            stop_on=stop_on, origin=origin, trigger=trigger,
+            workdir=repo['workdir'],
             isolate=repo['isolate'], base_ref=repo['base_ref'],
             warnings=boards.runs.shared_tree_warning(
                 repo['workdir'], repo['isolate'], effective))
@@ -8518,6 +9915,21 @@ class BoardRunsManager:
                 # `stop_on.consecutive_failures`, so a systemically broken
                 # runtime halts the run loudly rather than quietly retiring a
                 # whole board.
+                meta = ClaudeTaskManager.read_meta(row['task_id']) or {}
+                if meta.get('prompt_delivered') is False:
+                    # A special case of the same thing, worth naming: the
+                    # prompt never reached the agent's input box, so the build
+                    # was never actually asked to do anything (#805). "Ended
+                    # without reporting" reads as an agent that worked and
+                    # stayed silent; this one never started. Either way it
+                    # feeds `stop_on.consecutive_failures`, so a run whose
+                    # deliveries are failing halts loudly instead of retiring
+                    # a whole board unworked.
+                    cls._settle(run_id, row, leases, processed, 'failed',
+                                'the prompt never reached the agent — it was '
+                                'left unsent in the build\'s input box, so '
+                                'nothing was worked on this item')
+                    continue
                 cls._settle(run_id, row, leases, processed, 'failed',
                             f'the build ended as {status} without reporting a '
                             f'disposition — nothing was recorded for this item')
@@ -8544,11 +9956,18 @@ class BoardRunsManager:
             # builds that ended rather than of items that were worked.
             processed.record(item_id, row.get('content_hash', ''),
                              run_id=run_id, disposition=disposition)
-        cls._set_item(run_id, item_id, state=state, error=error,
-                      disposition=disposition or 'failed',
-                      bump_failures=(state == 'failed'),
-                      clear_failures=(state == 'done'))
+        run = cls._set_item(run_id, item_id, state=state, error=error,
+                            disposition=disposition or 'failed',
+                            bump_failures=(state == 'failed'),
+                            clear_failures=(state == 'done'))
         leases.release(item_id, run_id)
+        if run:
+            # The phone's Done tab (#709): its result line and unread dot ride
+            # on a Feed item. Posted after the release, so the Feed never says
+            # "done" about an item a run still holds.
+            BoardReviewManager.notify_done(
+                run.get('board_id') or '', item_id,
+                row=(run.get('items') or {}).get(item_id))
 
     @classmethod
     def run_holding(cls, board_id, item_id):
@@ -8953,17 +10372,38 @@ class BoardReviewManager:
         the waiting badge, so this reuses it rather than inventing a second
         notification path. `dedupe_key` per item means an agent that reports
         twice does not produce two rows.
+
+        Two things put an item in front of a human: the agent ASKED for one
+        (`needs_review` / `needs_rescoping` / `blocked`), or it left a write
+        waiting for approval. The second is the ordinary propose-mode case — an
+        agent that drafts a reply and reports `completed` — and it needs a
+        decision just as much: until someone approves, nothing is posted. Gating
+        on the disposition alone left those items open in the queue with no
+        push, no WhatsApp card and no badge (#709).
         """
         if record.get('state') not in boards.review.OPEN_STATES:
             return
-        if record.get('disposition') not in boards.review.NEEDS_HUMAN:
+        pending = [a for a in (record.get('actions') or [])
+                   if a.get('state') == 'pending']
+        if record.get('disposition') not in boards.review.NEEDS_HUMAN \
+                and not pending:
             return
+        body = (record.get('reason') or '').strip()
+        if not body and pending:
+            if len(pending) == 1:
+                preview = (pending[0].get('preview') or '').strip()
+                body = f'Proposed {pending[0].get("action") or "write"}'
+                body += f': {preview}' if preview else ''
+            else:
+                names = ', '.join(sorted({a.get('action') or 'write'
+                                          for a in pending}))
+                body = f'{len(pending)} proposed writes: {names}'
         try:
             FeedManager.emit(
                 kind='activity',
                 title=f'{record.get("item_key") or record["item_id"]} needs '
                       f'your review',
-                body_md=(record.get('reason') or '')[:400],
+                body_md=body[:400],
                 source=f'board:{cfg["id"]}',
                 waiting=True,
                 dedupe_key=f'board:{cfg["id"]}:{record["item_id"]}',
@@ -8972,6 +10412,65 @@ class BoardReviewManager:
             )
         except Exception as e:      # a feed failure must not lose the report
             print(f'[board-review] feed emit failed: {e}', file=sys.stderr)
+
+    @classmethod
+    def notify_done(cls, board_id, item_id, *, row=None):
+        """Post the item's result to the Feed when it is done (#709 Part 3).
+
+        Called from both ends of an item's life — the run settling it, and a
+        human deciding its review — because either can be the one that makes
+        it done, and `boards.outcome.is_done` decides which. The item is NOT
+        done while its review is open, so this never covers a card that still
+        needs a decision.
+
+        Non-waiting, and under the item's own `dedupe_key`: the SAME key the
+        "needs your review" row uses, so that row turns into the result in
+        place and the waiting badge drops. Emitted once: a repeat with the same
+        result (a retried reap, a replayed approval) changes nothing, and in
+        particular does not resurrect an unread dot the user already cleared.
+        A NEW result is news, so it is marked unread even if the waiting row it
+        replaces had been read.
+
+        Never raises — a Feed failure must not undo the fact it reports.
+        """
+        try:
+            item_id = str(item_id)
+            if not board_id or not BoardsManager.valid_id(board_id):
+                return None
+            record = cls.get(board_id, item_id) or {}
+            if row is None and record.get('run_id'):
+                run = BoardRunsManager.get(record['run_id']) or {}
+                row = (run.get('items') or {}).get(item_id)
+            # A decision always announces, even over a row still `working`: a
+            # send-back to a live agent leaves its build running, and the
+            # waiting row must stop counting toward the badge all the same.
+            if record.get('state') not in boards.outcome.DECIDED_STATES \
+                    and not boards.outcome.is_done(row, record):
+                return None
+            key = (record.get('item_key') or (row or {}).get('key')
+                   or item_id)
+            line = boards.outcome.result_line(row, record, key=key)
+            title = line if key in line else f'{key}: {line}'
+            dedupe = boards.outcome.feed_key(board_id, item_id)
+            prior = FeedManager.by_dedupe_key([dedupe]).get(dedupe)
+            if prior and not prior['waiting'] and prior['title'] == title:
+                return None
+            item = FeedManager.emit(
+                'activity', title,
+                body_md=(record.get('item_title')
+                         or (row or {}).get('title') or '')[:200],
+                source=f'board:{board_id}',
+                waiting=False,
+                dedupe_key=dedupe,
+                links=[{'ref': f'board:{board_id}:{item_id}',
+                        'label': record.get('item_title') or 'Open item'}],
+            )
+            if item and prior:
+                FeedManager.mark_unread(item['id'])
+            return item
+        except Exception as e:                  # pragma: no cover - defensive
+            print(f'[board-review] done notice failed: {e}', file=sys.stderr)
+            return None
 
     # ── approving ──────────────────────────────────────────────────────────
 
@@ -9084,6 +10583,7 @@ class BoardReviewManager:
         stored_rec, _ = book.update(item_id, store)
         cls._log_decision(cfg['id'], stored_rec,
                           state='approved' if ok else 'partial', ok=ok)
+        cls.notify_done(cfg['id'], item_id)
         EventBroker.publish('boards.review', {
             'op': 'approve', 'board_id': cfg['id'], 'item': str(item_id),
             'ok': ok})
@@ -9151,6 +10651,7 @@ class BoardReviewManager:
             return None, boards.review.ReviewError('conflict',
                                                    'the decision was not applied')
         cls._log_decision(cfg['id'], record, state=state, ok=True)
+        cls.notify_done(cfg['id'], item_id)
         EventBroker.publish('boards.review', {
             'op': state, 'board_id': cfg['id'], 'item': str(item_id)})
         out = {'replayed': False,
@@ -10241,6 +11742,100 @@ class CronManager:
         user = CronManager.detect_user()
         return f'cron-{user}-{cron_id}'[:50]
 
+    # Annotation recording which receiver URL a CronJob was written against
+    # (#728 step 4b). It is what reconcile_internal_url() compares, so a
+    # workspace that gains or loses a keeper re-points its existing CronJobs
+    # instead of leaving them curling an address that no longer answers.
+    INTERNAL_URL_ANNOTATION = 'kube-coder.dev/internal-url'
+
+    @staticmethod
+    def internal_url():
+        """Where a CronJob pod should send its fire.
+
+        Normally the workspace's own in-cluster Service. With the always-on
+        keeper in front (#728 step 4b) the chart points this at the keeper
+        instead, so a fire that lands while the workspace is asleep is queued
+        and replayed rather than dying on an nginx 503 — see
+        docs/always-on-keeper.md. cluster.local is the safe default for a
+        cluster that has not overridden the suffix.
+        """
+        user = CronManager.detect_user()
+        ns = CronManager.detect_namespace()
+        return os.environ.get(
+            'WORKSPACE_INTERNAL_URL',
+            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
+        )
+
+    @staticmethod
+    def _cronjob_annotation(name, ns, key):
+        """One annotation off a CronJob, or None when it cannot be read.
+
+        Bracket-quoted jsonpath because the key contains dots and a slash, and
+        the dotted form would read `kube-coder.dev/internal-url` as four nested
+        fields. None means "no CronJob there, or no cluster to ask" — which is
+        deliberately different from the empty string, "a CronJob with no such
+        annotation", because only the second is something to repair.
+        """
+        r = subprocess.run(
+            ['kubectl', 'get', 'cronjob', name, '-n', ns,
+             '-o', "jsonpath={.metadata.annotations['" + key + "']}"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return None
+        return r.stdout.strip()
+
+    @staticmethod
+    def reconcile_internal_url():
+        """Re-apply any CronJob whose receiver URL is out of date (#728 4b).
+
+        Turning the keeper on changes where a cron fire has to go, and the
+        CronJobs already on the cluster have the old address baked into their
+        curl command. Nothing else would ever rewrite them: a CronJob is
+        re-applied only when someone edits that trigger, so a workspace whose
+        crons all predate the keeper would go on firing straight at a workspace
+        that is asleep — the exact failure this step exists to fix.
+
+        Compares the annotation rather than the command line, re-applies only on
+        a mismatch, and counts a missing annotation as a mismatch, so CronJobs
+        written before this existed self-heal exactly once and then stop costing
+        anything. Needs no new RBAC: the workspace already holds get and patch
+        on cronjobs (serviceaccount.yaml).
+
+        Never raises. A boot step that cannot reach kubectl must not stop the
+        server from starting.
+        """
+        want = CronManager.internal_url()
+        ns = CronManager.detect_namespace()
+        fixed = checked = 0
+        for mgr in (CronManager, PageWatchManager):
+            if mgr is CronManager:
+                views, load = CronManager.list_crons(), CronManager.get_cron
+            else:
+                views, load = (PageWatchManager.list_page_watches(),
+                               PageWatchManager.get_page_watch)
+            for view in views:
+                cid = view.get('id')
+                if not cid:
+                    continue
+                checked += 1
+                name = mgr.k8s_object_name(cid)
+                got = CronManager._cronjob_annotation(
+                    name, ns, CronManager.INTERNAL_URL_ANNOTATION)
+                if got is None or got == want:
+                    continue
+                cfg = load(cid, include_secrets=True)
+                if cfg is None or not cfg.get('fire_token'):
+                    continue
+                try:
+                    mgr._apply_k8s(cfg)
+                    fixed += 1
+                except Exception as e:
+                    print(f'[cron-reconcile] {name}: {e}', file=sys.stderr)
+        if fixed:
+            print(f'[cron-reconcile] re-pointed {fixed} of {checked} scheduled '
+                  f'trigger(s) at {want}')
+        return fixed
+
     @staticmethod
     def list_crons():
         CronManager.ensure_dir()
@@ -10295,8 +11890,18 @@ class CronManager:
         if not CronManager._TIMEZONE_RE.match(timezone):
             return None, 'invalid timezone (IANA name like UTC or America/Los_Angeles)'
 
+        # What a fire does (#709 part 2): a Build (the default) or a Board run.
+        action, err = TriggerBoardRuns.validate_action(data)
+        if err:
+            return None, err
+        board_run = None
+        if action == 'board_run':
+            board_run, err = TriggerBoardRuns.validate_board_run(data.get('board_run'))
+            if err:
+                return None, err
+
         prompt_template = (data.get('prompt_template') or '').strip()
-        if not prompt_template:
+        if action == 'build' and not prompt_template:
             return None, 'prompt_template is required'
 
         mode = data.get('interpolate_mode', 'attach')
@@ -10313,6 +11918,7 @@ class CronManager:
 
         cfg = {
             'id': cron_id,
+            'action': action,
             'schedule': schedule,
             'prompt_template': prompt_template,
             'workdir': data.get('workdir') or '/home/dev',
@@ -10322,6 +11928,8 @@ class CronManager:
             'suspended': bool(data.get('suspended', False)),
             'created_at': time.time(),
         }
+        if board_run:
+            cfg['board_run'] = board_run
         if data.get('response_url'):
             cfg['response_url'] = data['response_url']
         if data.get('response_secret'):
@@ -10348,6 +11956,10 @@ class CronManager:
             json.dump(cfg, f, indent=2)
         os.chmod(tmp, 0o600)
         os.rename(tmp, path)
+        # Before the kubectl apply below, which can fail and leave the config
+        # in place: the trigger exists from here on, so the keeper should know
+        # its id even if the CronJob did not get created.
+        _push_triggers_to_keeper()
 
         # Apply (or re-apply) the K8s CronJob + Secret. If this fails, the
         # local config still lives — the user can re-apply by editing.
@@ -10373,6 +11985,7 @@ class CronManager:
         TriggerRunsManager.delete('cron', cron_id)   # see WebhookManager.delete
         try:
             os.remove(CronManager._config_path(cron_id))
+            _push_triggers_to_keeper()
             return True
         except FileNotFoundError:
             # Still report success if we cleaned up k8s objects above
@@ -10525,13 +12138,11 @@ class CronManager:
         # base64 the token for the Secret (kubectl apply requires base64 for `data:`)
         token_b64 = base64.b64encode(cfg['fire_token'].encode('utf-8')).decode('ascii')
 
-        # The receiver URL: in-cluster service DNS. Using cluster.local is the
-        # safe default; if the cluster uses a different DNS suffix, override
-        # via the WORKSPACE_INTERNAL_URL env var.
-        internal_url = os.environ.get(
-            'WORKSPACE_INTERNAL_URL',
-            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
-        )
+        # The receiver URL: the workspace's own Service, or the keeper when one
+        # stands in front of it (#728 step 4b). Recorded as an annotation as
+        # well as baked into the command, so reconcile_internal_url() can tell
+        # at boot whether this CronJob still points at the right place.
+        internal_url = CronManager.internal_url()
 
         manifest = f"""
 apiVersion: v1
@@ -10552,6 +12163,8 @@ kind: CronJob
 metadata:
   name: {name}
   namespace: {ns}
+  annotations:
+    {CronManager.INTERNAL_URL_ANNOTATION}: {internal_url}
   labels:
     app: kube-coder-cron
     workspace-user: {user}
@@ -10638,19 +12251,25 @@ class PageWatchManager:
       The fire passes `auto_approve=False` to create_task explicitly, and
       `page-watch:` is deliberately kept OUT of
       ClaudeTaskManager._UNATTENDED_SOURCE_PREFIXES — the whitelist consulted
-      by resolve_auto_approve, which governs the generic /api/tasks path and
-      board runs. Adding it there "for consistency with cron:" would mean a
-      task carrying source='page-watch:<id>' launches the CLI with
-      --dangerously-skip-permissions.
+      by resolve_auto_approve, which governs POST /api/claude/tasks, the cron
+      and webhook fire paths, and board runs. Adding it there "for consistency
+      with cron:" would mean a task carrying source='page-watch:<id>' launches
+      the CLI with --dangerously-skip-permissions.
 
       Why the asymmetry with cron: and webhook: is correct, not an oversight:
-      those fire on the operator's own schedule or from their own signed
-      sender. A page-watch fires because a third-party web page changed. An
-      arbitrary page must not be able to start a permission-skipping agent on
-      a timer. Stalling on a permission prompt is the RIGHT behaviour here —
-      putting a decision in front of a human is the entire point of the
-      feature. See tests/page_watch_api_test.py for the regression that pins
-      the prefix out of that tuple.
+      a cron fires on the operator's own schedule, authenticated by its
+      fire_token, and a webhook skips only when its sender proved itself (a
+      verified HMAC or the owner's Test button; an unsigned webhook does not).
+      A page-watch fires because a third-party web page changed. An arbitrary
+      page must not be able to start a permission-skipping agent on a timer.
+      Without the flag the CLI runs in the account's default permission mode:
+      by default it stops at the first permission prompt, which is the RIGHT
+      behaviour here — putting a decision in front of a human is the entire
+      point of the feature. (An account whose default mode is `auto` lets
+      Claude Code's classifier decide instead; that is the owner's setting,
+      not this server's.) tests/page_watch_api_test.py pins the prefix out of
+      that tuple, and tests/trigger_runs_test.py pins the False at the fire
+      site (#769).
 
     * **Fetches go through safe_http**, at creation (a cheap pre-flight, so an
       internal target is refused while the user is still looking at the form)
@@ -10990,6 +12609,9 @@ class PageWatchManager:
 
             PageWatchManager._save(cfg)
 
+        # As in CronManager.create_or_update: the trigger exists now, so the
+        # keeper learns its id whether or not the apply below works.
+        _push_triggers_to_keeper()
         try:
             PageWatchManager._apply_k8s(cfg)
         except Exception as e:
@@ -11011,6 +12633,7 @@ class PageWatchManager:
         try:
             os.remove(PageWatchManager._config_path(watch_id))
             removed = True
+            _push_triggers_to_keeper()
         except FileNotFoundError:
             removed = False
         # Drop the lock pair too, so a workspace that creates and deletes many
@@ -11058,10 +12681,7 @@ class PageWatchManager:
         user = CronManager.detect_user()
         token_b64 = base64.b64encode(
             cfg['fire_token'].encode('utf-8')).decode('ascii')
-        internal_url = os.environ.get(
-            'WORKSPACE_INTERNAL_URL',
-            f'http://ws-{user}.{ns}.svc.cluster.local:6080',
-        )
+        internal_url = CronManager.internal_url()
         manifest = f"""
 apiVersion: v1
 kind: Secret
@@ -11081,6 +12701,8 @@ kind: CronJob
 metadata:
   name: {name}
   namespace: {ns}
+  annotations:
+    {CronManager.INTERNAL_URL_ANNOTATION}: {internal_url}
   labels:
     app: kube-coder-page-watch
     workspace-user: {user}
@@ -11980,6 +13602,312 @@ class AppsManager:
             return True
         return False
 
+    # --- naming a discovered app ---
+    #
+    # An unpinned app used to be "port 3000" everywhere — the Apps list, the
+    # Security tab, every scan notification — although the workspace knows
+    # exactly which project is serving it. The listening socket's inode leads
+    # to the process holding it, the process to the folder it was started in,
+    # and the folder to the name the project already gives itself.
+
+    #: Folder names that say nothing about which app is running, so they are
+    #: never offered as its name.
+    _GENERIC_DIRS = frozenset({
+        'app', 'apps', 'src', 'server', 'web', 'frontend', 'backend', 'dist',
+        'build', 'public', 'tmp', 'dev', 'home', 'root', 'srv', 'workspace',
+        'workspaces', 'code', 'project', 'projects',
+    })
+    #: How far up from the process's folder to look for a project file — a
+    #: dev server started from `web/` or `src/` still belongs to the project
+    #: one or two levels above.
+    _NAME_SEARCH_DEPTH = 4
+    _PYPROJECT_NAME_RE = re.compile(
+        r'^\s*name\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+    #: inode → detected name. An inode belongs to one socket for that socket's
+    #: whole life, so an entry can never go stale: a restarted app listens on a
+    #: new socket with a new inode. Cleared wholesale when it grows, because
+    #: dead sockets' entries are never looked up again.
+    _detected_names = {}
+    _DETECTED_NAMES_MAX = 256
+
+    @staticmethod
+    def socket_owner_pids(inodes, proc_root='/proc'):
+        """`{inode: pid}` for whichever of `inodes` a process still holds open.
+
+        One pass over /proc for the whole set rather than one per inode: the
+        Apps page refreshes on a timer, and a workspace running a dozen
+        services would otherwise re-read every process's file descriptors
+        once per unnamed port. The pass stops as soon as every inode asked
+        about has an owner.
+
+        Only processes this server may inspect are visible — the same user's,
+        which is every app the user started in the workspace. Anything else
+        (another user's process, a pid that exits mid-walk) is skipped.
+        """
+        wanted = {f'socket:[{inode}]': inode for inode in inodes if inode}
+        found = {}
+        if not wanted:
+            return found
+        try:
+            pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+        except OSError:
+            return found
+        for pid in pids:
+            fd_dir = os.path.join(proc_root, pid, 'fd')
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    link = os.readlink(os.path.join(fd_dir, fd))
+                except OSError:
+                    continue
+                inode = wanted.get(link)
+                if inode is not None:
+                    found.setdefault(inode, int(pid))
+            if len(found) == len(wanted):
+                break
+        return found
+
+    @classmethod
+    def project_name(cls, path, stop_at=None):
+        """The name the project at or above `path` gives itself, or ''.
+
+        `package.json` "name", then `pyproject.toml` name, searched upward a
+        few levels but never past `stop_at` (the home directory) — a project
+        file there belongs to the user's whole home, not to this app. Failing
+        both, the folder's own name, unless it is one that names nothing
+        (`src`, `web`, the home directory itself).
+        """
+        if not path or not os.path.isabs(path):
+            return ''
+        stop_at = os.path.normpath(stop_at or os.path.expanduser('~'))
+        start = os.path.normpath(path)
+        current = start
+        for _ in range(cls._NAME_SEARCH_DEPTH):
+            if current in (stop_at, os.path.dirname(current)):
+                break
+            name = cls._name_from_project_files(current)
+            if name:
+                return name
+            current = os.path.dirname(current)
+        folder = os.path.basename(start)
+        if start == stop_at or folder.lower() in cls._GENERIC_DIRS:
+            return ''
+        return folder if cls._NAME_RE.match(folder) else ''
+
+    #: Both project files are read with a cap rather than whole: this runs on
+    #: a page refresh, against files nobody validated, and a name that is not
+    #: in the first chunk of either format is not worth a large read.
+    _PROJECT_FILE_MAX = 256 * 1024
+
+    @classmethod
+    def _name_from_project_files(cls, folder):
+        try:
+            with open(os.path.join(folder, 'package.json'), encoding='utf-8') as f:
+                data = json.loads(f.read(cls._PROJECT_FILE_MAX))
+            name = data.get('name') if isinstance(data, dict) else None
+            if isinstance(name, str) and cls._NAME_RE.match(name.strip()):
+                return name.strip()
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(os.path.join(folder, 'pyproject.toml'), encoding='utf-8') as f:
+                m = cls._PYPROJECT_NAME_RE.search(f.read(cls._PROJECT_FILE_MAX))
+            if m and cls._NAME_RE.match(m.group(1).strip()):
+                return m.group(1).strip()
+        except OSError:
+            pass
+        return ''
+
+    @classmethod
+    def detected_names(cls, inodes, proc_root='/proc', stop_at=None):
+        """`{inode: name}` for every inode asked about — '' where none was found.
+
+        Never raises: a name is a nicety, and the list has to render without
+        one. A miss is cached like a hit, so a port whose name cannot be
+        worked out does not re-walk /proc on every refresh.
+        """
+        out = {}
+        unknown = []
+        for inode in inodes:
+            if not inode:
+                out[inode] = ''
+            elif inode in cls._detected_names:
+                out[inode] = cls._detected_names[inode]
+            else:
+                unknown.append(inode)
+        if not unknown:
+            return out
+        owners = cls.socket_owner_pids(unknown, proc_root=proc_root)
+        for inode in unknown:
+            name = ''
+            pid = owners.get(inode)
+            if pid:
+                try:
+                    cwd = os.readlink(os.path.join(proc_root, str(pid), 'cwd'))
+                    name = cls.project_name(cwd, stop_at=stop_at)
+                except OSError:
+                    name = ''
+            if len(cls._detected_names) >= cls._DETECTED_NAMES_MAX:
+                cls._detected_names.clear()
+            cls._detected_names[inode] = name
+            out[inode] = name
+        return out
+
+    @classmethod
+    def detected_name(cls, inode, proc_root='/proc', stop_at=None):
+        """A name for the app listening on socket `inode`, or ''."""
+        names = cls.detected_names([inode], proc_root=proc_root,
+                                   stop_at=stop_at)
+        return names.get(inode, '')
+
+    # --- naming an app that runs in a container ---
+    #
+    # A container's published port is held by the container runtime's own
+    # proxy, which runs in the runtime's container where this server cannot
+    # see it, so the /proc walk above finds no owner: `docker run -p
+    # 3000:3000 bkimminich/juice-shop` stayed "Port 3000" on every page. The
+    # runtime knows which container publishes which port, so it is asked.
+
+    #: Docker's own name for a container started without `--name` —
+    #: adjective_surname, sometimes with a digit. It names nothing, so the
+    #: image is used instead.
+    _GENERATED_CONTAINER_NAME_RE = re.compile(r'^[a-z]+_[a-z]+\d?$')
+    #: An image given by id rather than by name.
+    _IMAGE_ID_RE = re.compile(r'^(sha256:)?[0-9a-f]{12,64}$')
+    #: `0.0.0.0:3000->3000/tcp`, `[::]:8000-8001->8000-8001/tcp`. A port
+    #: that is only exposed (`3000/tcp`) is not reachable, so it never
+    #: matches.
+    _PUBLISHED_PORT_RE = re.compile(r':(\d+)(?:-(\d+))?->')
+    #: A published range wider than this is a runtime's port pool, not an app.
+    _PORT_RANGE_MAX = 64
+    _CONTAINER_LOOKUP_TIMEOUT = 3
+    #: How long to stop asking after the runtime failed to answer in time.
+    #: The Apps list and the scan form both ask on every load, so a runtime
+    #: that hangs would otherwise make each of them wait the full timeout.
+    _CONTAINER_LOOKUP_BACKOFF = 30
+
+    #: inode → container name, for the same reason and with the same rule as
+    #: `_detected_names`: a socket's inode never changes hands.
+    _container_names = {}
+    #: monotonic time before which the runtime is not asked again.
+    _container_lookup_paused_until = 0.0
+    #: The failure last written to the server log, so a runtime that stays
+    #: down is logged once rather than on every page load.
+    _container_lookup_error = ''
+
+    @classmethod
+    def container_label(cls, names, image):
+        """The name to show for one container, or ''.
+
+        Its own name when someone chose it, else its image's — `juice-shop`
+        for `bkimminich/juice-shop:latest` — and never an id.
+        """
+        name = (names or '').split(',')[0].strip().lstrip('/')
+        if (name and not cls._GENERATED_CONTAINER_NAME_RE.match(name)
+                and cls._NAME_RE.match(name)):
+            return name
+        ref = (image or '').split('@', 1)[0].strip()
+        if cls._IMAGE_ID_RE.match(ref):
+            return ''
+        repo = ref.rsplit('/', 1)[-1].split(':', 1)[0]
+        if repo and not cls._IMAGE_ID_RE.match(repo) and cls._NAME_RE.match(repo):
+            return repo
+        return ''
+
+    @classmethod
+    def parse_container_ports(cls, ps_output):
+        """`{host port: name}` from `docker ps` in the format `_ps_containers`
+        asks for — one container per line, name, image and ports by tab."""
+        out = {}
+        for line in (ps_output or '').splitlines():
+            parts = line.split('\t')
+            if len(parts) != 3:
+                continue
+            label = cls.container_label(parts[0], parts[1])
+            if not label:
+                continue
+            for match in cls._PUBLISHED_PORT_RE.finditer(parts[2]):
+                first = int(match.group(1))
+                last = int(match.group(2) or first)
+                if last < first or last - first > cls._PORT_RANGE_MAX:
+                    last = first
+                for port in range(first, last + 1):
+                    out.setdefault(port, label)
+        return out
+
+    @classmethod
+    def _ps_containers(cls):
+        """`docker ps` output, '' when there is no runtime or it refused, or
+        None when it did not answer in time — the one outcome worth asking
+        again, after a pause so a hung runtime cannot slow every page."""
+        if not shutil.which('docker'):
+            return ''
+        if time.monotonic() < cls._container_lookup_paused_until:
+            return None
+        try:
+            r = subprocess.run(
+                ['docker', 'ps', '--format',
+                 '{{.Names}}\t{{.Image}}\t{{.Ports}}'],
+                capture_output=True, text=True,
+                timeout=cls._CONTAINER_LOOKUP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            cls._container_lookup_paused_until = (
+                time.monotonic() + cls._CONTAINER_LOOKUP_BACKOFF)
+            cls._note_container_lookup(
+                f'docker ps gave no answer in {cls._CONTAINER_LOOKUP_TIMEOUT}s;'
+                f' not asking again for {cls._CONTAINER_LOOKUP_BACKOFF}s')
+            return None
+        except (OSError, subprocess.SubprocessError) as e:
+            cls._note_container_lookup(f'docker ps could not run: {e}')
+            return ''
+        if r.returncode != 0:
+            why = (r.stderr or '').strip()[:300] or f'exit code {r.returncode}'
+            cls._note_container_lookup(f'docker ps failed: {why}')
+            return ''
+        cls._note_container_lookup('')
+        return r.stdout
+
+    @classmethod
+    def _note_container_lookup(cls, error):
+        """Log a container-lookup failure once per distinct message, and the
+        recovery after one. Apps then show their port, never an error."""
+        if error == cls._container_lookup_error:
+            return
+        if error:
+            print(f'[apps] {error}', file=sys.stderr, flush=True)
+        else:
+            print('[apps] docker ps is answering again', file=sys.stderr,
+                  flush=True)
+        cls._container_lookup_error = error
+
+    @classmethod
+    def container_names(cls, port_inodes):
+        """`{port: name}` for the ports in `{port: inode}` that a container
+        publishes. One `docker ps` for the lot, and only for sockets not
+        asked about before. Never raises."""
+        out = {}
+        unknown = {}
+        for port, inode in port_inodes.items():
+            if inode and inode in cls._container_names:
+                out[port] = cls._container_names[inode]
+            else:
+                unknown[port] = inode
+        if not unknown:
+            return out
+        listing = cls._ps_containers()
+        published = cls.parse_container_ports(listing or '')
+        for port, inode in unknown.items():
+            out[port] = published.get(port, '')
+            if inode and listing is not None:
+                if len(cls._container_names) >= cls._DETECTED_NAMES_MAX:
+                    cls._container_names.clear()
+                cls._container_names[inode] = out[port]
+        return out
+
     # --- pin persistence ---
 
     @staticmethod
@@ -12101,11 +14029,23 @@ class AppsManager:
                 'strip_prefix': bool(pin.get('strip_prefix')),
                 'addr': listeners.get(port, {}).get('addr', ''),
             })
-        for port in sorted(listeners.keys()):
-            if port in seen or port in cls.INTERNAL_PORTS:
-                continue
+        # A pin's name is the user's choice and always wins; an unpinned app
+        # gets the name its own project gives it, all of them resolved in one
+        # pass over /proc rather than one per port. What /proc cannot name —
+        # an app in a container — the container runtime is asked about.
+        discovered = [p for p in sorted(listeners.keys())
+                      if p not in seen and p not in cls.INTERNAL_PORTS]
+        names = cls.detected_names(
+            [listeners[p].get('inode') for p in discovered])
+        names = {p: names.get(listeners[p].get('inode'), '') for p in discovered}
+        unnamed = {p: listeners[p].get('inode') for p in discovered
+                   if not names[p]}
+        if unnamed:
+            names.update(cls.container_names(unnamed))
+        for port in discovered:
             rows.append({
-                'port': port, 'name': '',
+                'port': port,
+                'name': names.get(port, ''),
                 'pinned': False, 'status': 'running',
                 'strip_prefix': False,
                 'addr': listeners[port].get('addr', ''),
@@ -12991,7 +14931,7 @@ def _mc_task_card(meta, task_dir, now):
         state = 'running'
     elif status == 'waiting-for-input':
         state = 'waiting'
-    elif status in ('completed', 'error', 'killed'):
+    elif status in ('completed', 'error', 'killed', 'terminated'):
         if not finished_at or (now - finished_at) > MC_RECENT_SECONDS:
             return None
         state = 'done'
@@ -13067,6 +15007,8 @@ def _mc_task_card(meta, task_dir, now):
             card['outcome'] = {'ok': True, 'detail': 'completed'}
         elif status == 'killed':
             card['outcome'] = {'ok': False, 'detail': 'killed'}
+        elif status == 'terminated':
+            card['outcome'] = {'ok': False, 'detail': 'terminated by restart'}
         else:
             exit_code = meta.get('exit_code')
             detail = ('error' if exit_code in (None, '')
@@ -13238,7 +15180,8 @@ def _mc_primary_arg(tool_input):
 # Raw task status → board state, matching _mc_task_card's mapping so the
 # drawer's lineage chips read the same as the queue's.
 _MC_STATUS_STATE = {'running': 'running', 'waiting-for-input': 'waiting',
-                    'completed': 'done', 'error': 'done', 'killed': 'done'}
+                    'completed': 'done', 'error': 'done', 'killed': 'done',
+                    'terminated': 'done'}
 
 
 def _mc_entry(at, kind, text, detail='', link=None, status='ok'):
@@ -13596,10 +15539,6 @@ class BrowserHandler(app_routes.AppRoutes,
         # routes are the bearer-authed in-app preview. Every gate is in the
         # handler, as before.
         elif gateway_routes.ROUTES.dispatch(self, 'GET', claude_path, self.path):
-            return
-        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/publish(?:/(diff))?$', claude_path)
-        if m:
-            self.handle_build_publish(m.group(1), m.group(2) or '')
             return
         # --- Settings: provider keys, user MCP servers, subscriptions ---
         # handlers/settings.py. The GitHub and workspace half of the same
@@ -14043,53 +15982,6 @@ class BrowserHandler(app_routes.AppRoutes,
     # --- Project registry / AI CTO brief (#464) ---
 
     # --- Feed (#469) ---
-
-    def handle_build_publish(self, task_id, action=''):
-        if not self.check_claude_auth():
-            self.send_json({'error': 'Unauthorized'}, 401)
-            return
-        from publish_git import PublishError
-        try:
-            manager = build_publisher()
-            if self.command == 'GET':
-                if action == 'diff':
-                    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                    result = manager.reviewed_diff(task_id, (qs.get('preparation_id') or [''])[0],
-                                                   (qs.get('file') or [''])[0])
-                else:
-                    result = manager.status(task_id)
-                    if READONLY_MODE:
-                        result['eligibility'] = {'can_prepare': False, 'can_publish': False,
-                            'reason': {'code': 'readonly', 'message': 'Publishing is unavailable in read-only mode.'}}
-                self.send_json(result)
-                return
-            if self._readonly_block():
-                return
-            size = int(self.headers.get('Content-Length', '0'))
-            if size < 0 or size > 32768:
-                self.send_json({'error': 'Publishing request is too large'}, 413)
-                return
-            body = json.loads(self.rfile.read(size) or b'{}')
-            if not isinstance(body, dict):
-                raise ValueError('body')
-            if action == 'prepare':
-                selection = body.get('destination') or {}
-                if not isinstance(selection, dict) or any(not isinstance(v, str) or len(v) > 200 for v in selection.values()):
-                    raise ValueError('destination')
-                result = manager.prepare(task_id, selection)
-            elif action == 'draft':
-                result = manager.draft(task_id, body)
-            elif action.endswith('/retry'):
-                result = manager.retry(task_id, action.split('/')[0])
-            elif not action:
-                result = manager.submit(task_id, body)
-            else:
-                raise PublishError('not_found', 'Unknown publishing action.', 404)
-            self.send_json(result, 200 if action == 'draft' else 202)
-        except PublishError as e:
-            self.send_json({'error': str(e), 'code': e.code}, e.status)
-        except (ValueError, TypeError):
-            self.send_json({'error': 'Invalid publishing request', 'code': 'invalid'}, 400)
 
     # ── isolated worktrees (#701) ─────────────────────────────────────────
 
@@ -14735,9 +16627,8 @@ class BrowserHandler(app_routes.AppRoutes,
         if self._readonly_block():
             return
         path = self._strip_route_prefix(self.path)
-        m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/publish/draft$', path)
-        if m:
-            self.handle_build_publish(m.group(1), 'draft')
+        # Saving a Build's publishing draft (#710) — handlers/tasks.py.
+        if task_routes.ROUTES.dispatch(self, 'PATCH', path, self.path):
             return
         if self._dispatch_app_proxy(path, 'PATCH'):
             return
@@ -14846,10 +16737,6 @@ class BrowserHandler(app_routes.AppRoutes,
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
             path = self._strip_route_prefix(self.path)
             
-            m = re.match(r'^/api/claude/tasks/([A-Za-z0-9_-]+)/publish(?:/(prepare|draft|pub-[a-f0-9]+/retry))?$', path)
-            if m:
-                self.handle_build_publish(m.group(1), m.group(2) or '')
-                return
             # The Applications surface: pin a port, and the legacy browser
             # launchers. The pin route has to precede the app-proxy dispatcher
             # below or the proxy swallows it; the launchers used to sit after
@@ -15058,6 +16945,47 @@ class TaskReconciler:
         }
 
 
+class PromptReaper:
+    """Background loop over `ClaudeTaskManager.reap_undelivered` (#813), on
+    TaskReconciler's pattern. All the judgement lives in the manager; this only
+    runs it on an interval. Started only when KC_PROMPT_REAPER is on."""
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _last_run_at = 0.0
+    _last_result = None
+
+    @classmethod
+    def start(cls, *, interval_seconds=30):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                try:
+                    cls._last_result = ClaudeTaskManager.reap_undelivered()
+                    cls._last_run_at = time.time()
+                except Exception as e:
+                    print(f'[prompt-reaper] pass failed: {e}', file=sys.stderr)
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='prompt-reaper', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': cls._last_run_at or None,
+            'last_result': cls._last_result,
+        }
+
+
 class WorktreeSweeper:
     """Background cleanup of isolated worktrees (#701), on TaskReconciler's
     pattern. Every pass is `WorktreeManager.sweep()` — which never removes a
@@ -15138,6 +17066,35 @@ if __name__ == "__main__":
               f'{ClaudeTaskManager.TOKEN_FILE}')
     except Exception as e:
         print(f'[tasks] token materialization failed: {e}', file=sys.stderr)
+
+    # Tell the always-on keeper what it cannot find out for itself (#728 step
+    # 4): the hash of the token above, and which trigger ids exist. It has to
+    # happen at every boot, not only when something changed — while this
+    # workspace was asleep the keeper may have restarted, been deployed for the
+    # first time, or lost its store, and nothing else can repair that. Runs in
+    # a daemon thread so an unreachable keeper cannot delay the server
+    # accepting requests, and is a no-op without KEEPER_CONTROL_URL.
+    try:
+        keeper_push.KeeperPush.start(
+            ClaudeTaskManager.get_or_create_token(),
+            WebhookManager.WEBHOOKS_DIR,
+            CronManager.CRONS_DIR,
+            PageWatchManager.PAGE_WATCHES_DIR)
+        if keeper_push.KeeperPush.enabled():
+            print(f'[keeper-push] telling {keeper_push.KeeperPush.control_url()} '
+                  'the trigger ids and the token hash')
+    except Exception as e:
+        print(f'[keeper-push] boot push failed to start: {e}', file=sys.stderr)
+
+    # Re-point any CronJob whose receiver URL has changed (#728 step 4b).
+    # Turning the keeper on moves where a cron fire has to go, and the CronJobs
+    # already on the cluster carry the old address in their curl command; only
+    # editing the trigger would otherwise rewrite them. Re-applies on a
+    # mismatch alone, so this is a no-op on every boot after the first.
+    try:
+        CronManager.reconcile_internal_url()
+    except Exception as e:
+        print(f'[cron-reconcile] failed: {e}', file=sys.stderr)
 
     # Initialize the persistent-memory subsystem (runs migrations, opens DB).
     # Failure here is non-fatal: the rest of the server keeps working, and
@@ -15331,6 +17288,18 @@ if __name__ == "__main__":
     except Exception as e:
         print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
 
+    # Undelivered-prompt reaper (#813): re-delivers, then fails, Builds that
+    # sit idle with a prompt the delivery path never landed, so they cannot
+    # pile up to KC_MAX_TASKS. KC_PROMPT_REAPER=0 turns it off.
+    if ClaudeTaskManager.PROMPT_REAPER_ENABLED:
+        _reaper_interval = ClaudeTaskManager._env_number(
+            'KC_PROMPT_REAPER_INTERVAL_S', 30, minimum=5)
+        try:
+            PromptReaper.start(interval_seconds=_reaper_interval)
+            print(f'[tasks] prompt reaper started ({_reaper_interval}s)')
+        except Exception as e:
+            print(f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
+
     # Isolated-worktree cleanup (#701). Removes only what holds nothing: a
     # worktree whose Build finished without changing anything, or one whose
     # every commit is already on a remote and is older than
@@ -15373,7 +17342,8 @@ if __name__ == "__main__":
             scans.ScansManager.configure(
                 backend_factory=lambda: scan_backends.LocalStrixBackend(
                     executable=strix_connection.executable_path(),
-                    redactor=strix_connection.redact_known_secrets),
+                    redactor=strix_connection.redact_known_secrets,
+                    explainer=strix_connection.provider_error_hint),
                 publish=EventBroker.publish,
                 emit_feed=FeedManager.emit,
                 targets_provider=lambda: scans.scannable_targets(

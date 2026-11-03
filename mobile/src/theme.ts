@@ -32,6 +32,14 @@ export const colors = {
   warning: '#fbbf24',
   danger: '#f87171',
   info: '#60a5fa',
+  // Soft wash + hairline for the semantic hues above, so a tinted card or
+  // badge never spells an rgba() literal at the call site — the same role
+  // accentSoft plays for the achromatic accent. Keep the channels in step
+  // with the hexes above if those ever change.
+  dangerSoft: 'rgba(248,113,113,0.06)', // danger wash (#f87171)
+  dangerBorder: 'rgba(248,113,113,0.35)',
+  infoSoft: 'rgba(96,165,250,0.10)', // info wash (#60a5fa)
+  infoBorder: 'rgba(96,165,250,0.45)',
   // task status colours (the one place chromatic hues appear, as tints)
   running: '#60a5fa',
   waiting: '#fbbf24',

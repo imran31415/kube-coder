@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  /* Google Play feature graphic — exactly 1024x500, no scrollbars, no bleed.
+     Palette is the app's own: #0b0d10 ground (app.config backgroundColor),
+     greyscale type to match the icon's monochrome code-block identity. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1024px; height: 500px; overflow: hidden; }
+  body {
+    background: #0b0d10;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    position: relative;
+  }
+  /* Soft light source top-left, echoing the icon's lit faces. */
+  .glow {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(760px 420px at 16% 8%, rgba(255,255,255,0.10), transparent 62%),
+      radial-gradient(520px 340px at 88% 92%, rgba(255,255,255,0.05), transparent 60%);
+  }
+  /* Faint code-grid texture, kept very low contrast so text stays dominant. */
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: linear-gradient(105deg, rgba(0,0,0,0.9), transparent 68%);
+    -webkit-mask-image: linear-gradient(105deg, rgba(0,0,0,0.9), transparent 68%);
+  }
+  .wrap {
+    position: relative; height: 100%;
+    display: flex; align-items: center; gap: 56px;
+    padding: 0 76px;
+  }
+  /* Logo tile mirrors the in-app onboarding mark: white rounded square, dark glyph. */
+  .mark {
+    flex: 0 0 auto;
+    width: 188px; height: 188px; border-radius: 42px;
+    background: linear-gradient(160deg, #ffffff 0%, #e6e8ea 100%);
+    display: grid; place-items: center;
+    box-shadow: 0 26px 60px rgba(0,0,0,0.55), inset 0 2px 0 rgba(255,255,255,0.9);
+  }
+  .mark span {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 78px; font-weight: 700; color: #0b0d10; letter-spacing: -3px;
+  }
+  .copy { min-width: 0; }
+  h1 {
+    font-size: 82px; font-weight: 700; letter-spacing: -2.6px;
+    color: #f4f6f8; line-height: 1;
+  }
+  .rule { width: 82px; height: 4px; border-radius: 2px; background: #6f767d; margin: 24px 0 20px; }
+  p {
+    font-size: 31px; line-height: 1.32; color: #b9c0c7;
+    font-weight: 400; max-width: 590px;
+  }
+  .chips { display: flex; gap: 12px; margin-top: 28px; }
+  .chip {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 19px; color: #cfd5db;
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.055);
+    border-radius: 999px; padding: 9px 18px; white-space: nowrap;
+  }
+</style>
+<div class="glow"></div>
+<div class="grid"></div>
+<div class="wrap">
+  <div class="mark"><span>&lt;/&gt;</span></div>
+  <div class="copy">
+    <h1>kube-coder</h1>
+    <div class="rule"></div>
+    <p>Drive your self-hosted AI dev workspace from anywhere.</p>
+    <div class="chips">
+      <div class="chip">Chat</div>
+      <div class="chip">Builds</div>
+      <div class="chip">Terminal</div>
+      <div class="chip">Apps</div>
+      <div class="chip">Self-hosted</div>
+    </div>
+  </div>
+</div>

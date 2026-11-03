@@ -10,7 +10,10 @@ export interface WorktreeRow {
   branch: string;
   port: number | null;
   source_root: string;
-  /** The Build that owns it; '' for one made by hand with the worktree skill. */
+  /**
+   * The Build that owns it — or, for a worktree no Build owns, the live task
+   * working in it (#791). '' for a hand-made worktree nobody is in.
+   */
   task_id: string;
   owner_name: string;
   owner_status: string;

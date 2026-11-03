@@ -1,5 +1,5 @@
 /** Security scans (#726) — the list, and starting one from the phone. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -90,7 +90,7 @@ export default function SecurityScreen() {
   // A scan runs for minutes to hours and rewrites its findings as it goes, so
   // the list is worth refreshing while this tab is in front — but no faster
   // than a person would notice.
-  usePolling(load, 10000);
+  usePolling(load, 10000, ['scan.']);
 
   // Open the start form on the app whose Scan button was pressed.
   useEffect(() => {
@@ -315,7 +315,7 @@ function StartScanForm({
         <Button
           title={busy ? 'Starting…' : 'Start scan'}
           onPress={start}
-          disabled={busy || !port || budgetInvalid}
+          disabled={busy || !port || budgetInvalid || (chosen !== null && !chosen.reachable)}
         />
         <Button title="Cancel" onPress={onCancel} variant="secondary" />
       </View>

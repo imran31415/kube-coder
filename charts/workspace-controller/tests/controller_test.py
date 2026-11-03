@@ -1274,6 +1274,233 @@ class PerWorkspaceNamespaceTest(unittest.TestCase):
         self.assertIn('ws-octo', seen['ns'])
 
 
+# A Deployment's managedFields as the API server returns them, cut down to the
+# entries that matter: helm owns the template, the deployment controller owns
+# status, and whoever wrote spec.replicas last owns that.
+def _mf(manager, fields, time=None, subresource=None):
+    entry = {'manager': manager, 'operation': 'Apply', 'apiVersion': 'apps/v1',
+             'fieldsType': 'FieldsV1', 'fieldsV1': fields}
+    if time:
+        entry['time'] = time
+    if subresource:
+        entry['subresource'] = subresource
+    return entry
+
+
+_OWNS_REPLICAS = {'f:spec': {'f:replicas': {}}}
+_HELM = _mf('helm', {'f:spec': {'f:template': {}, 'f:selector': {}}}, '2026-10-01T00:00:00Z')
+_KCM = _mf('kube-controller-manager', {'f:status': {'f:replicas': {}}}, '2026-10-22T03:00:00Z',
+           'status')
+# The keeper's sleep, an apply through /scale: the API server gives that entry
+# no time of its own (measured on a real cluster, #728 step 5).
+_KEEPER = _mf('kube-coder-keeper', _OWNS_REPLICAS, subresource='scale')
+# The controller's Stop on a sleeping workspace: an apply on the Deployment.
+_CONTROLLER = _mf('kube-coder-controller', _OWNS_REPLICAS, '2026-10-22T03:04:05Z')
+
+
+class SleepingWorkspaceTest(unittest.TestCase):
+    """#728 step 5 — at 0 replicas, sleeping (the keeper put it there, a visit
+    wakes it) versus stopped (an admin did, it stays off), told apart by who
+    owns spec.replicas, the same rule the keeper uses."""
+
+    def setUp(self):
+        controller.NAMESPACE = 'coder'
+        controller.WORKSPACE_PREFIX = 'ws-'
+        self._orig_json = controller._kubectl_json
+        self._orig_run = controller._kubectl_run
+        self._orig_find = controller.find_workspace
+        controller._owners_cache.clear()
+
+    def tearDown(self):
+        controller._kubectl_json = self._orig_json
+        controller._kubectl_run = self._orig_run
+        controller.find_workspace = self._orig_find
+        controller._owners_cache.clear()
+
+    # ── the rule ───────────────────────────────────────────────────────────
+
+    def test_classify_tells_sleeping_from_stopped_only_at_zero(self):
+        self.assertEqual(controller._classify(0, 0, 1, 1, [], sleeping=True), 'sleeping')
+        self.assertEqual(controller._classify(0, 0, 1, 1, []), 'stopped')
+        # The flag means nothing for a workspace that is up.
+        self.assertEqual(controller._classify(1, 1, 1, 1, [], sleeping=True), 'running')
+
+    def test_replicas_owners_reads_the_api_servers_shape(self):
+        self.assertEqual(controller._replicas_owners([_HELM, _KCM, _KEEPER]), ['kube-coder-keeper'])
+        # status.replicas is not spec.replicas; template owners do not count.
+        self.assertEqual(controller._replicas_owners([_HELM, _KCM]), [])
+        # A Stop on a sleeping workspace shares the field (0 -> 0 is no conflict).
+        self.assertEqual(controller._replicas_owners([_HELM, _KEEPER, _CONTROLLER, _KCM]),
+                         ['kube-coder-keeper', 'kube-coder-controller'])
+        self.assertEqual(controller._replicas_owners(None), [])
+
+    def test_replicas_owners_skips_what_it_cannot_read(self):
+        rubbish = ['not an entry', {'manager': 'x'}, {'manager': 'y', 'fieldsV1': 'nope'},
+                   {'manager': 'z', 'fieldsV1': {'f:spec': ['f:replicas']}}]
+        self.assertEqual(controller._replicas_owners(rubbish), [])
+
+    def test_only_the_keeper_alone_makes_it_sleeping(self):
+        cases = [
+            ('the keeper alone', ['kube-coder-keeper'], 'sleeping', 'asleep'),
+            ('nobody (kubectl scale 1 -> 0)', [], 'stopped', 'stopped'),
+            ('the controller alone', ['kube-coder-controller'], 'stopped', 'stopped'),
+            ('shared with the controller (Stop on a sleeping one)',
+             ['kube-coder-keeper', 'kube-coder-controller'], 'stopped', 'stopped'),
+            ('could not be read', None, 'stopped', 'stopped'),
+        ]
+        for name, owners, state, detail in cases:
+            with self.subTest(name):
+                item = controller._ws_item(_dep_at_zero('ws-alice'), owners)
+                self.assertEqual((item['state'], item['detail']), (state, detail))
+        running = controller._ws_item(_dep('ws-alice'), ['kube-coder-keeper'])
+        self.assertEqual(running['state'], 'running')
+
+    def test_every_item_says_it_tells_sleeping_from_stopped(self):
+        # The app believes a 'stopped' only from a controller that sends this;
+        # an older one calls every workspace at 0 stopped. No "asleep since":
+        # the API server keeps no time for the keeper's write.
+        for item in (controller._ws_item(_dep_at_zero('ws-alice'), ['kube-coder-keeper']),
+                     controller._ws_item(_dep_at_zero('ws-alice'), []),
+                     controller._ws_item(_dep('ws-alice'))):
+            self.assertIs(item['sleepAware'], True)
+            self.assertNotIn('asleepSince', item)
+
+    # ── what it costs the fleet listing ────────────────────────────────────
+
+    def _fleet(self, seen, bob_rv='7', managed=None, fail=False):
+        def fake(args, namespace=None):
+            seen.append((list(args), namespace))
+            if args == ['get', 'namespaces']:
+                return {'items': [{'metadata': {'name': 'ws-alice'}},
+                                  {'metadata': {'name': 'ws-bob'}}]}
+            if args[:2] == ['get', 'deployments']:   # the fleet read, or find_workspace's -l
+                if namespace == 'ws-alice':
+                    return {'items': [_dep('ws-alice')]}
+                if namespace == 'ws-bob':
+                    return {'items': [_dep_at_zero('ws-bob', bob_rv)]}
+                return {'items': []}
+            if args[:2] == ['get', 'deployment']:
+                if fail:
+                    raise controller.KubectlError('kubectl get failed', 'forbidden')
+                dep = _dep_at_zero(args[2], bob_rv)
+                dep['metadata']['managedFields'] = managed or [_HELM, _KCM, _KEEPER]
+                return dep
+            return {'items': []}
+        return fake
+
+    def test_the_fleet_listing_reads_ownership_only_for_workspaces_at_zero(self):
+        seen = []
+        controller._kubectl_json = self._fleet(seen)
+        by_user = {w['user']: w for w in controller.list_workspaces()['workspaces']}
+        self.assertEqual(by_user['alice']['state'], 'running')
+        self.assertEqual(by_user['bob']['state'], 'sleeping')
+        reads = [(a, ns) for a, ns in seen if a[:2] == ['get', 'deployment']]
+        self.assertEqual(reads, [(['get', 'deployment', 'ws-bob', '--show-managed-fields'], 'ws-bob')])
+        # The fleet read itself never asks for managedFields: that is the
+        # payload that has OOM'd the controller before.
+        for args, _ in seen:
+            if args == ['get', 'deployments'] or args[:2] == ['get', 'deployments']:
+                self.assertNotIn('--show-managed-fields', args)
+
+    def test_ownership_is_read_once_per_change(self):
+        seen = []
+        controller._kubectl_json = self._fleet(seen)
+        controller.list_workspaces()
+        controller.list_workspaces()
+        reads = [a for a, _ in seen if a[:2] == ['get', 'deployment']]
+        self.assertEqual(len(reads), 1, 'a steady fleet must cost no extra reads')
+        # A write moves the resourceVersion, and the next listing reads again.
+        controller._kubectl_json = self._fleet(seen, bob_rv='8')
+        controller.list_workspaces()
+        reads = [a for a, _ in seen if a[:2] == ['get', 'deployment']]
+        self.assertEqual(len(reads), 2)
+
+    def test_a_workspace_that_left_zero_is_forgotten(self):
+        seen = []
+        controller._kubectl_json = self._fleet(seen)
+        controller.list_workspaces()
+        self.assertIn(('ws-bob', 'ws-bob'), controller._owners_cache)
+
+        def bob_started(args, namespace=None):
+            if args == ['get', 'deployments'] and namespace == 'ws-bob':
+                return {'items': [_dep('ws-bob')]}
+            return self._fleet([])(args, namespace)
+        controller._kubectl_json = bob_started
+        controller.list_workspaces()
+        self.assertNotIn(('ws-bob', 'ws-bob'), controller._owners_cache)
+
+    def test_unreadable_ownership_shows_stopped_not_sleeping(self):
+        # "Stopped" is today's answer and promises nothing; "sleeping" would
+        # promise that a visit wakes it.
+        controller._kubectl_json = self._fleet([], fail=True)
+        err = io.StringIO()
+        orig = sys.stderr
+        sys.stderr = err
+        try:
+            by_user = {w['user']: w for w in controller.list_workspaces()['workspaces']}
+        finally:
+            sys.stderr = orig
+        self.assertEqual(by_user['bob']['state'], 'stopped')
+        self.assertIn('cannot read who stopped ws-bob/ws-bob', err.getvalue())
+        self.assertIn('forbidden', err.getvalue())
+
+    def test_find_workspace_reads_ownership_for_one_at_zero(self):
+        seen = []
+        controller._kubectl_json = self._fleet(seen)
+        self.assertEqual(controller.find_workspace('bob')['state'], 'sleeping')
+        self.assertEqual(controller.find_workspace('alice')['state'], 'running')
+        reads = [a for a, _ in seen if a[:2] == ['get', 'deployment']]
+        self.assertEqual(reads, [['get', 'deployment', 'ws-bob', '--show-managed-fields']])
+
+    # ── Stop and Start ─────────────────────────────────────────────────────
+
+    def _ws(self, state, replicas):
+        controller.find_workspace = lambda user: {
+            'deployment': f'ws-{user}', 'namespace': f'ws-{user}',
+            'state': state, 'desiredReplicas': replicas}
+
+    def test_stop_on_a_sleeping_workspace_is_a_server_side_apply(self):
+        # 0 -> 0 through `kubectl scale` records nothing, so the keeper would
+        # keep the field and wake it on the next visit. The apply records it.
+        self._ws('sleeping', 0)
+        calls = []
+        controller._kubectl_run = lambda args, namespace=None, input=None: calls.append(
+            (args, namespace, input))
+        controller.scale_workspace('octo', 0)
+        self.assertEqual(len(calls), 1)
+        args, namespace, body = calls[0]
+        self.assertEqual(args, ['apply', '--server-side', '--field-manager=kube-coder-controller',
+                                '--force-conflicts', '--validate=false', '-f', '-'])
+        self.assertEqual(namespace, 'ws-octo')
+        self.assertEqual(json.loads(body), {
+            'apiVersion': 'apps/v1', 'kind': 'Deployment',
+            'metadata': {'name': 'ws-octo', 'namespace': 'ws-octo'},
+            'spec': {'replicas': 0}})
+
+    def test_every_other_start_and_stop_is_still_kubectl_scale(self):
+        # Applying everywhere would make the controller a standing owner of
+        # replicas, which a Helm 4 upgrade with sleep off would conflict with.
+        for state, replicas in [('running', 0), ('stopped', 1), ('sleeping', 1),
+                                ('degraded', 0), ('transitioning', 0)]:
+            with self.subTest(state=state, replicas=replicas):
+                self._ws(state, 1 if replicas == 0 else 0)
+                calls = []
+                controller._kubectl_run = lambda args, namespace=None, input=None: calls.append(
+                    (args, input))
+                controller.scale_workspace('octo', replicas)
+                self.assertEqual(calls, [(['scale', 'deployment/ws-octo', f'--replicas={replicas}'],
+                                          None)])
+
+    def test_a_failed_apply_is_reported_like_any_kubectl_failure(self):
+        self._ws('sleeping', 0)
+
+        def refuse(args, namespace=None, input=None):
+            raise controller.KubectlError('kubectl apply failed', 'forbidden')
+        controller._kubectl_run = refuse
+        with self.assertRaises(controller.KubectlError):
+            controller.scale_workspace('octo', 0)
+
+
 def _dep(name):
     """Minimal workspace Deployment object as kubectl -o json would return it."""
     return {
@@ -1282,6 +1509,15 @@ def _dep(name):
             {'name': 'ide', 'image': 'registry/coder:devlaptop-v1.0.0'}]}}},
         'status': {'readyReplicas': 1, 'observedGeneration': 1},
     }
+
+
+def _dep_at_zero(name, rv='7'):
+    """_dep at 0 replicas — sleeping or stopped, which the listing alone cannot tell."""
+    dep = _dep(name)
+    dep['metadata']['resourceVersion'] = rv
+    dep['spec']['replicas'] = 0
+    dep['status'] = {'observedGeneration': 1}
+    return dep
 
 
 class SelfServeTokenBindingTest(unittest.TestCase):

@@ -12,9 +12,15 @@
  * SSE is intentionally not used: EventSource can't send an Authorization
  * header, so screens poll getTaskOutput()/listTasks() on an interval — the
  * same fallback the dashboard SPA uses when the event stream is unavailable.
+ * The desktop app (#833) is the exception: its Rust core holds the stream with
+ * the header and forwards events (src/store/liveEvents.ts), and every request
+ * goes through that core rather than `fetch` (./transport).
  */
+import { invoke, isDesktop } from '../desktop/bridge';
 import { getConfig } from '../store/config';
+import { reportAwake, reportDown } from '../store/workspaceState';
 import { validateHost } from '../util/urlPolicy';
+import { classifyDown, SLEEPING, UNREACHABLE } from '../util/workspaceReach';
 import {
   mockApps,
   mockDesktop,
@@ -42,14 +48,18 @@ import {
   mockDocsPage,
   mockBoards,
   mockBoardReview,
+  mockBoardRecent,
   mockBoardStanding,
   mockDecideBoardItem,
+  mockMarkFeedRead,
   mockWorktreeDiff,
   mockWorktreeView,
   mockScans,
   mockScanDetail,
   mockScanTargets,
   mockScanConnection,
+  mockSleep,
+  wakeMockWorkspace,
 } from '../mock/mockData';
 import type {
   AppEntry,
@@ -92,6 +102,7 @@ import type {
   DocsPage,
   BoardSummary,
   BoardReviewGroup,
+  BoardRecentRow,
   BoardReviewItem,
   BoardStanding,
   WebhookRecord,
@@ -103,6 +114,7 @@ import type {
   ScanMode,
   ScanConnection,
 } from './types';
+import { desktopFetch, type ResponseLike, type WorkspaceInit } from './transport';
 
 export class ApiError extends Error {
   status: number;
@@ -120,7 +132,14 @@ interface ReqOpts {
   method?: string;
   body?: unknown;
   query?: Record<string, string | number | undefined>;
+  /** A keeper route (#728): its answer says nothing about the workspace pod. */
+  keeper?: boolean;
 }
+
+const DOWN_MESSAGES = {
+  [SLEEPING]: 'Your workspace is asleep.',
+  [UNREACHABLE]: "Can't reach your workspace — it may be asleep or restarting.",
+};
 
 function buildUrl(host: string, path: string, query?: ReqOpts['query']): string {
   const base = host.replace(/\/+$/, '');
@@ -139,6 +158,12 @@ function buildUrl(host: string, path: string, query?: ReqOpts['query']): string 
 // recover on the next tick, and one-shot actions surface a real error.
 const REQUEST_TIMEOUT_MS = 15000;
 
+/** `fetch` for a workspace URL — or, in the desktop app, the desktop core,
+ *  which holds the real token and refuses any other host (./transport). */
+const workspaceFetch: (url: string, init: WorkspaceInit) => Promise<ResponseLike> = isDesktop()
+  ? desktopFetch(invoke, () => getConfig().host)
+  : (url, init) => fetch(url, init as RequestInit);
+
 async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const { host, token } = getConfig();
   if (!host || !token) throw new ApiError('Not configured', 0);
@@ -150,9 +175,9 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   const url = buildUrl(host, path, opts.query);
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: opts.method ?? 'GET',
       headers: {
         Accept: 'application/json',
@@ -180,10 +205,16 @@ async function request<T>(path: string, opts: ReqOpts = {}): Promise<T> {
       res.status || 0,
     );
   }
-  const ctype = res.headers.get('Content-Type') || '';
-  const parsed: unknown = ctype.includes('application/json')
-    ? await res.json().catch(() => null)
-    : await res.text();
+  const isJson = (res.headers.get('Content-Type') || '').includes('application/json');
+  const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
+  // A sleeping/stopped workspace never answers itself: the ingress (or the
+  // keeper) does. Report it app-wide and throw an error screens can recognise.
+  const down = res.ok ? null : classifyDown(res.status, isJson, parsed);
+  if (down) {
+    reportDown(down);
+    throw new ApiError(DOWN_MESSAGES[down], res.status, down);
+  }
+  if (!opts.keeper) reportAwake();
   if (!res.ok) {
     const msg =
       parsed && typeof parsed === 'object' && 'error' in parsed
@@ -481,9 +512,9 @@ export async function uploadTaskImage(
   const url = buildUrl(host, '/api/files/upload');
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -895,6 +926,7 @@ interface RawHealth {
 export async function getHealth(): Promise<Health> {
   if (getConfig().mock) {
     await delay(100);
+    if (mockSleep.asleep) throw new ApiError(DOWN_MESSAGES[SLEEPING], 503, SLEEPING);
     return mockHealth;
   }
   const d = await request<RawHealth>('/health');
@@ -904,6 +936,27 @@ export async function getHealth(): Promise<Health> {
     browser: d.services?.browser,
     ok: d.status === 'healthy',
   };
+}
+
+/**
+ * Ask the always-on keeper (#728 step 3) to wake the workspace. False when no
+ * keeper sits in front of it yet: the request then dies at the bare ingress
+ * (HTML 50x) or reaches a server.py without the route (404/405).
+ */
+export async function wakeViaKeeper(): Promise<boolean> {
+  if (getConfig().mock) {
+    wakeMockWorkspace();
+    return true;
+  }
+  try {
+    await request('/api/keeper/wake', { method: 'POST', keeper: true });
+    return true;
+  } catch (e) {
+    if (e instanceof ApiError && (e.code === UNREACHABLE || e.status === 404 || e.status === 405)) {
+      return false;
+    }
+    throw e;
+  }
 }
 
 // ---- Hypervisor chat -------------------------------------------------------
@@ -953,9 +1006,9 @@ export async function transcribeAudio(uri: string, mimeType = 'audio/m4a'): Prom
   // Transcription rides an upload + a provider round-trip — give it the same
   // doubled budget as file uploads.
   const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS * 2);
-  let res: Response;
+  let res: ResponseLike;
   try {
-    res = await fetch(url, {
+    res = await workspaceFetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -1257,9 +1310,14 @@ export async function deleteProviderKey(provider: ProviderVar): Promise<void> {
 
 export interface McpServerEntry {
   name: string;
+  // Remote servers (#815). Optional: a workspace older than that omits them,
+  // and every entry it lists is stdio.
+  type?: 'stdio' | 'http' | 'sse';
   command: string;
   args: string[];
   env: Record<string, string>; // redacted hints like "…cc18"
+  url?: string;
+  headers?: Record<string, string>; // redacted like env
   enabled: boolean;
 }
 
@@ -1271,6 +1329,9 @@ export interface McpServerInput {
   command: string;
   args: string[];
   env: Record<string, string>; // real values on input; blank = keep stored
+  type?: 'stdio' | 'http' | 'sse'; // omitted = keep the stored transport
+  url?: string;
+  headers?: Record<string, string>; // blank = keep stored, like env
   enabled?: boolean;
 }
 
@@ -1481,7 +1542,10 @@ export async function feedUnreadCount(): Promise<number> {
 }
 
 export async function markFeedRead(id: string): Promise<void> {
-  if (getConfig().mock) return;
+  if (getConfig().mock) {
+    mockMarkFeedRead(id);
+    return;
+  }
   await request(`/api/feed/${encodeURIComponent(id)}/read`, { method: 'POST' });
 }
 
@@ -1772,6 +1836,22 @@ export async function getBoardReview(
 }
 
 /**
+ * The phone's Working and Done rows for one board (#709 Part 3): the newest
+ * runs' items with their review state and Feed read flag joined in, in ONE
+ * local read rather than the run list plus a detail fetch per run.
+ */
+export async function getBoardRecent(boardId: string): Promise<BoardRecentRow[]> {
+  if (getConfig().mock) {
+    await delay(110);
+    return mockBoardRecent(boardId);
+  }
+  const d = await request<{ rows?: BoardRecentRow[] }>(
+    `/api/boards/${encodeURIComponent(boardId)}/recent`,
+  );
+  return d.rows ?? [];
+}
+
+/**
  * Send one decision. Returns the HTTP status rather than throwing on a 4xx,
  * because the OFFLINE QUEUE needs the status to decide whether to retry: a 409
  * is terminal (the human must look again), a 503 is not.
@@ -1790,7 +1870,7 @@ export async function decideBoardItem(
     reason?: string;
     note?: string;
   },
-): Promise<{ status: number; error?: string }> {
+): Promise<{ status: number; error?: string; code?: string }> {
   if (getConfig().mock) {
     await delay(200);
     mockDecideBoardItem(
@@ -1807,7 +1887,7 @@ export async function decideBoardItem(
     );
     return { status: 200 };
   } catch (e) {
-    if (e instanceof ApiError) return { status: e.status, error: e.message };
+    if (e instanceof ApiError) return { status: e.status, error: e.message, code: e.code };
     throw e;
   }
 }

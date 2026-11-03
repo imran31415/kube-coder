@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact';
 import type { Workspace, WorkspaceMetrics, UpdateResult } from '../api/workspaces';
 
@@ -66,7 +66,11 @@ describe('UpdatesCard (in WorkspaceDetail)', () => {
     metrics = () => Promise.resolve(sampleMetrics());
     latestVersion.value = 'v1.4.0';
     workspaces.value = [ws()];
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // happy-dom has no window.confirm to spy on, so stub the global outright.
+    vi.stubGlobal('confirm', vi.fn(() => true));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('offers an enabled update when a newer release exists', async () => {

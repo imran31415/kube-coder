@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "kube-coder",
+  "version": "0.1.0",
+  "identifier": "dev.kubecoder.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "node scripts/build-ui.mjs"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "kube-coder",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 380,
+        "minHeight": 560,
+        "backgroundColor": "#08090b"
+      }
+    ],
+    "security": {
+      "capabilities": ["main"],
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "media-src": "'self' data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "ipc: http://ipc.localhost blob: data:",
+        "frame-src": "'none'",
+        "worker-src": "'none'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "kube-coder desktop client",
+    "longDescription": "A low-footprint desktop client for a kube-coder workspace: what needs you, native notifications and a dock badge. It runs nothing locally.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"]
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["kubecoder"]
+      }
+    }
+  }
+}

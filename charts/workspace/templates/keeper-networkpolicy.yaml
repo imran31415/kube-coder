@@ -1,0 +1,77 @@
+{{- if .Values.keeper.enabled }}
+# Who may reach the keeper, port by port. The keeper holds a token that can stop
+# and start the workspace, so every port admits exactly one class of caller and
+# nothing else in the cluster gets to talk to it. Kubelet probes are not subject
+# to NetworkPolicy.
+#
+#   8080 page, 8081 browser wake, 8082 the app  <- the ingress controller
+#   8082 cron and page-watch fires              <- this workspace's CronJob pods
+#   8083 trigger ids and the token hash         <- the workspace pod, only
+#
+# Step 3 denied the workspace pod altogether. Step 4 gives it the one port it
+# needs and no more: it may push facts in, and it still cannot reach the wake
+# listener or the app listener.
+#
+# The CronJob pods reach 8082 because step 4b points WORKSPACE_INTERNAL_URL at
+# the keeper, so a fire that lands while the workspace is asleep is queued and
+# replayed instead of dying on an nginx 503. They are matched on both labels
+# this chart's own code applies — including workspace-user, so a co-tenant's
+# cron pods are still denied — exactly as networkpolicy.yaml matches them for
+# the workspace's own port.
+#
+# This file is only half the lock. A NetworkPolicy does nothing at all unless
+# the cluster's CNI implements it — minikube's default accepts every policy and
+# enforces none — so the control port also requires the shared secret in
+# keeper-secret.yaml. Neither is trusted alone.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keeper-{{ .Values.user.name }}-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  podSelector:
+    matchLabels:
+      app: keeper-{{ .Values.user.name }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 8082
+  # The workspace's own pushes. A bare podSelector, so it is same-namespace by
+  # construction and a co-tenant's workspace in another namespace cannot match
+  # — the shape networkpolicy.yaml uses for the cron pods, for the same reason.
+  - from:
+    - podSelector:
+        matchLabels:
+          app: ws-{{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 8083
+  # This workspace's scheduled triggers. Two selectors rather than one with a
+  # matchExpressions `in`, because the two kinds carry different app labels
+  # (CronManager and PageWatchManager each label their own) and a podSelector
+  # list is an OR.
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kube-coder-cron
+          workspace-user: {{ .Values.user.name }}
+    - podSelector:
+        matchLabels:
+          app: kube-coder-page-watch
+          workspace-user: {{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 8082
+{{- end }}

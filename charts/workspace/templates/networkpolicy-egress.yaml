@@ -200,6 +200,20 @@ spec:
       - port: "8081"
         protocol: TCP
   {{- end }}
+  {{- if .Values.keeper.enabled }}
+  # The keeper's control port (#728 step 4): the workspace pushes its trigger
+  # ids and the hash of its API token there. The keeper is a pod in this
+  # namespace, so it sits in the denied pod CIDR above and needs allowing back
+  # — on 8083 only, never the wake or app listeners.
+  - toEndpoints:
+    - matchLabels:
+        io.kubernetes.pod.namespace: {{ .Values.namespace }}
+        app: keeper-{{ .Values.user.name }}
+    toPorts:
+    - ports:
+      - port: "8083"
+        protocol: TCP
+  {{- end }}
 {{- else }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -300,6 +314,18 @@ spec:
     ports:
     - protocol: TCP
       port: 8081
+  {{- end }}
+  {{- if .Values.keeper.enabled }}
+  # The keeper's control port (#728 step 4) — see the Cilium branch above. A
+  # bare podSelector: the keeper is in this namespace, so this matches it and
+  # not a co-tenant's.
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keeper-{{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 8083
   {{- end }}
 {{- end }}
 {{- end }}

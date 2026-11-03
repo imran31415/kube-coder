@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean
+.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
 
 # =============================================================================
 # Generic per-user helpers
@@ -48,7 +48,7 @@ IMAGE_NAME := devlaptop
 # The release version. Tags the image `make build` / `make push` / `make release`
 # produce ($(IMAGE) below), and the tag `make ship USER=<x>` repins a user onto.
 # Bumped automatically by scripts/release.sh.
-VERSION := v1.69.0
+VERSION := v1.77.0
 PLATFORM := linux/amd64
 # Control-plane namespace: the shared base-infrastructure + workspace-controller
 # releases live here. Per-#103 individual workspaces live in their OWN ws-<user>
@@ -567,16 +567,19 @@ memory-db-copy: ## Copy the live memory DB to a throwaway path (DEST=<path> opti
 # reaches FeedManager.emit() with the default paths writes the workspace's Feed
 # and pages whoever registered a phone there (#685). The trigger run ledger
 # (#91) is a third: a test that fires a webhook or a cron appends to the
-# workspace's real trigger history. Tests isolate themselves
+# workspace's real trigger history. The fourth is Claude Code's own config:
+# every test that launches a Build pre-answers its dialogs, and the auto-mode
+# answer there is global (#762). Tests isolate themselves
 # (tests/live_state.py); these targets are the safety net for one that forgets,
-# pointing $KC_FEED_DIR / $KC_PUSH_DIR / $KC_TRIGGER_RUNS_DIR at a throwaway
-# directory for the run.
+# pointing $KC_FEED_DIR / $KC_PUSH_DIR / $KC_TRIGGER_RUNS_DIR /
+# $KC_CLAUDE_CONFIG_PATH at a throwaway directory for the run.
 python-tests: ## Run server.py unit + integration tests
 	tmp=$$(mktemp -d) && cd charts/workspace && \
 	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
 	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
 	  KC_PUBLISH_DIR=$$tmp/publish \
+	  KC_CLAUDE_CONFIG_PATH=$$tmp/claude.json \
 	  python3 -m unittest discover -s tests -p '*_test.py' -v; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
@@ -586,6 +589,7 @@ python-coverage: ## Run Python tests with coverage report
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
 	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
 	  KC_PUBLISH_DIR=$$tmp/publish \
+	  KC_CLAUDE_CONFIG_PATH=$$tmp/claude.json \
 	  coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
 
@@ -601,6 +605,23 @@ test-coverage: ## Run tests with terminal coverage summary
 
 coverage: ## Run all tests with comprehensive coverage reports and HTML output
 	@./scripts/coverage-report.sh
+
+keeper-test: ## Run the always-on keeper's Go tests (gofmt, vet, race; #728)
+	@test -z "$$(gofmt -l keeper/)" || { gofmt -l keeper/; echo "gofmt needed"; exit 1; }
+	cd keeper && go vet ./... && go test -race -count=1 ./...
+
+# Same gate as keeper-test, but run inside WSL. The race detector needs CGO,
+# CGO needs a 64-bit gcc, and the gcc on a Windows box is usually 32-bit — so
+# on Windows `make keeper-test` cannot build the race leg at all and the
+# keeper's concurrency ends up only ever checked in CI. Unnecessary on Linux
+# and macOS, where keeper-test already runs it. See the script's header.
+keeper-test-race: ## Run the keeper's gofmt+vet+race gate inside WSL (Windows dev boxes)
+	@command -v wsl.exe >/dev/null 2>&1 || { \
+	  echo 'wsl.exe not found; on Linux/macOS run: make keeper-test' >&2; exit 1; }
+# wsl.exe starts in the translated current directory, so the relative path
+# needs no /mnt conversion. MSYS_NO_PATHCONV stops Git Bash rewriting it.
+	@MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl.exe -u root -- \
+	  bash ./scripts/keeper-test-wsl.sh
 
 test-all-units: dashboard-web-test python-tests controller-web-test controller-python-tests ## Run dashboard SPA + server.py + controller SPA + controller.py tests
 
@@ -777,6 +798,7 @@ controller-dev: ## Run controller.py locally (KUBECONFIG listing; dev bearer tok
 
 LOCAL_PROFILE     := kube-coder
 LOCAL_IMAGE       := kube-coder:local
+LOCAL_KEEPER_IMAGE := kube-coder-keeper:local
 LOCAL_VALUES      := deployments/local/values.yaml
 LOCAL_HOST        := kube-coder.local
 LOCAL_AUTH_SECRET := kube-coder-basic-auth
@@ -794,13 +816,45 @@ LOCAL_HELM        := helm --kube-context $(LOCAL_PROFILE)
 
 local: local-up local-build local-secret local-deploy local-info ## Local one-shot: start minikube, build+load image, deploy, print access info
 
-local-up: ## Start the local minikube cluster + enable the nginx ingress addon
+# NetworkPolicy enforcement: minikube's DEFAULT CNI accepts every
+# NetworkPolicy object and enforces NONE of them. Nothing errors, nothing warns
+# — `kubectl get networkpolicy` lists them and traffic they forbid flows
+# anyway. So any test of a NetworkPolicy on a default local cluster passes
+# without proving anything.
+#
+# Set LOCAL_CNI=calico to get a cluster that actually enforces them. Required
+# for the keeper's isolation checks (#728: the workspace pod may reach the
+# keeper's control port and nothing else). Costs a little start-up time and
+# memory, which is why it is not the default.
+#
+#   make local-up LOCAL_CNI=calico
+LOCAL_CNI ?=
+
+local-up: ## Start the local minikube cluster + nginx ingress (LOCAL_CNI=calico to enforce NetworkPolicy)
 	@command -v minikube >/dev/null || { echo "ERROR: minikube not found. Install it: 'brew install minikube' (macOS) or https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
-	minikube start -p $(LOCAL_PROFILE) --driver=docker --cpus=4 --memory=6g
+	minikube start -p $(LOCAL_PROFILE) --driver=docker --cpus=4 --memory=6g \
+		$(if $(LOCAL_CNI),--cni=$(LOCAL_CNI),)
 	minikube addons enable ingress -p $(LOCAL_PROFILE)
+	# The keeper's idle-RSS budget (#728 is ≤ 20 MiB) is checked with
+	# `kubectl top`, which needs this.
+	minikube addons enable metrics-server -p $(LOCAL_PROFILE)
 	@echo "Waiting for the ingress controller to be ready..."
 	$(LOCAL_KUBECTL) -n ingress-nginx wait --for=condition=ready pod \
 		-l app.kubernetes.io/component=controller --timeout=180s
+	@if [ -z "$(LOCAL_CNI)" ]; then \
+		echo ""; \
+		echo "NOTE: this cluster uses minikube's default CNI, which IGNORES NetworkPolicy."; \
+		echo "      Any NetworkPolicy assertion here passes without being enforced."; \
+		echo "      For the real thing: make local-down DELETE=1 && make local-up LOCAL_CNI=calico"; \
+	fi
+
+keeper-build-local: ## Build the always-on keeper image inside minikube (#728)
+	@echo "Building $(LOCAL_KEEPER_IMAGE) inside minikube..."
+	# Same reasoning as local-build: the node's own builder, no host buildx.
+	minikube image build -t $(LOCAL_KEEPER_IMAGE) -f keeper/Dockerfile -p $(LOCAL_PROFILE) .
+	@echo ""
+	@echo "Deploy it with:"
+	@echo "  make local-deploy KEEPER=1"
 
 local-build: ## Build the workspace image for your host arch directly inside minikube
 	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH) inside minikube..."
@@ -821,11 +875,16 @@ local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the l
 	@rm -f /tmp/kc-local-htpasswd
 	@echo "basic-auth secret '$(LOCAL_AUTH_SECRET)' ready (user: $(LOCAL_AUTH_USER) / pass: $(LOCAL_AUTH_PASS))"
 
-local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster
+# KEEPER=1 turns the always-on keeper on (#728), using the image
+# `make keeper-build-local` put in the node. Off by default, so the ordinary
+# local flow is unchanged.
+local_keeper_flags = $(if $(KEEPER),--set keeper.enabled=true --set keeper.sleep.enabled=true --set keeper.image=$(LOCAL_KEEPER_IMAGE) --set keeper.imagePullPolicy=Never,)
+
+local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster (KEEPER=1 for #728)
 	$(LOCAL_HELM) upgrade base-infrastructure ./charts/base-infrastructure \
 		--namespace $(LOCAL_NS) --set namespace=$(LOCAL_NS) --install --wait --timeout 3m
 	$(LOCAL_HELM) upgrade $(LOCAL_RELEASE) ./charts/workspace \
-		-f $(LOCAL_VALUES) --namespace $(LOCAL_NS) --install --wait --timeout 5m
+		-f $(LOCAL_VALUES) --namespace $(LOCAL_NS) $(local_keeper_flags) --install --wait --timeout 5m
 	# Force a rollout so a freshly `local-build`-loaded image is picked up:
 	# the tag (kube-coder:local) doesn't change, so helm sees no diff and the
 	# pod would otherwise keep the old image even though minikube reloaded it.

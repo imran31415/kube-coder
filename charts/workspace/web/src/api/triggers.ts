@@ -2,9 +2,32 @@ import { apiGet, apiPost, apiDelete } from './client';
 
 export type TriggerKind = 'webhook' | 'cron' | 'page-watch';
 
+/** What a cron or webhook does when it fires (#709 part 2). A config saved
+ *  before this existed has no `action`, and means `build`. */
+export type TriggerAction = 'build' | 'board_run';
+
+/** A Board-run trigger's settings. Always propose mode: the server refuses
+ *  any other, so there is no mode field to send. */
+export interface TriggerBoardRun {
+  board_id: string;
+  select?: { tags?: string[]; limit?: number } & Record<string, unknown>;
+  concurrency?: number;
+}
+
+/** A webhook's delivery filter: exact strings at payload dot-paths. */
+export interface WebhookMatch {
+  /** Compared with the delivery's X-GitHub-Event header. */
+  event?: string;
+  payload?: Record<string, string>;
+}
+
 export interface WebhookRecord {
   id: string;
   prompt_template: string;
+  action?: TriggerAction;
+  board_run?: TriggerBoardRun;
+  match?: WebhookMatch;
+  item_id_from?: string;
   workdir?: string;
   interpolate_mode?: 'attach' | 'interpolate';
   source?: string;
@@ -16,6 +39,8 @@ export interface CronRecord {
   id: string;
   schedule: string;
   prompt_template: string;
+  action?: TriggerAction;
+  board_run?: TriggerBoardRun;
   workdir?: string;
   payload?: Record<string, unknown>;
   interpolate_mode?: 'attach' | 'interpolate';
@@ -58,6 +83,12 @@ export interface Trigger {
   name: string;
   schedule?: string;       // cron + page-watch
   prompt: string;
+  /** cron + webhook. Always set by listTriggers; absent on the wire means build. */
+  action?: TriggerAction;
+  board_run?: TriggerBoardRun;
+  // webhook only
+  match?: WebhookMatch;
+  item_id_from?: string;
   workdir?: string;
   timezone?: string;
   suspended?: boolean;
@@ -89,6 +120,10 @@ export async function listTriggers(): Promise<Trigger[]> {
       prompt: w.prompt_template,
       workdir: w.workdir,
       created_at: w.created_at,
+      action: w.action ?? 'build',
+      board_run: w.board_run,
+      match: w.match,
+      item_id_from: w.item_id_from,
     });
   }
   for (const c of cr.crons) {
@@ -102,6 +137,8 @@ export async function listTriggers(): Promise<Trigger[]> {
       timezone: c.timezone,
       suspended: c.suspended,
       created_at: c.created_at,
+      action: c.action ?? 'build',
+      board_run: c.board_run,
     });
   }
   for (const p of pw.page_watches) {
@@ -138,6 +175,9 @@ export interface TriggerRun {
   /** Short slug: bad_signature, replay, at_capacity, suspended, unchanged, … */
   reason?: string;
   task_id?: string;
+  /** A Board-run trigger (#709) starts a run on this board, not a task. */
+  run_id?: string;
+  board_id?: string;
   error?: string;
   /** The socket peer — behind the ingress, usually the ingress controller. */
   source_ip?: string;
@@ -183,9 +223,12 @@ export const listTriggerRuns = (
 export interface CreateCronInput {
   id: string;
   schedule: string;
-  prompt_template: string;
+  /** Required for a Build; ignored for a Board run. */
+  prompt_template?: string;
   workdir?: string;
   timezone?: string;
+  action?: TriggerAction;
+  board_run?: TriggerBoardRun;
 }
 
 export const createCron = (input: CreateCronInput) =>
@@ -198,15 +241,36 @@ export const deleteCron = (id: string) => apiDelete<{ ok: true }>(`/api/crons/${
 
 export interface CreateWebhookInput {
   id: string;
-  prompt_template: string;
+  /** Required for a Build; ignored for a Board run. */
+  prompt_template?: string;
   workdir?: string;
   interpolate_mode?: 'attach' | 'interpolate';
+  action?: TriggerAction;
+  board_run?: TriggerBoardRun;
+  match?: WebhookMatch;
+  item_id_from?: string;
 }
 
 export const createWebhook = (input: CreateWebhookInput) =>
-  apiPost<WebhookRecord & { url?: string; secret?: string }>('/api/webhooks', input);
+  apiPost<WebhookRecord & { receive_url?: string; hmac_secret_once?: string }>(
+    '/api/webhooks', input);
 
-export const testWebhook = (id: string) => apiPost<{ ok: true }>(`/api/webhooks/${id}/test`, {});
+/** What a fire answers: a Build's task, a Board run, or a skip (#709). */
+export interface WebhookFireResult {
+  task_id?: string;
+  run_id?: string;
+  board_id?: string;
+  skipped?: boolean;
+  reason?: string;
+}
+
+/** The dashboard's Test button. `event` stands in for X-GitHub-Event, which
+ *  this request does not carry, so a webhook with `match.event` can be
+ *  exercised from here. */
+export const testWebhook = (
+  id: string,
+  body: { event?: string; payload?: unknown } = {},
+) => apiPost<WebhookFireResult>(`/api/webhooks/${id}/test`, body);
 export const deleteWebhook = (id: string) => apiDelete<{ ok: true }>(`/api/webhooks/${id}`);
 
 export interface CreatePageWatchInput {

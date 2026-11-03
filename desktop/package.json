@@ -1,0 +1,15 @@
+{
+  "name": "kube-coder-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri 2 desktop client for a kube-coder workspace. Its UI is the mobile app's web build (../mobile).",
+  "scripts": {
+    "build:ui": "node scripts/build-ui.mjs",
+    "build": "tauri build",
+    "dev": "tauri dev",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

@@ -313,6 +313,60 @@ class ReconcileTests(unittest.TestCase):
             orch._reconcile_status(meta, self.task_dir)
         self.assertEqual(meta['status'], 'running')
 
+    # ── pod-restart wipes (#792) ──────────────────────────────────────────
+    # A spawning orchestrator reads these statuses to decide whether a child's
+    # work is done. `completed` for a child the pod killed mid-run is the
+    # expensive failure: the orchestrator moves on from work nobody did.
+
+    def _reconcile(self, meta, boot, run=None):
+        run = run or (lambda *a, **k: mock.Mock(returncode=1, stdout='', stderr=''))
+        with mock.patch.object(orch, '_BOOT_ID', boot), \
+             mock.patch.object(orch.subprocess, 'run', side_effect=run):
+            orch._reconcile_status(meta, self.task_dir)
+
+    def test_dead_session_from_an_earlier_boot_is_terminated(self):
+        meta = self._write_meta(boot_id='boot-A')      # no exit code written
+        self._reconcile(meta, 'boot-B')
+        self.assertEqual(meta['status'], 'terminated')
+        self.assertEqual(meta['termination_reason'], 'pod_restart')
+        self.assertIn('terminated_at', meta)
+        self.assertIn('restart', meta['error'])
+
+    def test_exit_code_beats_a_boot_mismatch(self):
+        # The wrapper got far enough to write a status, so the agent DID
+        # finish — a later restart does not retroactively unfinish it.
+        meta = self._write_meta(boot_id='boot-A')
+        with open(orch._exit_code_path(self.task_dir), 'w') as f:
+            f.write('0\n')
+        self._reconcile(meta, 'boot-B')
+        self.assertEqual(meta['status'], 'completed')
+
+    def test_nonzero_exit_stays_error_across_a_restart(self):
+        meta = self._write_meta(boot_id='boot-A')
+        with open(orch._exit_code_path(self.task_dir), 'w') as f:
+            f.write('2\n')
+        self._reconcile(meta, 'boot-B')
+        self.assertEqual(meta['status'], 'error')
+        self.assertEqual(meta['exit_code'], 2)
+
+    def test_same_boot_without_exit_code_is_completed(self):
+        meta = self._write_meta(boot_id='boot-A')
+        self._reconcile(meta, 'boot-A')
+        self.assertEqual(meta['status'], 'completed')
+
+    def test_unstamped_task_is_completed(self):
+        meta = self._write_meta()
+        self._reconcile(meta, 'boot-B')
+        self.assertEqual(meta['status'], 'completed')
+
+    def test_live_task_from_an_earlier_boot_is_adopted(self):
+        meta = self._write_meta()
+        self._reconcile(meta, 'boot-B', run=_tmux_alive)
+        self.assertEqual(meta['status'], 'running')
+        self.assertEqual(meta['boot_id'], 'boot-B')
+        with open(os.path.join(self.task_dir, 'task.json')) as f:
+            self.assertEqual(json.load(f)['boot_id'], 'boot-B')
+
 
 if __name__ == '__main__':
     unittest.main()

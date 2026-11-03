@@ -147,6 +147,9 @@ export interface BoardRunSummary {
   id: string;
   board_id: string;
   mode: 'propose' | 'autonomous';
+  /** What started it. `cron`/`webhook` runs also carry `trigger` (#709). */
+  origin?: 'manual' | 'send_back' | 'cron' | 'webhook';
+  trigger?: { type: 'cron' | 'webhook'; id: string } | null;
   status: 'running' | 'done' | 'stopped' | 'interrupted';
   concurrency: number;
   /** What was asked for. Differs from `concurrency` when the pod was busy. */
@@ -519,6 +522,11 @@ export const stopBoardRun = (boardId: string, runId: string) =>
   );
 
 /** Why a run's concurrency is lower than what was asked for, or ''. */
+/** "started by nightly-ai" for a trigger-started run; '' otherwise. */
+export function startedByLabel(run: Pick<BoardRunSummary, 'trigger'>): string {
+  return run.trigger?.id ? `started by ${run.trigger.id}` : '';
+}
+
 export function clampLabel(run: {
   concurrency: number;
   requested_concurrency: number;

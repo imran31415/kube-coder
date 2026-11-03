@@ -17,13 +17,11 @@ const setHandler = vi.fn();
 const getPermissions = vi.fn();
 const requestPermissions = vi.fn();
 const getExpoToken = vi.fn();
-const getLastResponse = vi.fn<() => Promise<unknown>>(async () => null);
-const clearLastResponse = vi.fn(async () => {});
+const getLastResponse = vi.fn();
+const clearLastResponse = vi.fn();
 const device = { isDevice: false };
 
 vi.mock('expo-notifications', () => ({
-  getLastNotificationResponseAsync: (...a: []) => getLastResponse(...a),
-  clearLastNotificationResponseAsync: (...a: []) => clearLastResponse(...a),
   setNotificationHandler: (...a: unknown[]) => setHandler(...a),
   addNotificationResponseReceivedListener: (...a: unknown[]) =>
     addResponseListener(...a),
@@ -31,6 +29,8 @@ vi.mock('expo-notifications', () => ({
   getPermissionsAsync: (...a: unknown[]) => getPermissions(...a),
   requestPermissionsAsync: (...a: unknown[]) => requestPermissions(...a),
   getExpoPushTokenAsync: (...a: unknown[]) => getExpoToken(...a),
+  getLastNotificationResponse: (...a: unknown[]) => getLastResponse(...a),
+  clearLastNotificationResponse: (...a: unknown[]) => clearLastResponse(...a),
   AndroidImportance: { HIGH: 4 },
 }));
 // A getter: the mocked module is cached across vi.resetModules, so a plain
@@ -75,14 +75,14 @@ vi.mock('../store/config', () => ({
 // Every case starts from the same inert world: not a device, not connected,
 // push on, no permission, no token, and a server that accepts everything.
 beforeEach(() => {
-  getLastResponse.mockReset().mockResolvedValue(null);
-  clearLastResponse.mockClear();
   device.isDevice = false;
   cfg = { host: '', token: '', pushEnabled: true, loaded: true };
   cfgListeners.clear();
   getPermissions.mockReset().mockImplementation(async () => ({ status: 'denied' }));
   requestPermissions.mockReset().mockImplementation(async () => ({ status: 'denied' }));
   getExpoToken.mockReset().mockImplementation(async () => ({ data: '' }));
+  getLastResponse.mockReset().mockReturnValue(null);
+  clearLastResponse.mockReset();
   registerPushToken.mockReset().mockImplementation(async () => {});
   unregisterPushToken.mockReset().mockImplementation(async () => {});
   markFeedRead.mockReset().mockImplementation(async () => {});
@@ -94,10 +94,9 @@ beforeEach(() => {
 const navigateTo = vi.fn();
 const navigate = vi.fn();
 let navReady = false;
-let navRoutes = ['Tasks'];
 vi.mock('../store/nav', () => ({
   navigateTo: (...a: unknown[]) => navigateTo(...a),
-  navigationRef: { isReady: () => navReady, getRootState: () => ({ routeNames: navRoutes }), navigate: (...a: unknown[]) => navigate(...a) },
+  navigationRef: { isReady: () => navReady, navigate: (...a: unknown[]) => navigate(...a) },
 }));
 
 describe('initPush — must never break app boot', () => {
@@ -125,6 +124,14 @@ describe('initPush — must never break app boot', () => {
     const { initPush } = await import('./notifications');
     expect(() => initPush()).not.toThrow();
     expect(typeof initPush()).toBe('function');
+  });
+
+  it('survives reading the launch response throwing', async () => {
+    getLastResponse.mockImplementation(() => {
+      throw new Error('UnavailabilityError');
+    });
+    const { initPush } = await import('./notifications');
+    expect(() => initPush()).not.toThrow();
   });
 
   it('survives the response listener throwing', async () => {
@@ -183,6 +190,203 @@ describe('handleNotificationTap — board review pushes', () => {
     handleNotificationTap({ ref: 'board:acme-jira:812' });
     expect(navigateTo).not.toHaveBeenCalled();
     expect(peekBoardFocus()).toBeNull();
+  });
+});
+
+/** A tap as expo-notifications reports it. `date` is the delivery time. */
+function response(data: Record<string, unknown>, identifier = 'fd_1', date = 1_700_000_000_000) {
+  return {
+    actionIdentifier: 'expo.modules.notifications.actions.DEFAULT',
+    notification: { date, request: { identifier, content: { data } } },
+  };
+}
+
+/** The listener initPush registered, as the native side would call it. */
+function tapListener(): (resp: unknown) => void {
+  const calls = addResponseListener.mock.calls;
+  return calls[calls.length - 1][0] as (resp: unknown) => void;
+}
+
+/**
+ * A tap that launches the app from fully closed (#709).
+ *
+ * The listener is attached after that tap already happened, so it used to be
+ * lost and the app opened on its default screen. initPush now reads the
+ * launching response; at that point Gate is still on its boot screen with no
+ * navigator mounted, so the tap is parked until App's onReady replays it.
+ */
+describe('cold start from a notification', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    addResponseListener.mockReturnValue({ remove: vi.fn() });
+    setHandler.mockImplementation(() => {});
+    navReady = false;
+    cfg = { host: 'https://ws.example', token: 'api-token', pushEnabled: true, loaded: true };
+    const { _resetBoardFocusForTest } = await import('../store/boardFocus');
+    _resetBoardFocusForTest();
+  });
+
+  it('opens the board review card once the navigator is ready', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'board:acme-gh:412', waiting: true }));
+    const push = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+
+    push.initPush();
+    expect(navigateTo).not.toHaveBeenCalled(); // parked: nothing to route to yet
+
+    navReady = true;
+    push.replayParkedNotificationTap();
+    expect(navigateTo).toHaveBeenCalledWith('Board');
+    expect(peekBoardFocus()).toMatchObject({ boardId: 'acme-gh', itemId: '412' });
+  });
+
+  it('opens a task notification on its task', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'task:t-42' }));
+    const push = await import('./notifications');
+    push.initPush();
+    navReady = true;
+    push.replayParkedNotificationTap();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't-42' },
+      initial: false,
+    });
+  });
+
+  it('opens a thread notification on that chat', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'thread:th_9' }));
+    const push = await import('./notifications');
+    push.initPush();
+    navReady = true;
+    push.replayParkedNotificationTap();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('Hypervisor', { openThreadId: 'th_9' });
+  });
+
+  it('routes straight away when the navigator is already mounted', async () => {
+    navReady = true;
+    getLastResponse.mockReturnValue(response({ ref: 'task:t-1' }));
+    const push = await import('./notifications');
+    push.initPush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    push.replayParkedNotificationTap(); // onReady after the fact: nothing parked
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the tap parked through an early replay, and replays it only once', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'thread:th_1' }));
+    const push = await import('./notifications');
+    push.initPush();
+    push.replayParkedNotificationTap(); // still not ready
+    expect(navigate).not.toHaveBeenCalled();
+
+    navReady = true;
+    push.replayParkedNotificationTap();
+    push.replayParkedNotificationTap();
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the launching alert read without waiting for the navigator', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'task:t-1', feedId: 'fd_cold' }));
+    const push = await import('./notifications');
+    push.initPush();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledWith('fd_cold');
+    navReady = true;
+    push.replayParkedNotificationTap();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(1); // the replay does not mark again
+  });
+
+  it('a launch with no notification parks nothing', async () => {
+    const push = await import('./notifications');
+    push.initPush();
+    navReady = true;
+    push.replayParkedNotificationTap();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(markFeedRead).not.toHaveBeenCalled();
+  });
+
+  it('clears the native copy so a JS reload cannot route it again', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'task:t-1' }));
+    const push = await import('./notifications');
+    push.initPush();
+    expect(clearLastResponse).toHaveBeenCalled();
+  });
+});
+
+/**
+ * One tap, one navigation. On a cold start the listener can be told about the
+ * launching tap as well as the read seeing it, in either order, and a re-run
+ * of App's boot effect reads it again.
+ */
+describe('a response is routed once', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    addResponseListener.mockReturnValue({ remove: vi.fn() });
+    setHandler.mockImplementation(() => {});
+    navReady = true;
+    cfg = { host: 'https://ws.example', token: 'api-token', pushEnabled: true, loaded: true };
+    const { _resetBoardFocusForTest } = await import('../store/boardFocus');
+    _resetBoardFocusForTest();
+  });
+
+  it('the launch read after the listener already handled it', async () => {
+    const tap = response({ ref: 'task:t-7', feedId: 'fd_7' });
+    const push = await import('./notifications');
+    push.attachNotificationResponseListener();
+    tapListener()(tap);
+    getLastResponse.mockReturnValue(tap);
+    push.initPush();
+    await flush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('the listener after the launch read already handled it', async () => {
+    const tap = response({ ref: 'board:acme-gh:412' });
+    getLastResponse.mockReturnValue(tap);
+    const push = await import('./notifications');
+    const { peekBoardFocus } = await import('../store/boardFocus');
+    push.initPush();
+    const first = peekBoardFocus();
+    tapListener()(tap);
+    expect(navigateTo).toHaveBeenCalledTimes(1);
+    expect(peekBoardFocus()).toBe(first); // no second focus request either
+  });
+
+  it('both seeing it before the navigator is ready still replays once', async () => {
+    navReady = false;
+    const tap = response({ ref: 'thread:th_3' });
+    getLastResponse.mockReturnValue(tap);
+    const push = await import('./notifications');
+    push.initPush();
+    tapListener()(tap);
+    navReady = true;
+    push.replayParkedNotificationTap();
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a re-run of the boot effect does not navigate again', async () => {
+    getLastResponse.mockReturnValue(response({ ref: 'task:t-1' }));
+    const push = await import('./notifications');
+    push.initPush();
+    push.initPush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a re-sent alert sharing the identifier is a new tap', async () => {
+    // On iOS the request identifier is the collapseId, which push_notify sets
+    // to the feed id, so every repeat of one alert carries the same identifier.
+    const push = await import('./notifications');
+    push.attachNotificationResponseListener();
+    tapListener()(response({ ref: 'task:t-1' }, 'fd_1', 1_000));
+    tapListener()(response({ ref: 'task:t-1' }, 'fd_1', 2_000));
+    expect(navigate).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -342,6 +546,38 @@ describe('handleNotificationTap — a tap marks the alert read', () => {
     expect(cfgListeners.size).toBe(0); // unsubscribed after the one send
   });
 
+  it('a tap on a sleeping workspace marks the row read once it wakes (#728)', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const state = await import('../store/workspaceState');
+    state.reportDown('workspace_unreachable');
+    markFeedRead.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('asleep'), { code: 'workspace_unreachable' });
+    });
+    handleNotificationTap({ ref: 'task:t1', feedId: 'fd_sleep' });
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalled(); // the tap still lands on its screen
+
+    state.reportAwake();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(2);
+    expect(markFeedRead).toHaveBeenLastCalledWith('fd_sleep');
+  });
+
+  it('a mark-read that fails for another reason is not retried', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    const state = await import('../store/workspaceState');
+    markFeedRead.mockImplementationOnce(async () => {
+      throw new Error('500');
+    });
+    handleNotificationTap({ feedId: 'fd_err' });
+    await flush();
+    state.reportDown('workspace_unreachable');
+    state.reportAwake();
+    await flush();
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+  });
+
   it('a tap without a feed id marks nothing', async () => {
     const { handleNotificationTap } = await import('./notifications');
     handleNotificationTap({ ref: 'task:t1' });
@@ -366,84 +602,74 @@ describe('handleNotificationTap — a tap marks the alert read', () => {
   });
 });
 
-
-describe('publishing notification recovery', () => {
+/**
+ * Build publishing pushes (#710). A Ready-to-review or publish-result push
+ * opens the Build on its Changes sheet — through the same park/replay and
+ * read path as every other tap — and only in the workspace that sent it.
+ */
+describe('handleNotificationTap — Build publishing pushes (#710)', () => {
+  const host = 'https://ws.example';
   beforeEach(() => {
-    vi.clearAllMocks(); vi.resetModules();
-    navReady = false; navRoutes = ['Tasks'];
-    cfg = { host: '', token: '', pushEnabled: true, loaded: false };
-  });
-  it('deduplicates the listener and cold-start response', async () => {
-    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
+    vi.clearAllMocks();
+    vi.resetModules();
     navReady = true;
-    const response = { actionIdentifier: 'default', notification: { request: {
-      identifier: 'ready-1', content: { data: { source: 'build-publish',
-        workspaceHost: cfg.host, ref: 'task:t1', feedId: 'ready-1' } },
-    } } };
-    getLastResponse.mockResolvedValue(response);
-    addResponseListener.mockReturnValue({ remove: vi.fn() });
-    const push = await import('./notifications');
-    const detach = push.attachNotificationResponseListener();
-    addResponseListener.mock.calls.at(-1)![0](response);
+    cfg = { host, token: 'api-token', pushEnabled: true, loaded: true };
+  });
+
+  it('opens the Build on its Changes sheet and marks the row read', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ source: 'build-publish', workspaceHost: `${host}/`, ref: 'task:t1', feedId: 'ready-1' });
     await flush();
     expect(navigate).toHaveBeenCalledTimes(1);
-    expect(markFeedRead).toHaveBeenCalledTimes(1);
-    detach();
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1', tab: 'changes' },
+      initial: false,
+    });
+    expect(markFeedRead).toHaveBeenCalledWith('ready-1');
   });
-  it('ignores a cold-start response that arrives after detach', async () => {
-    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
-    navReady = true;
-    let resolve!: (value: unknown) => void;
-    getLastResponse.mockReturnValue(new Promise(r => { resolve = r; }));
-    addResponseListener.mockReturnValue({ remove: vi.fn() });
+
+  it('a cold-start tap is parked, then opens Changes once on replay', async () => {
+    navReady = false;
+    cfg = { ...cfg, host: '', token: '', loaded: false };
     const push = await import('./notifications');
-    const detach = push.attachNotificationResponseListener();
-    detach();
-    resolve({ actionIdentifier: 'default', notification: { request: {
-      identifier: 'late', content: { data: { ref: 'task:t1' } },
-    } } });
+    push.handleNotificationTap({ source: 'build-publish', workspaceHost: host, ref: 'task:t1', feedId: 'ready-1' });
     await flush();
     expect(navigate).not.toHaveBeenCalled();
-    expect(cfgListeners.size).toBe(0);
-  });
-  it('waits for both hydration and navigation then opens Changes once', async () => {
-    const push = await import('./notifications');
-    push.handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://ws.example', ref: 'task:t1', feedId: 'ready-1' });
-    push.flushPendingNotification();
-    expect(navigate).not.toHaveBeenCalled();
-    cfg = { ...cfg, host: 'https://ws.example', token: 'token', loaded: true };
-    push.flushPendingNotification();
-    expect(navigate).not.toHaveBeenCalled();
+    expect(markFeedRead).not.toHaveBeenCalled();
+
+    cfg = { host, token: 'api-token', pushEnabled: true, loaded: true };
+    for (const listener of [...cfgListeners]) listener(cfg);
     navReady = true;
-    push.flushPendingNotification();
-    push.flushPendingNotification();
+    push.replayParkedNotificationTap();
+    push.replayParkedNotificationTap();
     await flush();
     expect(navigate).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledWith('Tasks', { screen: 'TaskDetail', params: { id: 't1', tab: 'changes' }, initial: false });
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1', tab: 'changes' },
+      initial: false,
+    });
     expect(markFeedRead).toHaveBeenCalledTimes(1);
   });
-  it('does not acknowledge or navigate to a different workspace task', async () => {
-    cfg = { ...cfg, host: 'https://new.example', token: 'token', loaded: true };
-    navReady = true;
-    const push = await import('./notifications');
-    push.handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://old.example', ref: 'task:t1', feedId: 'old-feed' });
+
+  it('a push from another workspace opens the Feed and leaves its row alone', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://old.example', ref: 'task:t1', feedId: 'old-feed' });
     await flush();
     expect(markFeedRead).not.toHaveBeenCalled();
-    expect(navigate).not.toHaveBeenCalledWith('Tasks', expect.anything());
-  });
-});
-
-
-describe('connected navigator readiness', () => {
-  it('waits until Tasks is registered after hydration', async () => {
-    vi.clearAllMocks(); vi.resetModules();
-    navReady = true; navRoutes = [];
-    cfg = { host: 'https://ws.example', token: 'token', loaded: true, pushEnabled: true };
-    const push = await import('./notifications');
-    push.handleNotificationTap({ source: 'build-publish', workspaceHost: cfg.host, ref: 'task:t1' });
     expect(navigate).not.toHaveBeenCalled();
-    navRoutes = ['Tasks'];
-    push.flushPendingNotification();
-    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigateTo).toHaveBeenCalledWith('Feed');
+  });
+
+  it('a task push without the publishing source still opens the Build plainly', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ ref: 'task:t1', feedId: 'fd_1' });
+    await flush();
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1' },
+      initial: false,
+    });
   });
 });

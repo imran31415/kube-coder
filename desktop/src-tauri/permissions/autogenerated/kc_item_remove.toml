@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kc-item-remove"
+description = "Enables the kc_item_remove command without any pre-configured scope."
+commands.allow = ["kc_item_remove"]
+
+[[permission]]
+identifier = "deny-kc-item-remove"
+description = "Denies the kc_item_remove command without any pre-configured scope."
+commands.deny = ["kc_item_remove"]

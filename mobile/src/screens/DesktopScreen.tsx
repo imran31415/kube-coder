@@ -4,7 +4,7 @@
  *  compact bottom dock of launcher icons (shared with the web dashboard via
  *  /api/desktop). Tap a dock icon to launch; long-press to edit/move/delete;
  *  + to add. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useState } from 'react';

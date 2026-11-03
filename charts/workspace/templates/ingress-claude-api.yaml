@@ -23,6 +23,17 @@ metadata:
     # the primary, deployment-independent guard against a forged identity header
     # here (rewrite-target is core nginx, unlike snippet annotations below).
     nginx.ingress.kubernetes.io/rewrite-target: /bearer-api/$1
+    {{- if .Values.keeper.enabled }}
+    # While the workspace pod is away this Service has no endpoints and stock
+    # ingress-nginx answers a raw 503 with an HTML body. The app can only
+    # recognise "my workspace is asleep" from a JSON body carrying
+    # code=workspace_sleeping (#778, mobile/src/util/workspaceReach.ts); an HTML
+    # 503 classifies as the vaguer "unreachable" instead. The keeper's page
+    # listener answers either, chosen from the caller's Accept, which
+    # ingress-nginx passes to an error backend as X-Format.
+    nginx.ingress.kubernetes.io/custom-http-errors: "502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: keeper-{{ .Values.user.name }}
+    {{- end }}
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -64,7 +75,25 @@ spec:
       # verify, which is provider-signature-gated and already public via its
       # own ingress. /metrics is token-checked; /health is a plain liveness
       # probe and intentionally open.
+      {{- if .Values.keeper.enabled }}
+      # The negative lookahead hands /api/keeper/status and /api/keeper/wake to
+      # keeper-ingress-api.yaml and keeps everything else here (#728 step 4).
+      #
+      # Making the two location sets disjoint is deliberate. On this host every
+      # location is rendered as a regex, because several Ingresses here use
+      # rewrite-target, so ingress-nginx widens even `pathType: Exact` into a
+      # case-insensitive prefix and the winner is decided by emission order.
+      # Step 3's keeper paths happened to be the longer string and won; the
+      # app's /api/keeper/wake is SHORTER than this pattern, so relying on the
+      # same luck would be a coin toss. With the paths disjoint, order cannot
+      # matter.
+      #
+      # Scoped to exactly those two paths, anchored with $: /api/keeper/idle is
+      # step 1's endpoint, served by the workspace, and must still arrive here.
+      - path: /(api/(?!keeper/(?:status|wake)$).*|metrics|health)
+      {{- else }}
       - path: /(api/.*|metrics|health)
+      {{- end }}
         pathType: ImplementationSpecific
         backend:
           service:

@@ -207,6 +207,44 @@ class CompletionHookTests(unittest.TestCase):
 
     @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
     @mock.patch('server.subprocess.run')
+    def test_reconcile_after_a_pod_restart_reports_terminated(self, mock_run,
+                                                              mock_urlopen):
+        """The end-to-end shape of #792, which cost hours of agent work.
+
+        A Build is launched, the pod restarts (so every tmux session is gone
+        AND this is a different boot), and the next read must NOT call that a
+        clean finish — the agent never reported, and its worktree may hold
+        uncommitted work. The webhook has to carry the same verdict, since an
+        orchestrator driving many Builds learns about them that way.
+        """
+        mock_run.side_effect = _fake_tmux_alive
+        task = server.ClaudeTaskManager.create_task(
+            'do thing',
+            response_url='http://example.test/hook',
+        )
+        meta_path = os.path.join(self.tmpdir, task['task_id'], 'task.json')
+        with open(meta_path) as f:
+            self.assertTrue(json.load(f).get('boot_id'),
+                            'a Build must record the boot that launched it')
+
+        cm = mock.MagicMock()
+        cm.__enter__.return_value = mock.Mock(status=200)
+        mock_urlopen.return_value = cm
+        mock_run.side_effect = _fake_tmux_dead
+
+        with mock.patch.object(server.ClaudeTaskManager, '_boot_id',
+                               'a-later-boot'):
+            task_after = server.ClaudeTaskManager.get_task(task['task_id'])
+        self.assertEqual(task_after['status'], 'terminated')
+        self.assertEqual(task_after['termination_reason'], 'pod_restart')
+
+        self.assertTrue(self._wait_hook_fired(mock_urlopen))
+        payload = json.loads(mock_urlopen.call_args.args[0].data)
+        self.assertEqual(payload['status'], 'terminated')
+        self.assertEqual(payload['termination_reason'], 'pod_restart')
+
+    @mock.patch.object(server.ClaudeTaskManager, '_hook_urlopen')
+    @mock.patch('server.subprocess.run')
     def test_hook_idempotent_under_concurrent_reconcile(self, mock_run, mock_urlopen):
         """Repeated reconciles (which happen on every list/get/stream call)
         must not re-fire the hook. hook_fired_at on the meta is the marker."""
@@ -266,7 +304,7 @@ class AssistantSelectionTests(unittest.TestCase):
             'KC_ANTIGRAVITY_MODEL',
             'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
             'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
-            'KC_LIBREFANG_AGENT',
+            'KC_LIBREFANG_AGENT', 'KC_LIBREFANG_ENABLED',
         ) if k in os.environ}
         # available_assistants()/resolve_assistant() read the module-level
         # WORKSPACE_DEFAULT_ASSISTANT (fixed at import from KC_DEFAULT_ASSISTANT).
@@ -285,7 +323,7 @@ class AssistantSelectionTests(unittest.TestCase):
                   'KC_ANTIGRAVITY_MODEL',
                   'KC_FALLBACK_BASE_URL', 'KC_FALLBACK_API_KEY', 'KC_FALLBACK_MODEL',
                   'KC_FALLBACK_PROVIDER_ID', 'KC_FALLBACK_PROVIDER_NAME',
-                  'KC_LIBREFANG_AGENT'):
+                  'KC_LIBREFANG_AGENT', 'KC_LIBREFANG_ENABLED'):
             os.environ.pop(k, None)
         os.environ.update(self._saved_env)
         server.WORKSPACE_DEFAULT_ASSISTANT = self._saved_default
@@ -297,27 +335,45 @@ class AssistantSelectionTests(unittest.TestCase):
         self.assertIn('ante', [a['id'] for a in avail])
         self.assertTrue(avail[0]['default'])
 
-    def test_librefang_listed_only_when_binary_present(self):
-        # Availability is gated on the CLI actually resolving — older images
-        # predate the binary and the dropdown must not offer a dead option.
-        with mock.patch('server.shutil.which', return_value=None):
-            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
-            self.assertNotIn('librefang', ids)
+    def test_librefang_not_listed_until_the_workspace_opts_in(self):
+        # LibreFang is opt-in (#754): the binary ships in the image, so binary
+        # presence alone can no longer be the signal — the chart flag is.
         with mock.patch('server.shutil.which',
                         return_value='/usr/local/bin/librefang'):
-            match = [a for a in server.ClaudeTaskManager.available_assistants()
-                     if a['id'] == 'librefang']
-            self.assertEqual(len(match), 1)
-            self.assertEqual(match[0]['label'], 'LibreFang')
+            ids = [a['id'] for a in server.ClaudeTaskManager.available_assistants()]
+            self.assertNotIn('librefang', ids)
 
-    def test_resolve_librefang_requires_binary(self):
+    def test_librefang_listed_only_when_opted_in_and_binary_present(self):
+        # With the flag on, availability is still gated on the CLI actually
+        # resolving — older images predate the binary and the dropdown must
+        # not offer a dead option.
+        with mock.patch.dict(os.environ, {'KC_LIBREFANG_ENABLED': 'true'}):
+            with mock.patch('server.shutil.which', return_value=None):
+                ids = [a['id'] for a
+                       in server.ClaudeTaskManager.available_assistants()]
+                self.assertNotIn('librefang', ids)
+            with mock.patch('server.shutil.which',
+                            return_value='/usr/local/bin/librefang'):
+                match = [a for a in server.ClaudeTaskManager.available_assistants()
+                         if a['id'] == 'librefang']
+                self.assertEqual(len(match), 1)
+                self.assertEqual(match[0]['label'], 'LibreFang')
+
+    def test_resolve_librefang_requires_the_flag_and_the_binary(self):
         with mock.patch('server.shutil.which', return_value=None):
             self.assertEqual(
                 server.ClaudeTaskManager.resolve_assistant('librefang'), 'claude')
+        # Binary but no flag: a Build, cron or webhook naming librefang on a
+        # workspace that never opted in falls back instead of launching a CLI
+        # whose boot-time setup never ran.
         with mock.patch('server.shutil.which',
                         return_value='/usr/local/bin/librefang'):
             self.assertEqual(
-                server.ClaudeTaskManager.resolve_assistant('librefang'), 'librefang')
+                server.ClaudeTaskManager.resolve_assistant('librefang'), 'claude')
+            with mock.patch.dict(os.environ, {'KC_LIBREFANG_ENABLED': 'true'}):
+                self.assertEqual(
+                    server.ClaudeTaskManager.resolve_assistant('librefang'),
+                    'librefang')
 
     def test_command_librefang_chats_with_coder(self):
         cmd = server.ClaudeTaskManager.assistant_command('librefang')

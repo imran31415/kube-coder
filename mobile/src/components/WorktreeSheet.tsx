@@ -5,7 +5,7 @@
  *
  * Every tappable thing is at least 44pt (the iOS minimum) and labelled.
  */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import React, { useCallback, useEffect, useState } from 'react';
 import {

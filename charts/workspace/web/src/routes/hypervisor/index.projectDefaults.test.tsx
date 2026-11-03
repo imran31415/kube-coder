@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, render, screen, waitFor } from '@testing-library/preact';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { HypervisorRoute } from './index';
 import {
@@ -42,7 +42,10 @@ const KC: Project = {
 let projectList: Project[] = [KC];
 let threads: Partial<HypervisorThread>[] = [];
 /** Every PUT /api/projects/{id} body the SPA sent. */
-let writes: unknown[] = [];
+let writes: Record<string, unknown>[] = [];
+// Opening a project chat also writes last_seen_at. Assert default-setting
+// writes independently of when that legitimate visit request completes.
+const defaultWrites = () => writes.filter(body => 'default_assistant' in body);
 
 const NOW_SEC = Math.floor(Date.now() / 1000);
 
@@ -102,6 +105,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   globalThis.fetch = realFetch;
   localStorage.clear();
   closeThread();
@@ -141,7 +145,7 @@ describe('per-project assistant defaults in Chat (#683)', () => {
     (await screen.findByText('Set as project default')).click();
 
     await waitFor(() =>
-      expect(writes).toEqual([
+      expect(defaultWrites()).toEqual([
         { default_assistant: 'claude', default_model: 'opus', default_effort: 'low' },
       ]),
     );
@@ -158,7 +162,7 @@ describe('per-project assistant defaults in Chat (#683)', () => {
 
     const btn = (await screen.findByText('Project default')) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
-    expect(writes).toEqual([]);
+    expect(defaultWrites()).toEqual([]);
   });
 
   it('seeds the next new chat from the project it will be filed into', async () => {

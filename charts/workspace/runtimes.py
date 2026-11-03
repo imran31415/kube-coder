@@ -16,6 +16,14 @@ from it:
     RUNTIMES[id]['orch_launch_args']  attachable sub-agent (orchestrator)
     RUNTIMES[id]['headless_args']     one-shot sub-agent   (orchestrator)
     RUNTIMES[id]['headless_capable']  derived: `headless_args` is not None
+    RUNTIMES[id]['opt_in_env']        off unless the chart sets that env var
+
+`opt_in_env` marks a runtime the workspace does NOT offer by default (#754):
+the CLI is in the image, but nothing sets it up at boot and no picker lists it
+until an operator turns the chart value on. It belongs here for the same reason
+every other per-runtime fact does — the dashboard's picker, the orchestrator's
+tool enum and the launch guard all need the same answer, and three copies of it
+would drift.
 
 `headless_capable` is no longer a separate set that can disagree with the
 branch bodies — it IS the presence of a headless template, so a runtime cannot
@@ -212,8 +220,15 @@ RUNTIMES = {
     # LibreFang — open-source agent OS. Tasks talk to its registry-bundled
     # "coder" agent; KC_LIBREFANG_AGENT overrides it for a user-supplied
     # manifest. The CLI picks up whatever provider key is in the environment.
+    #
+    # OPT-IN (#754): off unless the chart sets assistant.librefang.enabled,
+    # which is also what makes start.sh seed its home and pre-warm its kernel
+    # daemon. Without that boot work the CLI exists but has no config and no
+    # daemon, so offering it would mean offering a dead option — hence one
+    # flag gates the setup and the listing together.
     'librefang': {
         'label': 'LibreFang',
+        'opt_in_env': 'KC_LIBREFANG_ENABLED',
         'auth_help': 'Save the key for the provider used by your LibreFang agent. If the provider needs changing, configure it in the workspace terminal.',
         'model_env': None,
         'model_default': None,
@@ -285,6 +300,28 @@ def is_headless_capable(assistant):
     """
     entry = RUNTIMES.get(assistant)
     return bool(entry and entry.get('headless_args'))
+
+
+def is_enabled(assistant, *, env=None):
+    """Whether this workspace OFFERS the runtime at all (#754).
+
+    Independent of the downstream gates: `is_headless_capable` asks what a
+    runtime can do, the pickers ask whether its binary resolves and whether a
+    provider key is set. This asks the prior question — is the runtime part of
+    this workspace in the first place.
+
+    Runtimes without an `opt_in_env` are always offered (the historical
+    behaviour, unchanged). An opt-in runtime is offered only when its env var
+    is truthy, so a workspace that never asked for it sees the option absent
+    rather than present-and-broken. Unknown ids are left to the callers'
+    own fallbacks.
+    """
+    import os
+    env = os.environ if env is None else env
+    key = (RUNTIMES.get(assistant) or {}).get('opt_in_env')
+    if not key:
+        return True
+    return (env.get(key) or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def resolve_model(assistant, override='', *, env=None, orchestrator=False):

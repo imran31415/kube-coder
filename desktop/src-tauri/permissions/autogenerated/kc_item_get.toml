@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kc-item-get"
+description = "Enables the kc_item_get command without any pre-configured scope."
+commands.allow = ["kc_item_get"]
+
+[[permission]]
+identifier = "deny-kc-item-get"
+description = "Denies the kc_item_get command without any pre-configured scope."
+commands.deny = ["kc_item_get"]

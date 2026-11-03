@@ -1,7 +1,13 @@
 import { apiGet, apiPost, apiDelete, authPrefix } from './client';
 import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
 
-export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'unknown' | 'waiting-for-input';
+/**
+ * `terminated` (#792) is NOT a flavour of completed: the pod restarted and
+ * wiped the task's tmux session, so the agent never finished and never
+ * reported. The server only ever writes it when the boot that launched the
+ * task is not the boot that found it dead.
+ */
+export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'terminated' | 'unknown' | 'waiting-for-input';
 export type TaskKind = 'claude' | 'terminal' | string;
 
 export interface MemoryInjection {
@@ -29,6 +35,15 @@ export interface TaskSummary {
   last_input_prompt?: string;
   /** Unix seconds the rendered screen last changed (drives idle/stale UI). */
   last_activity_at?: number | null;
+  /**
+   * Did the launch prompt actually reach the composer? `null` while the
+   * delivery thread is still in flight. False with zero progress is the
+   * "launched but never started" tell (#800) — on the LIST, because
+   * `waiting-for-input` is also the status of a task that finished.
+   */
+  prompt_delivered?: boolean | null;
+  /** Parked on Claude Code's folder-trust dialog rather than idle (#800). */
+  stalled_at_trust_dialog?: boolean;
   /** Present only for a Build launched in an isolated worktree (#701). */
   worktree?: WorktreeBrief;
 }
@@ -238,6 +253,7 @@ export interface TaskWorktreeView {
   repo_exists: boolean;
   branch_exists: boolean;
   owner_task_id: string;
+  /** Some live task is working in the folder — its owner, or another (#791). */
   live: boolean;
   status: WorktreeStatus | null;
   status_error: string;
@@ -333,9 +349,31 @@ export const scrollTerminal = (
  *  deployment's auth prefix (empty under basic auth, /oauth behind oauth2). */
 export const terminalUrl = () => `${authPrefix()}/terminal/?t=${Date.now()}`;
 
+/**
+ * The WebSocket path noVNC must ask for, relative to the host root.
+ *
+ * noVNC does NOT derive this from the page's own directory. `app/ui.js` reads
+ * the `path` setting (default `'websockify'`) and builds the socket URL as
+ * `wss://<host>:<port>/<path>` — so a viewer served from
+ * `/oauth/vnc-direct/vnc.html` still asks for `/websockify` at the root
+ * unless it is told otherwise. In oauth2 mode no such route exists (the
+ * websockify ingress is `/oauth/websockify`, so that oauth2-proxy actually
+ * sees the request), the catch-all `/` ingress sends it to the dashboard on
+ * 6080 instead, and server.py 404s it because `/websockify` is one of its
+ * NON_SPA_PREFIXES. The VNC tab then reports "Failed to connect to server"
+ * while websockify's own log stays empty, because nothing ever reached it.
+ *
+ * No leading slash: noVNC concatenates `'/' + path`. Under basic auth the
+ * prefix is empty and this returns plain `websockify`, which is exactly the
+ * default — so that mode keeps its existing, working behaviour.
+ */
+export const vncWsPath = (prefix = authPrefix()) =>
+  `${prefix.replace(/^\/+/, '')}${prefix ? '/' : ''}websockify`;
+
 /** Absolute URL for the embedded noVNC viewer. */
 export const vncUrl = () =>
-  `${authPrefix()}/vnc-direct/vnc.html?autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
+  `${authPrefix()}/vnc-direct/vnc.html?path=${encodeURIComponent(vncWsPath())}` +
+  `&autoconnect=true&resize=scale&view_clip=true&t=${Date.now()}`;
 
 /** URL that opens code-server at `folder`, via the deployment's auth prefix
  *  (empty under basic auth, /oauth behind the oauth2 ingress). */

@@ -61,6 +61,23 @@
         "(?<depName>ghcr\\.io/imran31415/kube-coder/provisioner):(?<currentValue>[^\\s@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The always-on keeper image (#728), pinned tag+digest as keeper.image in the workspace chart values once the first release publishes it. It holds a token that can scale the workspace, so the pin must follow new signed releases.",
+      "managerFilePatterns": ["charts/workspace/values.yaml"],
+      "matchStrings": [
+        "(?<depName>ghcr\\.io/imran31415/kube-coder/keeper):(?<currentValue>[^\\s@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The Go version the keeper's CI job tests with, annotated with a `# renovate:` hint — kept in step with the golang builder image in keeper/Dockerfile (grouped below).",
+      "managerFilePatterns": [".github/workflows/ci.yml"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s+go-version: \"(?<currentValue>[^\"]+)\""
+      ]
     }
   ],
   "packageRules": [
@@ -85,6 +102,17 @@
       "matchDepNames": ["ghcr.io/imran31415/kube-coder/provisioner"],
       "groupName": "provisioner image (privileged path)",
       "addLabels": ["security"]
+    },
+    {
+      "description": "Keeper image — runs beside every workspace with a token that can stop and start it. On its own and labelled security, like the provisioner.",
+      "matchDepNames": ["ghcr.io/imran31415/kube-coder/keeper"],
+      "groupName": "keeper image",
+      "addLabels": ["security"]
+    },
+    {
+      "description": "The keeper's Go toolchain: the golang builder image and the CI go-version move together, so CI tests on the Go that builds the release.",
+      "matchDepNames": ["golang", "go"],
+      "groupName": "keeper Go toolchain"
     },
     {
       "description": "Base OS/node images — pin + track digests together.",

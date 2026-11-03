@@ -10,14 +10,23 @@ import { NotificationsCard } from '../components/NotificationsCard';
 import { ProviderKeysCard } from '../components/ProviderKeysCard';
 import { MessagingCard } from '../components/MessagingCard';
 import { UpdatesCard } from '../components/UpdatesCard';
+import { mockSleep } from '../mock/mockData';
 import { clearConnection, clearControllerConnection, hasController, isDemoHost } from '../store/config';
+import { isDesktop } from '../desktop/bridge';
 import { unregisterForPush } from '../push/notifications';
 import { useConfig } from '../store/useConfig';
+import { reportDown } from '../store/workspaceState';
 import { colors, font, space } from '../theme';
 import { confirmAction } from '../util/confirm';
+import { SLEEPING } from '../util/workspaceReach';
 
 function mask(t: string): string {
   return t ? t.slice(0, 4) + '••••••••' + t.slice(-2) : '';
+}
+
+function simulateSleep(): void {
+  mockSleep.asleep = true;
+  reportDown(SLEEPING);
 }
 
 export default function SettingsScreen() {
@@ -85,7 +94,16 @@ export default function SettingsScreen() {
             onPress={disconnect}
             style={{ marginTop: space.sm }}
           />
-        ) : null}
+        ) : (
+          // Shows the sleeping-workspace flow (#728) without a cluster.
+          <Button
+            title="Simulate a sleeping workspace"
+            icon="moon-outline"
+            variant="secondary"
+            onPress={simulateSleep}
+            style={{ marginTop: space.sm }}
+          />
+        )}
 
         {/* Push on/off for this phone (#685). Not on the public demo, which
             refuses registration; shown in the mock build, where it is inert. */}
@@ -104,41 +122,44 @@ export default function SettingsScreen() {
 
         <UpdatesCard readOnly={isDemo || cfg.mock} />
 
-        {/* Admin controller — a second, optional connection. */}
-        <Card style={{ gap: space.md, marginTop: space.lg }}>
-          <View style={styles.ctrlHead}>
-            <Label>Controller (admin)</Label>
-            <Text style={[styles.ctrlState, { color: controllerOn ? colors.success : colors.textFaint }]}>
-              {controllerOn ? 'Connected' : 'Not connected'}
-            </Text>
-          </View>
-          {controllerOn ? (
-            <>
-              <View>
-                <Label>Controller host</Label>
-                <Text style={styles.value}>{cfg.controllerHost || (cfg.mock ? 'demo controller' : '—')}</Text>
-              </View>
-              <View>
-                <Label>Admin token</Label>
-                <Text style={[styles.value, { fontFamily: font.mono }]}>
-                  {mask(cfg.controllerToken) || (cfg.mock ? 'demo' : '—')}
-                </Text>
-              </View>
-            </>
-          ) : (
-            <Text style={styles.ctrlHelp}>
-              Manage all workspaces (list, start/stop, capacity) from a controller. Reveal a host + admin token on
-              the controller web console's “Mobile access” card.
-            </Text>
-          )}
-          {!cfg.mock ? (
-            controllerOn ? (
-              <Button title="Disconnect controller" variant="secondary" icon="log-out-outline" onPress={disconnectController} />
+        {/* Admin controller — a second, optional connection. Not in the
+            desktop app yet (#833): its core talks to one host, the workspace. */}
+        {isDesktop() && !cfg.mock ? null : (
+          <Card style={{ gap: space.md, marginTop: space.lg }}>
+            <View style={styles.ctrlHead}>
+              <Label>Controller (admin)</Label>
+              <Text style={[styles.ctrlState, { color: controllerOn ? colors.success : colors.textFaint }]}>
+                {controllerOn ? 'Connected' : 'Not connected'}
+              </Text>
+            </View>
+            {controllerOn ? (
+              <>
+                <View>
+                  <Label>Controller host</Label>
+                  <Text style={styles.value}>{cfg.controllerHost || (cfg.mock ? 'demo controller' : '—')}</Text>
+                </View>
+                <View>
+                  <Label>Admin token</Label>
+                  <Text style={[styles.value, { fontFamily: font.mono }]}>
+                    {mask(cfg.controllerToken) || (cfg.mock ? 'demo' : '—')}
+                  </Text>
+                </View>
+              </>
             ) : (
-              <Button title="Add controller" icon="server-outline" onPress={() => setCtrlModal(true)} />
-            )
-          ) : null}
-        </Card>
+              <Text style={styles.ctrlHelp}>
+                Manage all workspaces (list, start/stop, capacity) from a controller. Reveal a host + admin token on
+                the controller web console's “Mobile access” card.
+              </Text>
+            )}
+            {!cfg.mock ? (
+              controllerOn ? (
+                <Button title="Disconnect controller" variant="secondary" icon="log-out-outline" onPress={disconnectController} />
+              ) : (
+                <Button title="Add controller" icon="server-outline" onPress={() => setCtrlModal(true)} />
+              )
+            ) : null}
+          </Card>
+        )}
 
         <Text style={styles.about}>
           kube-coder mobile · drive your workspace from anywhere. Tasks, memory and

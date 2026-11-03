@@ -22,10 +22,10 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -54,19 +54,21 @@ import {
 import { AppEmbed } from '../components/AppEmbed';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
-import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, Project, TranscriptSource, WorkdirOption } from '../api/types';
+import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, Project, WorkdirOption } from '../api/types';
 import {
   buildTurns,
   groupActivity,
-  sameTranscript,
+  syncTranscript,
   turnCopyText,
   turnWindow,
   TURN_WINDOW,
   TURN_WINDOW_STEP,
+  type HeldTranscript,
   type HvActivityBlock,
   type HvBlock,
   type HvRenderBlock,
 } from '../util/hvTranscript';
+import { useWindowVisible } from '../util/useWindowVisible';
 import {
   readSpeakPref,
   writeSpeakPref,
@@ -180,9 +182,15 @@ export default function HypervisorScreen() {
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
   const scrollRef = useRef<ScrollView | null>(null);
   const optimisticSeq = useRef(-1);
-  // Which store the server built the last transcript from (session_log vs
-  // capture) — a flip re-stamps seqs, so the poll guard must see it.
-  const transcriptSource = useRef<TranscriptSource | null>(null);
+  // The transcript as last set, and which store the server built it from
+  // (session_log vs capture — a flip re-stamps seqs). Every change to `events`
+  // goes through setTranscript so the poll can compare against it without
+  // calling setEvents (#833: see the poll below).
+  const held = useRef<HeldTranscript>({ events: [], source: null });
+  const statusNow = useRef(status);
+  statusNow.current = status;
+  const focused = useIsFocused();
+  const visible = useWindowVisible();
   // Whether the view is pinned to the bottom. We only auto-scroll on new events
   // while pinned — so scrolling up to read history isn't yanked back down by the
   // 2s poll. Starts true; onScroll flips it as the user scrolls.
@@ -360,34 +368,46 @@ export default function HypervisorScreen() {
     void refreshThreads();
   }, [refreshThreads]);
 
-  // Poll the open thread's canonical events while it's active.
+  function setTranscript(next: HeldTranscript) {
+    held.current = next;
+    setEvents(next.events);
+  }
+
+  /** Read the open thread's news and set what changed — and nothing else.
+   *
+   *  #833: this used to re-read the whole transcript every 2 s and call
+   *  `setEvents(prev => same ? prev : d.events)`. On an idle chat that update
+   *  always bailed out, and React keeps a bailed-out update (and the closure
+   *  holding that tick's transcript) queued until the component next renders
+   *  — which an idle chat never does. A 2.5 MB thread grew the desktop web
+   *  process by ~1 MB/s. Now the read is incremental and state is only set
+   *  when the transcript or the status actually changed. */
+  const pullTranscript = useCallback(async (id: string, alive: () => boolean = () => true) => {
+    const before = held.current;
+    const { detail, next } = await syncTranscript(before, (since) => getThreadDetail(id, since));
+    // A late answer for a thread the user left, or one that lost a race with
+    // an optimistic turn: the next poll reconciles.
+    if (!alive() || detail.thread.id !== id || held.current !== before) return;
+    if (next) setTranscript(next);
+    if (detail.thread.status !== statusNow.current) setStatus(detail.thread.status);
+  }, []);
+
+  // Poll the open thread while it is on screen: the tab is focused and the
+  // window can be seen. Coming back to it reads what was missed at once.
+  const polling = !!activeId && focused && visible;
   useEffect(() => {
-    if (!activeId) return;
+    if (!polling || !activeId) return;
     let alive = true;
-    const tick = async () => {
-      try {
-        const d = await getThreadDetail(activeId, 0);
-        if (!alive || d.thread.id !== activeId) return;
-        // Only swap `events` when content actually changed, keeping its
-        // identity stable across idle ticks — otherwise every 2s poll
-        // re-rendered the transcript and re-fired the scroll-pin effect's
-        // animated scrollToEnd (#371, the mobile leg of web #348).
-        const src = d.source ?? null;
-        const prevSrc = transcriptSource.current;
-        transcriptSource.current = src;
-        setEvents((prev) => (sameTranscript(prev, d.events, prevSrc, src) ? prev : d.events));
-        setStatus(d.thread.status);
-      } catch {
-        /* transient */
-      }
-    };
+    const tick = () => pullTranscript(activeId, () => alive).catch(() => {
+      /* transient */
+    });
     void tick();
     const timer = setInterval(tick, 2000);
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, [activeId]);
+  }, [activeId, polling, pullTranscript]);
 
   useEffect(() => {
     if (!pinnedRef.current) return;
@@ -451,8 +471,7 @@ export default function HypervisorScreen() {
 
   function openThread(id: string) {
     setActiveId(id);
-    setEvents([]);
-    transcriptSource.current = null;
+    setTranscript({ events: [], source: null });
     setStatus('');
     setError(null);
     setChatsOpen(false);
@@ -460,8 +479,7 @@ export default function HypervisorScreen() {
 
   function newChat() {
     setActiveId(null);
-    setEvents([]);
-    transcriptSource.current = null;
+    setTranscript({ events: [], source: null });
     setStatus('');
     setError(null);
     setDraft('');
@@ -607,10 +625,13 @@ export default function HypervisorScreen() {
     setAttachments([]);
     setStatus('running');
     // Optimistic user turn (negative seq so it never collides with server seqs).
-    setEvents((prev) => [
-      ...prev,
-      { seq: optimisticSeq.current--, ts: Date.now() / 1000, role: 'user', type: 'message', text: finalText },
-    ]);
+    setTranscript({
+      events: [
+        ...held.current.events,
+        { seq: optimisticSeq.current--, ts: Date.now() / 1000, role: 'user', type: 'message', text: finalText },
+      ],
+      source: held.current.source,
+    });
     try {
       if (!activeId) {
         const mode = override?.mode ?? selectedMode;
@@ -644,14 +665,7 @@ export default function HypervisorScreen() {
     try {
       await stopThread(activeId);
       // Reflect the halt immediately rather than waiting for the next poll.
-      const d = await getThreadDetail(activeId, 0);
-      if (d.thread.id === activeId) {
-        const src = d.source ?? null;
-        const prevSrc = transcriptSource.current;
-        transcriptSource.current = src;
-        setEvents((prev) => (sameTranscript(prev, d.events, prevSrc, src) ? prev : d.events));
-        setStatus(d.thread.status);
-      }
+      await pullTranscript(activeId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to stop');
     } finally {

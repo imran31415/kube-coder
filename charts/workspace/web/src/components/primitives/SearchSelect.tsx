@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import './SearchSelect.css';
 
 /**
@@ -71,6 +71,24 @@ function matches(option: SearchOption, query: string): boolean {
   );
 }
 
+/**
+ * Scroll `list` by the least amount that brings row `index` fully into view
+ * (#814). Moves the list only — `scrollIntoView` may also scroll the page when
+ * the popover runs past the viewport, and a page scroll closes the popover.
+ * Row offsets are measured from the list (`.ss-list` is `position: relative`).
+ */
+function keepRowVisible(list: HTMLElement, index: number): void {
+  const row = list.children[index] as HTMLElement | undefined;
+  if (!row) return;
+  // The list's top padding — the first row's offset — kept as breathing room
+  // so a row brought into view does not sit flush against the edge.
+  const pad = (list.firstElementChild as HTMLElement).offsetTop;
+  const top = row.offsetTop - pad;
+  const bottom = row.offsetTop + row.offsetHeight + pad;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+}
+
 export function SearchSelect({
   options,
   value,
@@ -88,8 +106,20 @@ export function SearchSelect({
   const [cursor, setCursor] = useState(0);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Set when the keyboard moved the highlight (arrows, or typing resetting it
+  // to the first match), so the effect below scrolls it into view. Never set
+  // by hover — see that effect.
+  const followCursorRef = useRef(false);
+  // Where the pointer last moved over the list. Chrome re-fires hover events
+  // when rows slide under a pointer that is resting still — the list scrolling
+  // to follow the keyboard, or a filter re-rendering it — and treating those
+  // as the reader pointing stole the highlight back from the arrow keys (and
+  // made Enter pick the hovered row instead of the first match).
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
   // Document-global ids would collide the moment two of these render together,
   // which on the chat toolbar is always.
   const listId = useId();
@@ -141,12 +171,21 @@ export function SearchSelect({
   // the trigger has to close it rather than leave it stranded.
   useEffect(() => {
     if (!open) return;
-    const onMove = () => close();
-    window.addEventListener('resize', onMove);
-    window.addEventListener('scroll', onMove, true);
+    const onResize = () => close();
+    // Capture phase, so this hears a scroll on *any* element — including the
+    // option list itself. Scrolling the list to reach an entry below the fold
+    // fired this and closed the popover under the pointer, leaving typing as
+    // the only way to reach an option. Only a scroll outside the popover can
+    // have moved the trigger.
+    const onScroll = (e: Event) => {
+      if (popRef.current?.contains(e.target as Node)) return;
+      close();
+    };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
-      window.removeEventListener('resize', onMove);
-      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll, true);
     };
   }, [open, close]);
 
@@ -161,6 +200,23 @@ export function SearchSelect({
     return () => document.removeEventListener('pointerdown', onDown, true);
   }, [open, close]);
 
+  // Keep the highlighted row on screen while the keyboard drives it (#814).
+  // Arrows past the fold otherwise highlighted a row nobody could see, and a
+  // filter typed after scrolling left the first match — the one Enter picks —
+  // above the visible part of the list. Not on hover: the row under the pointer
+  // is already visible, and scrolling there would slide a new row under a
+  // resting pointer, re-highlight it, and scroll again.
+  //
+  // A layout effect, so it runs in the same commit as the render that moved
+  // the highlight: the row is never painted off-screen, and with key repeat a
+  // deferred effect from the previous keystroke cannot consume the flag meant
+  // for this one (it left the list scrolled one row short).
+  useLayoutEffect(() => {
+    if (!followCursorRef.current) return;
+    followCursorRef.current = false;
+    if (listRef.current) keepRowVisible(listRef.current, cursor);
+  }, [cursor, query]);
+
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -171,7 +227,11 @@ export function SearchSelect({
       e.preventDefault();
       if (!rows.length) return;
       const delta = e.key === 'ArrowDown' ? 1 : -1;
-      setCursor((c) => (c + delta + rows.length) % rows.length);
+      const next = (cursor + delta + rows.length) % rows.length;
+      // Only flag a real move: an unchanged cursor runs no effect, and a flag
+      // left standing would make the next hover scroll the list.
+      if (next !== cursor) followCursorRef.current = true;
+      setCursor(next);
       return;
     }
     if (e.key === 'Enter') {
@@ -208,6 +268,7 @@ export function SearchSelect({
       {open && (
         <div
           class="ss-pop"
+          ref={popRef}
           style={
             rect
               ? { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px` }
@@ -226,12 +287,13 @@ export function SearchSelect({
             role="combobox"
             aria-expanded={true}
             onInput={(e) => {
+              followCursorRef.current = true; // bring the first match into view
               setQuery((e.target as HTMLInputElement).value);
               setCursor(0);
             }}
             onKeyDown={onKey}
           />
-          <ul class="ss-list" id={listId} role="listbox" aria-label={ariaLabel}>
+          <ul class="ss-list" id={listId} role="listbox" aria-label={ariaLabel} ref={listRef}>
             {rows.map((o, i) => (
               <li
                 key={o.value || '__empty__'}
@@ -250,7 +312,14 @@ export function SearchSelect({
                   e.preventDefault();
                   commit(o.value);
                 }}
-                onMouseEnter={() => setCursor(i)}
+                // Only a pointer that really moved takes the highlight — see
+                // pointerRef for the hover events a resting pointer re-fires.
+                onMouseMove={(e) => {
+                  const last = pointerRef.current;
+                  if (last && last.x === e.clientX && last.y === e.clientY) return;
+                  pointerRef.current = { x: e.clientX, y: e.clientY };
+                  setCursor(i);
+                }}
               >
                 <span class="ss-opt-label">{o.label}</span>
                 {o.hint && <span class="ss-opt-hint">{o.hint}</span>}

@@ -1,0 +1,270 @@
+{{- if .Values.keeper.enabled }}
+{{- if eq .Values.ingress.auth.type "none" }}
+{{- fail "keeper.enabled needs ingress.auth.type basic or oauth2: the keeper wakes the workspace for any visitor who passes the ingress auth, and auth.type=none has none" }}
+{{- end }}
+# Always-on keeper (#728 step 3, docs/always-on-keeper.md).
+#
+# Takes over from holding-<user> (#184): the workspace ingresses use
+# keeper-<user> as their custom-error backend, so the same "restarting…" page is
+# served while the workspace pod is away. On top of that, a logged-in visit to
+# a workspace the keeper put to sleep wakes it (0 -> 1); one an admin stopped
+# stays stopped. Its own Deployment for the same reason as the holding page: it
+# has to outlive the workspace pod.
+#
+# One static Go binary on distroless (keeper/Dockerfile): non-root, read-only
+# root filesystem, no capabilities, and RBAC that can read and scale exactly one
+# Deployment (keeper-rbac.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  replicas: 1
+  # Recreate, not the default RollingUpdate, because the state volume below is
+  # ReadWriteOnce: a rolling update would wait for the new pod to mount a volume
+  # the old pod still holds, and deadlock the upgrade. deployment.yaml does the
+  # same, for the same reason, with the workspace's home volume. The cost is a
+  # few seconds without the page during a keeper upgrade.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: keeper-{{ .Values.user.name }}
+  template:
+    metadata:
+      labels:
+        app: keeper-{{ .Values.user.name }}
+    spec:
+      serviceAccountName: keeper-{{ .Values.user.name }}
+      {{- if .Values.image.pullSecretName }}
+      imagePullSecrets:
+      - name: {{ .Values.image.pullSecretName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # A fresh PersistentVolume arrives owned by root. Without fsGroup the
+        # keeper — uid 65532, read-only root filesystem — cannot write to the
+        # one directory it is supposed to be able to write to, and every push
+        # would fail with EACCES after the listener had already accepted it.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: keeper
+        image: {{ required "keeper.image is required when keeper.enabled (ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>)" .Values.keeper.image }}
+        imagePullPolicy: {{ .Values.keeper.imagePullPolicy | default "IfNotPresent" }}
+        args: ["serve"]
+        env:
+        - name: KEEPER_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: KEEPER_DEPLOYMENT
+          value: ws-{{ .Values.user.name }}
+        - name: KEEPER_PAGE
+          value: /etc/keeper/page/holding.html
+        # Without keeper.sleep.enabled the chart still sets replicas, so the
+        # next helm upgrade would undo a sleep; `keeper sleep` refuses.
+        - name: KEEPER_SLEEP_ENABLED
+          value: {{ .Values.keeper.sleep.enabled | quote }}
+        {{- if .Values.keeper.sleep.enabled }}
+        # Step 5: how long the workspace must be quiet before the keeper puts
+        # it to sleep. The keeper states it on every poll (?idle_minutes=), so
+        # this and the workspace's KC_KEEPER_IDLE_MINUTES cannot disagree; the
+        # workspace Deployment refuses anything below 1 at render time.
+        - name: KEEPER_IDLE_MINUTES
+          value: {{ .Values.keeper.sleep.idleMinutes | int64 | quote }}
+        {{- end }}
+        {{- if eq .Values.ingress.auth.type "oauth2" }}
+        # Who woke it, for the log. keeper-ingress.yaml sets this header from
+        # oauth2-proxy's answer; basic mode has no such header, so it is unset.
+        - name: KEEPER_USER_HEADER
+          value: X-Auth-Request-User
+        {{- end }}
+        # Step 4 (#728): where what the workspace pushes is kept, and the shared
+        # secret those pushes are authenticated with. Setting KEEPER_STATE_DIR
+        # is what turns the app (:8082) and control (:8083) listeners on, so
+        # this image on a step-3 chart runs as step 3 rather than crashlooping
+        # on a volume that is not mounted yet.
+        - name: KEEPER_STATE_DIR
+          value: /var/lib/keeper
+        - name: KEEPER_CONTROL_SECRET_FILE
+          value: /etc/keeper/control/secret
+        # Step 4b: the queue of requests that arrived while the workspace was
+        # away, and the cap on how often an unattended caller may start it.
+        {{- /* int64 on every one of these: Helm reads a YAML number as a
+        float64, and `quote` then renders anything from about ten million up in
+        scientific notation — maxBytes came out as "6.7108864e+07", which the
+        keeper cannot parse and would silently replace with its own default. */}}
+        - name: KEEPER_QUEUE_MAX_ENTRIES
+          value: {{ .Values.keeper.queue.maxEntries | default 256 | int64 | quote }}
+        - name: KEEPER_QUEUE_MAX_BYTES
+          value: {{ .Values.keeper.queue.maxBytes | default 67108864 | int64 | quote }}
+        - name: KEEPER_QUEUE_TTL_SECONDS
+          value: {{ .Values.keeper.queue.ttlSeconds | default 3600 | int64 | quote }}
+        - name: KEEPER_MAX_INFLIGHT
+          value: {{ .Values.keeper.queue.maxInFlight | default 4 | int64 | quote }}
+        - name: KEEPER_MAX_WAKES_PER_HOUR
+          value: {{ .Values.keeper.maxWakesPerHour | default 0 | int64 | quote }}
+        # Where a proxied request is forwarded. The same address server.py
+        # computes for a CronJob, spelled out here so a cluster whose DNS suffix
+        # is not cluster.local has one place to change it.
+        - name: KEEPER_WORKSPACE_URL
+          value: http://ws-{{ .Values.user.name }}.{{ .Values.namespace }}.svc.cluster.local:6080
+        # Keep the Go heap under the container limit instead of being OOM-killed.
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8081
+          name: wake
+        - containerPort: 8082
+          name: app
+        - containerPort: 8083
+          name: control
+        volumeMounts:
+        # A directory mount, not subPath: the keeper reads the page per
+        # request, so an upgrade that edits the copy lands without a restart.
+        - name: page
+          mountPath: /etc/keeper/page
+          readOnly: true
+        # The only writable path in the container. Holds the trigger ids and
+        # the token hash — and, from step 4b, the queued webhook bodies.
+        - name: state
+          mountPath: /var/lib/keeper
+        - name: control
+          mountPath: /etc/keeper/control
+          readOnly: true
+        # /healthz never touches the API server, so the API being slow or down
+        # can't fail these and take the page away with it. The timeouts leave
+        # room for a busy node: the 1s default restarted the keeper on a
+        # starved test node, and a restart only drops the page meanwhile.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 1
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: {{ .Values.keeper.resources.requests.cpu | default "5m" | quote }}
+            memory: {{ .Values.keeper.resources.requests.memory | default "16Mi" | quote }}
+          limits:
+            cpu: {{ .Values.keeper.resources.limits.cpu | default "100m" | quote }}
+            memory: {{ .Values.keeper.resources.limits.memory | default "32Mi" | quote }}
+      volumes:
+      - name: page
+        configMap:
+          name: holding-{{ .Values.user.name }}
+          items:
+          - key: holding.html
+            path: holding.html
+      - name: state
+        persistentVolumeClaim:
+          claimName: keeper-{{ .Values.user.name }}-state
+      - name: control
+        secret:
+          secretName: {{ .Values.keeper.controlSecret.existingSecretName | default (printf "keeper-%s-control" .Values.user.name) }}
+          items:
+          - key: secret
+            path: secret
+          defaultMode: 0400
+---
+# The page. The ingresses' default backend: it answers every path with the
+# holding page and never acts, because in oauth2 mode the root ingress sends it
+# requests that passed no auth.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: http
+    name: http
+---
+# Status and wake. A separate Service so that no default-backend request can
+# reach the wake listener, whatever port ingress-nginx picks; only
+# keeper-ingress.yaml, which carries the auth annotations, routes here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-wake
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: wake
+    name: http
+---
+# The app's status and wake (#728 step 4), and from step 4b the webhook and cron
+# pass-through. Its own Service for the same reason the wake listener has one:
+# only keeper-ingress-api.yaml routes here, and what arrives is authenticated by
+# the keeper against the token hash rather than by the ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: app
+    name: http
+---
+# What the workspace pushes in (#728 step 4). Reached only from the workspace
+# pod — keeper-networkpolicy.yaml admits nothing else to this port, and the
+# shared secret is the second lock, because a NetworkPolicy does nothing at all
+# unless the cluster's CNI implements it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-{{ .Values.user.name }}-control
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  selector:
+    app: keeper-{{ .Values.user.name }}
+  ports:
+  - port: 80
+    targetPort: control
+    name: http
+{{- end }}

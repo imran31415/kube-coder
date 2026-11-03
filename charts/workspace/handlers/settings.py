@@ -66,7 +66,7 @@ class SettingsRoutes:
         self.send_json({'ok': True})
 
     # --- User MCP servers (issue #353) ---
-    # Env values may hold API keys, so gate like provider-keys: never
+    # Env/header values may hold API keys, so gate like provider-keys: never
     # reachable in the unauth public demo (allow_none_mode=False), and the
     # list view is redacted (mcp_registry.public_view — hints, never values).
 
@@ -93,10 +93,14 @@ class SettingsRoutes:
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
         name = (data.get('name') or '').strip()
+        # `type` omitted = keep the stored transport (stdio for a new entry),
+        # so clients that predate remote servers (#815) can still toggle one.
         ok, err = handlers.server.mcp_registry.set_server(
             name, data.get('command') or '',
             args=data.get('args'), env=data.get('env'),
-            enabled=data.get('enabled', True))
+            enabled=data.get('enabled', True),
+            transport=data.get('type'), url=data.get('url'),
+            headers=data.get('headers'))
         if not ok:
             self.send_json({'error': err}, 400)
             return

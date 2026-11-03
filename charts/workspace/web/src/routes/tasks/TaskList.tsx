@@ -37,6 +37,7 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   completed: 'success',
   killed: 'warn',
   error: 'danger',
+  terminated: 'danger',
   unknown: 'neutral',
   'waiting-for-input': 'warn',
 };
@@ -46,6 +47,7 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   completed: 'done',
   killed: 'killed',
   error: 'error',
+  terminated: 'wiped',
   unknown: 'unknown',
   'waiting-for-input': 'waiting',
 };
@@ -119,7 +121,7 @@ export function TaskList() {
             aria-selected={userChoice === 'all'}
             class={`tl-seg-item ${userChoice === 'all' ? 'tl-seg-item-active' : ''}`}
             onClick={() => (taskStatusFilter.value = 'all')}
-            title="Show running + past (completed, killed, errored)"
+            title="Show running + past (completed, killed, errored, wiped by a restart)"
           >
             All <span class="tl-seg-count">{counts.all}</span>
           </button>
@@ -176,6 +178,24 @@ export function TaskList() {
                     <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
                     {isStaleWaiting(t) && (
                       <Pill tone="danger" mono>stale</Pill>
+                    )}
+                    {t.stalled_at_trust_dialog && (
+                      <Pill
+                        tone="danger"
+                        mono
+                        title="Parked on Claude Code's folder-trust dialog — it never received its prompt. Open the task and answer the dialog, then re-send the prompt."
+                      >
+                        trust dialog
+                      </Pill>
+                    )}
+                    {t.prompt_delivered === false && !t.stalled_at_trust_dialog && (
+                      <Pill
+                        tone="danger"
+                        mono
+                        title="Its prompt was never submitted — it is sitting unsent in the input box. Open the task and press Enter, or re-send the prompt."
+                      >
+                        prompt unsent
+                      </Pill>
                     )}
                     {t.parent_task_id && (
                       <Pill tone="neutral" mono>sub-agent</Pill>

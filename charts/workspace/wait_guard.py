@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Foreground-blocking-wait guard for Hypervisor/CTO turns (issue #747).
+"""Turn-boundary guard for Hypervisor/CTO turns (issues #747, #780).
 
-Two consumers, ONE definition of what a blocking wait is:
+Blocks the three tool shapes that lose work to the per-turn process model:
+foreground blocking waits in Bash (#747), background subagents launched with
+the Agent tool (#780), and Monitor watchers (#378's shape, now denied rather
+than merely mourned).
+
+Two consumers, ONE definition of what each shape is:
 
   * as a library — ``hypervisor_session`` imports ``foreground_wait_reason``
     to track waits that happened and open the next turn with a corrective
@@ -112,23 +117,82 @@ def denial_reason(reason: str) -> str:
     )
 
 
+# Background subagents (issue #780). The built-in Agent tool runs its subagent
+# in the BACKGROUND unless run_in_background is explicitly false — and a
+# background subagent is an in-process child of the turn's headless CLI, so it
+# is killed the moment the turn ends, taking its work and the tokens it spent.
+# This is the loss #378 documented for Bash/Monitor, at much higher stakes: a
+# fanned-out coding subagent represents minutes-to-hours of work, and the agent
+# that armed it ends its turn precisely BECAUSE it expects a completion
+# notification that can never arrive. 'Task' is the same tool's older name;
+# matching both costs nothing (an unknown name falls through and allows).
+AGENT_TOOLS = ('Agent', 'Task')
+
+
+def background_agent_reason(tool_input: Any) -> str:
+    """Why this Agent call dies at the turn boundary — '' when it won't."""
+    d = tool_input if isinstance(tool_input, dict) else {}
+    if d.get('run_in_background') is False:
+        return ''  # foreground: the turn waits for it, nothing crosses the boundary
+    return 'background subagent (the Agent tool backgrounds by default)'
+
+
+def agent_denial_reason(reason: str) -> str:
+    return (
+        f'Blocked: this would launch a {reason}, and in this chat each turn '
+        'runs in a fresh headless CLI process — a background subagent is '
+        'KILLED the moment the turn ends, losing its work and the tokens it '
+        'spent, and the completion notification you would wait for can never '
+        'arrive. Pick by duration instead: for short work you will collect '
+        'and use THIS turn, re-issue the same Agent call with '
+        'run_in_background: false — several foreground Agent calls in ONE '
+        'message still fan out in parallel, and the turn waits for all of '
+        'them. For anything minutes-plus (coding, builds, reviews), use the '
+        'dashboard create_task tool instead (tmux-backed, survives turns; '
+        'isolate: true for parallel work on one repo), arm a `watch` of kind '
+        '"task" on each task id, and END your turn — the runner posts each '
+        'outcome into this chat as a new message.'
+    )
+
+
+def monitor_denial_reason() -> str:
+    return (
+        'Blocked: Monitor dies at the turn boundary in this chat — each turn '
+        'runs in a fresh headless CLI process, so the condition\'s outcome '
+        'could never reach you; a later "no completion record" notification '
+        'would be the only trace. Arm a runner-owned watcher instead with the '
+        'dashboard `watch` tool (kind task / command / file) and END your '
+        'turn: the runner keeps polling after the turn is over and posts the '
+        'outcome into this chat as a new message.'
+    )
+
+
+def _deny(reason_text: str) -> None:
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': reason_text,
+    }}, sys.stdout)
+    sys.stdout.write('\n')
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except Exception:
         return 0  # unreadable input is not grounds to block the agent
     try:
-        if (payload.get('tool_name') or '') != 'Bash':
-            return 0
-        reason = foreground_wait_reason(payload.get('tool_input'))
-        if not reason:
-            return 0
-        json.dump({'hookSpecificOutput': {
-            'hookEventName': 'PreToolUse',
-            'permissionDecision': 'deny',
-            'permissionDecisionReason': denial_reason(reason),
-        }}, sys.stdout)
-        sys.stdout.write('\n')
+        name = payload.get('tool_name') or ''
+        if name == 'Bash':
+            reason = foreground_wait_reason(payload.get('tool_input'))
+            if reason:
+                _deny(denial_reason(reason))
+        elif name in AGENT_TOOLS:
+            reason = background_agent_reason(payload.get('tool_input'))
+            if reason:
+                _deny(agent_denial_reason(reason))
+        elif name == 'Monitor':
+            _deny(monitor_denial_reason())
     except Exception:
         return 0
     return 0

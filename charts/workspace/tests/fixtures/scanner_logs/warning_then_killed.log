@@ -1,0 +1,24 @@
+╭─ STRIX ──────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  MODEL QUALITY WARNING                                                       │
+│                                                                              │
+│  'openrouter/acme/tiny-model' is not a recommended frontier model for        │
+│  Strix.                                                                      │
+│  Security scans work best with:                                              │
+│  • openai/gpt-5.5                                                            │
+│  • anthropic/claude-sonnet-5                                                 │
+│  • gemini/gemini-3.7-flash                                                   │
+│                                                                              │
+│  You can continue, but weaker models may miss vulnerabilities or produce     │
+│  lower-quality findings.                                                     │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭─ STRIX ──────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  Penetration test in progress                                                │
+│                                                                              │
+│  Agents 3 · Tools 41 · Vulnerabilities 0                                     │
+│  Tokens 412.3K in / 6.1K out · Cost $0.6301                                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

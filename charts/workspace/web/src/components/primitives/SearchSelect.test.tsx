@@ -140,4 +140,131 @@ describe('SearchSelect', () => {
     fireEvent.input(search, { target: { value: 'git' } });
     expect(optionText('Folder')).toEqual([]);
   });
+
+  it('stays open while its own option list scrolls', () => {
+    render(<SearchSelect ariaLabel="Project" options={OPTIONS} value="" onChange={() => {}} />);
+    open();
+    // The popover listens for scrolls in the capture phase so it can close when
+    // the page moves out from under its fixed position. That also hears the
+    // list's own scroll — which used to slam it shut the moment you tried to
+    // reach an option below the fold, leaving typing as the only way in.
+    fireEvent.scroll(screen.getByRole('listbox', { name: 'Project' }));
+    expect(screen.queryByRole('listbox', { name: 'Project' })).not.toBeNull();
+  });
+
+  it('still closes when something outside it scrolls', () => {
+    render(
+      <div>
+        <div data-testid="page" />
+        <SearchSelect ariaLabel="Project" options={OPTIONS} value="" onChange={() => {}} />
+      </div>,
+    );
+    open();
+    fireEvent.scroll(screen.getByTestId('page'));
+    expect(screen.queryByRole('listbox', { name: 'Project' })).toBeNull();
+  });
+});
+
+describe('SearchSelect — keeping the highlight on screen (#814)', () => {
+  /** Ten projects: more than the fake 90px list viewport can show at once. */
+  const MANY = Array.from({ length: 10 }, (_, i) => ({
+    value: `p${i + 1}`,
+    label: `project-${i + 1}`,
+  }));
+  const ROW_H = 30;
+  const PAD = 4; // .ss-list top padding
+
+  /** happy-dom does no layout: give the open list a 90px viewport of 30px
+   *  rows, and a scrollTop that sticks. Row offsets are read live, so rows a
+   *  filter keeps (same element, new index) report where they now sit. */
+  function fakeListLayout(): HTMLElement {
+    const list = screen.getByRole('listbox', { name: 'Project' });
+    let top = 0;
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 90 });
+    Object.defineProperty(list, 'scrollTop', {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = v;
+      },
+    });
+    for (const row of [...list.children]) {
+      Object.defineProperty(row, 'offsetTop', {
+        configurable: true,
+        get: () => PAD + [...list.children].indexOf(row) * ROW_H,
+      });
+      Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => ROW_H });
+    }
+    return list;
+  }
+
+  /** Whether the highlighted row lies wholly inside the list's viewport. */
+  function cursorInView(list: HTMLElement): boolean {
+    const row = list.querySelector('.ss-opt-cursor') as HTMLElement;
+    return (
+      row.offsetTop >= list.scrollTop &&
+      row.offsetTop + row.offsetHeight <= list.scrollTop + list.clientHeight
+    );
+  }
+
+  it('scrolls the list to follow the arrow keys past the fold', () => {
+    render(<SearchSelect ariaLabel="Project" options={MANY} value="" onChange={() => {}} />);
+    const search = open();
+    const list = fakeListLayout();
+
+    for (let i = 0; i < 6; i++) fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-7');
+    expect(list.scrollTop).toBeGreaterThan(0);
+    expect(cursorInView(list)).toBe(true);
+
+    // Wrapping from the first row up to the last follows it to the bottom too.
+    for (let i = 0; i < 7; i++) fireEvent.keyDown(search, { key: 'ArrowUp' });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-10');
+    expect(cursorInView(list)).toBe(true);
+  });
+
+  it('brings the first match back into view when a filter is typed after scrolling', () => {
+    render(<SearchSelect ariaLabel="Project" options={MANY} value="" onChange={() => {}} />);
+    const search = open();
+    const list = fakeListLayout();
+    list.scrollTop = 200; // the reader wheeled down the list
+    fireEvent.scroll(list);
+
+    // "project-1" and "project-10" match; the first is the row Enter picks.
+    fireEvent.input(search, { target: { value: 'project-1' } });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-1');
+    expect(list.scrollTop).toBe(0);
+  });
+
+  it('does not scroll the list when the pointer highlights a row', () => {
+    render(<SearchSelect ariaLabel="Project" options={MANY} value="" onChange={() => {}} />);
+    open();
+    const list = fakeListLayout();
+
+    // Row 3 is cut off by the 90px viewport. Following the pointer would slide
+    // a new row under it, highlight that, and scroll again.
+    fireEvent.mouseMove(list.children[2], { clientX: 40, clientY: 80 });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-3');
+    expect(list.scrollTop).toBe(0);
+  });
+
+  it('keeps the keyboard highlight when rows slide under a resting pointer', () => {
+    render(<SearchSelect ariaLabel="Project" options={MANY} value="" onChange={() => {}} />);
+    const search = open();
+    const list = fakeListLayout();
+
+    fireEvent.mouseMove(list.children[1], { clientX: 40, clientY: 50 }); // the reader points
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-3');
+
+    // The browser re-fires hover on whatever row is now under the still pointer
+    // (the list scrolled, or a filter re-rendered it). Same coordinates: the
+    // reader did not move, so the keyboard keeps the highlight.
+    fireEvent.mouseMove(list.children[5], { clientX: 40, clientY: 50 });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-3');
+
+    // A real move still points.
+    fireEvent.mouseMove(list.children[5], { clientX: 40, clientY: 52 });
+    expect(list.querySelector('.ss-opt-cursor')?.textContent).toBe('project-6');
+  });
 });

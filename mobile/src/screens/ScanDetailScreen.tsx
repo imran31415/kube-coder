@@ -1,5 +1,5 @@
 /** One security scan (#726) — live progress, then its findings. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import type { RouteProp } from '@react-navigation/native';
 import { useRoute } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -7,17 +7,18 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getScan, setFindingDisposition, stopScan } from '../api/client';
 import { Button, Card, ErrorBanner, Loading } from '../components/ui';
-import type { Finding, ScanDetail } from '../api/types';
+import type { Finding, ScanDetail, ScanReport } from '../api/types';
 import type { SecurityStackParams } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 import { usePolling } from '../util/usePolling';
 import {
   FINDING_FACTS,
   FINDING_SECTIONS,
+  emptyFindingsText,
   fieldText,
   isLiveScan,
+  scanTitle,
   sortFindings,
-  spendLabel,
 } from '../util/scans';
 
 const SEVERITY_COLOR: Record<string, string> = {
@@ -45,7 +46,7 @@ export default function ScanDetailScreen() {
 
   // A scan rewrites its findings as it confirms them, so this fills in while
   // it runs rather than showing a frozen screen for minutes at a time.
-  usePolling(load, 6000);
+  usePolling(load, 6000, ['scan.']);
 
   // Clear the previous scan the moment the route is re-pointed at a new one.
   // A push tapped while this screen is already mounted updates `params` on
@@ -71,6 +72,7 @@ export default function ScanDetailScreen() {
   const live = isLiveScan(scan);
   const findings = sortFindings(scan.findings ?? []);
   const dispositions = scan.dispositions ?? {};
+  const caveats = scan.caveats ?? [];
 
   async function stop() {
     setStopping(true);
@@ -87,18 +89,55 @@ export default function ScanDetailScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.body}>
+        {/* Name, state, problems — what fits a phone. The address the scanner
+            used is an internal container address and is left off. */}
         <Card style={styles.head}>
-          <Text style={styles.title}>
-            {scan.target.name || `Port ${scan.target.port}`}
-          </Text>
-          {/* Never a bare count: the sentence says what was actually done. */}
-          <Text style={styles.summary}>{scan.summary}</Text>
-          <View style={styles.stats}>
-            <Stat label="Status" value={scan.status} />
-            <Stat label="Depth" value={scan.mode} />
-            <Stat label="Spent" value={spendLabel(scan)} />
+          <View style={styles.titleRow}>
+            <Text style={styles.title} numberOfLines={2}>
+              {scanTitle(scan)}
+            </Text>
+            {live ? (
+              <View style={styles.liveBadge} accessibilityLabel="Scanning">
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>Scanning</Text>
+              </View>
+            ) : (
+              <Text style={styles.status}>{scan.status}</Text>
+            )}
           </View>
-          <Text style={styles.address}>{scan.target.url}</Text>
+          {/* Never a bare count: a finished scan's sentence says what was
+              actually done. While it runs, the badge already says so. */}
+          {live ? null : <Text style={styles.summary}>{scan.summary}</Text>}
+          {/* Inline, not an ErrorBanner: the banner is for a request that
+              failed, and clips to two lines -- the reason is the answer. */}
+          {scan.error ? (
+            <View
+              style={[
+                styles.reason,
+                scan.status === 'failed' ? styles.reasonFailed : null,
+              ]}
+            >
+              <Text style={styles.reasonLabel}>Why it ended</Text>
+              <Text style={styles.reasonText}>{scan.error}</Text>
+            </View>
+          ) : null}
+          {/* The scanner's own account of what it never reached. Above the
+              problems list, because an empty list under this means "not
+              checked", not "clean". */}
+          {caveats.length ? (
+            <View style={styles.reason}>
+              <Text style={styles.reasonLabel}>Not all of the app was checked</Text>
+              {caveats.map((c) => (
+                <Text key={c} style={styles.reasonText}>
+                  {'• '}
+                  {c}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+          {scan.budget_note ? (
+            <Text style={styles.budgetNote}>{scan.budget_note}</Text>
+          ) : null}
           {live ? (
             <Button
               title={stopping ? 'Stopping…' : 'Stop scan'}
@@ -109,18 +148,12 @@ export default function ScanDetailScreen() {
           ) : null}
         </Card>
 
-        {scan.error ? <ErrorBanner message={scan.error} /> : null}
-
         <Text style={styles.sectionTitle}>
-          Findings{scan.counts?.total ? ` (${scan.counts.total})` : ''}
+          Problems found{scan.counts?.total ? ` (${scan.counts.total})` : ''}
         </Text>
 
         {findings.length === 0 ? (
-          <Text style={styles.empty}>
-            {live
-              ? 'Nothing found yet. Findings appear here as the scanner confirms them.'
-              : 'No findings were recorded for this scan.'}
-          </Text>
+          <Text style={styles.empty}>{emptyFindingsText(scan)}</Text>
         ) : (
           findings.map((f) => (
             <FindingCard
@@ -132,17 +165,52 @@ export default function ScanDetailScreen() {
             />
           ))
         )}
+
+        {scan.report ? <ReportCard report={scan.report} /> : null}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/**
+ * The scanner's write-up — the result the scan was run for.
+ *
+ * Collapsed to begin with: a report runs to several screens, and a phone
+ * that opens on it buries the problems list above. Shown as the scanner
+ * wrote it, headings and all, rather than reformatted into something it did
+ * not say. The file is named underneath because it is saved on the workspace
+ * and outlives this screen.
+ */
+function ReportCard({ report }: { report: ScanReport }) {
+  const [open, setOpen] = useState(false);
   return (
-    <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-    </View>
+    <Card style={styles.report}>
+      <TouchableOpacity
+        style={styles.reportHead}
+        onPress={() => setOpen(!open)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+      >
+        <Text style={styles.reportTitle}>What the scanner reported</Text>
+        <Ionicons
+          name={open ? 'chevron-up' : 'chevron-down'}
+          size={18}
+          color={colors.textMuted}
+        />
+      </TouchableOpacity>
+      {open ? (
+        <>
+          <Text style={styles.reportBody} selectable>
+            {report.text}
+          </Text>
+          {report.location ? (
+            <Text style={styles.reportFile} selectable>
+              Saved in this workspace as {report.location}
+            </Text>
+          ) : null}
+        </>
+      ) : null}
+    </Card>
   );
 }
 
@@ -176,7 +244,10 @@ function FindingCard({
   }
 
   return (
-    <Card style={dismissed ? styles.findingDismissed : styles.finding}>
+    <Card
+      style={dismissed ? styles.findingDismissed : styles.finding}
+      accent={dismissed ? undefined : colors.danger}
+    >
       <TouchableOpacity
         style={styles.findingHead}
         onPress={() => setOpen(!open)}
@@ -237,13 +308,44 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   body: { padding: space.md, gap: space.sm },
   head: { gap: space.sm },
-  title: { color: colors.text, fontSize: font.size.lg, fontWeight: '700' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  title: { flex: 1, color: colors.text, fontSize: font.size.lg, fontWeight: '700' },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 3,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.infoBorder,
+    backgroundColor: colors.infoSoft,
+  },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.info },
+  liveText: { color: colors.info, fontSize: font.size.xs, fontWeight: '600' },
+  status: { color: colors.textMuted, fontSize: font.size.xs },
   summary: { color: colors.text, fontSize: font.size.sm, lineHeight: 20 },
-  stats: { flexDirection: 'row', flexWrap: 'wrap', gap: space.md },
-  stat: { gap: 2 },
-  statLabel: { color: colors.textMuted, fontSize: font.size.xs },
-  statValue: { color: colors.text, fontSize: font.size.sm },
-  address: { color: colors.textMuted, fontSize: font.size.xs },
+  reason: {
+    gap: 2,
+    paddingLeft: space.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.warning,
+  },
+  reasonFailed: { borderLeftColor: colors.danger },
+  reasonLabel: { color: colors.textMuted, fontSize: font.size.xs, fontWeight: '600' },
+  reasonText: { color: colors.text, fontSize: font.size.sm, lineHeight: 20 },
+  budgetNote: { color: colors.textMuted, fontSize: font.size.xs, lineHeight: 18 },
+  report: { gap: space.sm, marginTop: space.sm },
+  reportHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    // 44pt so the expand target is comfortable.
+    minHeight: 44,
+  },
+  reportTitle: { flex: 1, color: colors.text, fontSize: font.size.md, fontWeight: '700' },
+  reportBody: { color: colors.text, fontSize: font.size.sm, lineHeight: 21 },
+  reportFile: { color: colors.textMuted, fontSize: font.size.xs, lineHeight: 18 },
   sectionTitle: {
     color: colors.text,
     fontSize: font.size.md,
@@ -251,7 +353,13 @@ const styles = StyleSheet.create({
     marginTop: space.sm,
   },
   empty: { color: colors.textMuted, fontSize: font.size.sm, lineHeight: 20 },
-  finding: { gap: 6 },
+  // A problem reads as one: a soft red wash and edge (the edge comes from
+  // Card's `accent`). Dismissed drops back to a plain, faded card.
+  finding: {
+    gap: 6,
+    backgroundColor: colors.dangerSoft,
+    borderColor: colors.dangerBorder,
+  },
   // Card takes a single style object rather than an array, so the dismissed
   // variant carries the base values too.
   findingDismissed: { gap: 6, opacity: 0.55 },

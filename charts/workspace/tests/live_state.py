@@ -38,10 +38,10 @@ real trigger history — and once a suite starts asserting on the ledger, entrie
 left behind by an earlier test are also a source of cross-test flake.
 
 The Makefile's python-tests target is the second line of defence: it points
-KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE / KC_TRIGGER_RUNS_DIR at a
-throwaway directory for the whole run, so a test that forgets these helpers
-still cannot reach the live Feed, a phone, the user's keys, or their trigger
-history.
+KC_FEED_DIR / KC_PUSH_DIR / KC_PROVIDER_KEYS_FILE / KC_TRIGGER_RUNS_DIR /
+KC_CLAUDE_CONFIG_PATH at a throwaway directory for the whole run, so a test
+that forgets these helpers still cannot reach the live Feed, a phone, the
+user's keys, their trigger history, or their Claude Code config (#762).
 """
 
 from __future__ import annotations

@@ -67,7 +67,11 @@ export function WorkspaceDetail({ user }: { user: string }) {
 
   const ws = findWorkspace(user);
   const isBusy = busy.value.has(user);
-  const running = m?.running ?? ws?.state !== 'stopped';
+  // The controller's state is the truth for sleeping vs stopped (#728): the
+  // metrics endpoint only knows whether a pod is up, so "not running" from it
+  // alone would read a sleeping workspace as stopped.
+  const running = m?.running ?? (ws ? ws.state !== 'stopped' && ws.state !== 'sleeping' : false);
+  const stateText = ws && !running ? ws.detail : running ? 'running' : 'stopped';
 
   return (
     <div class="app">
@@ -86,7 +90,7 @@ export function WorkspaceDetail({ user }: { user: string }) {
           <h1>{user}</h1>
           <p class="sub">
             {ws?.namespace ?? m?.namespace ?? `ws-${user}`}
-            {m ? ` · ${running ? 'running' : 'stopped'}` : ''}
+            {m || ws ? ` · ${stateText}` : ''}
             {m?.uptimeSeconds != null ? ` · up ${fmtUptime(m.uptimeSeconds)}` : ''}
           </p>
         </div>

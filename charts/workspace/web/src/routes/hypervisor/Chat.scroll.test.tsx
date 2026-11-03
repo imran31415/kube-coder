@@ -311,3 +311,134 @@ describe('Chat transcript pinning across a source flip (#644)', () => {
     expect(el.scrollTop).toBe(0);
   });
 });
+
+describe('Chat transcript — reading back through history', () => {
+  /** 80 alternating user/assistant turns: the tail window of 30 hides 50. */
+  function longThread(): HvEvent[] {
+    return Array.from({ length: 80 }, (_, i) =>
+      msg(i + 1, i % 2 === 0 ? 'user' : 'assistant', `turn ${i}`),
+    );
+  }
+
+  it('pulls older turns in on the way to the top, keeping the reader on the same message', async () => {
+    events.value = longThread();
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await settle(); // let the mount-time pin finish before the reader moves
+    const rendered = () => container.querySelectorAll('.hv-msg, .hv-turn').length;
+    expect(rendered()).toBe(30);
+
+    // Scroll up to the edge of the window. Without this the reader stopped dead
+    // at the top and had to find the "Show earlier" button.
+    layout.scrollTo(300);
+    await waitFor(() => expect(rendered()).toBe(60));
+
+    // 30 blocks (3000px) landed above the viewport: the same message must stay
+    // under the reader's eye, i.e. scrollTop moves by exactly what was added.
+    expect(el.scrollTop).toBe(300 + 30 * BLOCK_H);
+    // And it is still a reader looking at history, not pinned to the bottom.
+    expect(layout.fromBottom()).toBeGreaterThan(0);
+  });
+
+  it('does not reveal anything while the reader is well clear of the top', async () => {
+    events.value = longThread();
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await settle(); // let the mount-time pin finish before the reader moves
+
+    layout.scrollTo(1500);
+    await settle();
+    expect(container.querySelectorAll('.hv-msg, .hv-turn').length).toBe(30);
+  });
+
+  it('keeps the place when the Show earlier button is used instead', async () => {
+    events.value = longThread();
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await settle(); // let the mount-time pin finish before the reader moves
+    layout.scrollTo(1500); // clear of the auto-reveal edge
+    await settle();
+
+    fireEvent.click(container.querySelector('.hv-earlier-btn') as HTMLElement);
+    await waitFor(() =>
+      expect(container.querySelectorAll('.hv-msg, .hv-turn').length).toBe(60),
+    );
+    expect(el.scrollTop).toBe(1500 + 30 * BLOCK_H);
+  });
+
+  it('stops revealing once the whole history is on screen', async () => {
+    events.value = longThread();
+    const { container } = render(<Chat />);
+    const el = container.querySelector('.hv-transcript') as HTMLElement;
+    const layout = fakeLayout(el);
+    await settle(); // let the mount-time pin finish before the reader moves
+    const rendered = () => container.querySelectorAll('.hv-msg, .hv-turn').length;
+
+    layout.scrollTo(0);
+    await waitFor(() => expect(rendered()).toBe(60));
+    layout.scrollTo(0);
+    await waitFor(() => expect(rendered()).toBe(80));
+    layout.scrollTo(0);
+    await settle();
+    expect(rendered()).toBe(80);
+    expect(container.querySelector('.hv-earlier-btn')).toBeNull();
+  });
+});
+
+describe('Chat transcript — a heavy embed scrolled out of view keeps its height (#814)', () => {
+  // happy-dom's IntersectionObserver never calls back, so drive it by hand.
+  const realIO = globalThis.IntersectionObserver;
+  let notify: ((isIntersecting: boolean) => void) | null = null;
+
+  beforeEach(() => {
+    globalThis.IntersectionObserver = class {
+      constructor(cb: IntersectionObserverCallback) {
+        notify = (isIntersecting) =>
+          cb([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    } as unknown as typeof IntersectionObserver;
+  });
+
+  afterEach(() => {
+    globalThis.IntersectionObserver = realIO;
+    notify = null;
+  });
+
+  it('holds its slot at the measured height, not the minHeight guess', async () => {
+    events.value = [
+      msg(1, 'user', 'show me the chart'),
+      {
+        seq: 2,
+        ts: 2,
+        role: 'assistant',
+        type: 'tool_call',
+        tool_id: 'r1',
+        tool: { name: 'mcp__dashboard__show_media', input: { url: 'https://example.test/chart.png', height: 300 } },
+      },
+    ];
+    const { container } = render(<Chat />);
+    const slot = () => container.querySelector('.hv-lazyblock') as HTMLElement;
+    // Never seen yet: only the guess (the tool's own height) is available.
+    expect(slot().style.minHeight).toBe('300px');
+
+    notify!(true); // scrolled into view — the real embed mounts
+    await waitFor(() => expect(slot().childElementCount).toBeGreaterThan(0));
+    // Laid out taller than the guess (title bar, caption, …).
+    Object.defineProperty(slot(), 'offsetHeight', { configurable: true, get: () => 420 });
+
+    notify!(false); // scrolled well away — unmounted to a placeholder
+    await waitFor(() => expect(slot().childElementCount).toBe(0));
+    // The placeholder keeps the height the reader actually saw, so nothing
+    // below it moves while they scroll past.
+    expect(slot().style.minHeight).toBe('420px');
+  });
+});

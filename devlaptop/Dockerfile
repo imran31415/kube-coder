@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # devlaptop/Dockerfile
 #
 # Multi-stage:
@@ -45,9 +45,9 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # the dashboard SPA build under it at the same time, so instead we ship a SECOND,
 # side-by-side Node purely for `dsh` (installed under /opt/node22 below, never on
 # PATH). Same digest-pinned-official-image supply chain as node-dist above.
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node22-dist
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS node22-dist
 
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=11.19.1
+ARG NPM_VERSION=11.21.1
 # Pin Yarn (classic) explicitly instead of installing floating `latest` — a
 # supply-chain hardening from the July 2026 review (finding 7). npm verifies the
 # package integrity/signature against the registry on install.
@@ -116,7 +116,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
-ARG COMPOSE_VERSION=v5.5.1
+ARG COMPOSE_VERSION=v5.6.1
 # Checksum-verified against the vendor-published .sha256 before it is made
 # executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
@@ -134,7 +134,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # release path and verified before install, so a corrupted/tampered binary fails
 # the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.37.0
+ARG KUBECTL_VERSION=v1.37.2
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
   && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
@@ -177,7 +177,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.233
+ARG CLAUDE_CODE_VERSION=2.1.316
 RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -186,7 +186,7 @@ RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.18
+ARG OPENCODE_VERSION=1.19.5
 RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -196,7 +196,7 @@ RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.147.0
+ARG CODEX_VERSION=0.166.0
 RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
@@ -223,16 +223,32 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 #     acp` boots that bundle out of the dsh installation. Installing dsh-acp at
 #     top level would add a second, unused copy.
 #
-# VERSION PIN — read before bumping. Every published version is a prerelease and
-# the npm `latest` dist-tag LAGS: 0.1.1-rc.2 (`latest` as of writing) does not
-# depend on dsh-acp-app at all and has no `acp` profile, so pinning "latest"
-# would silently ship a build with no ACP server. 0.1.2-rc.1 (`next`) is the
-# first version that carries it. The renovate marker is here so the pin is
-# tracked, but `config:recommended` ignores unstable versions — bumps are
-# manual until upstream cuts a stable 0.1.x, and any bump MUST be re-checked
-# against `dsh --profile acp` actually answering an ACP `initialize`.
+# VERSION PIN — read before bumping. Every published version is a prerelease,
+# and a dist-tag is no guarantee of an ACP server: 0.1.1-rc.2 was once `latest`
+# and has no `acp` profile at all (0.1.2-rc.1 was the first that did). Pin an
+# exact version, never a tag.
+#
+# 0.2.1-rc.5 (`latest` and `next` on 2026-10-31, #810) was verified under
+# /opt/node22, driven by the real acp_bridge.py, with 0.1.2-rc.1 run the same
+# way as a baseline; the two behaved identically on every method the bridge
+# uses: `initialize` (protocolVersion 1, authMethods [], close/list/resume
+# session capabilities), session/new with the curated MCP set, the `model`
+# (grouped, JSON-encoded values) and `reasoning_effort` (off/low/high/max)
+# config options, session/set_config_option, a real tool-using session/prompt
+# (permission request auto-approved, `end_turn`), session/close, and
+# session/resume, including resuming a 0.1.2-rc.1 session from a ~/.dsh that
+# 0.1.2-rc.1 initialized (the PVC upgrade path). One difference to know: the
+# `model` list is fetched from api.deepseek.com/models, so WITHOUT a
+# DEEPSEEK_API_KEY only the deepseek-v4-flash default is offered; with a key
+# both runtimes.DSH_MODELS (v4-flash, v4-pro) are.
+#
+# Renovate tracks the marker below, but while the current version is unstable
+# it only proposes newer prereleases of the SAME x.y.z (0.2.1-rc.N) or a stable
+# release. Upstream starts a new x.y.z prerelease line every week or two, so
+# expect to bump by hand. Any bump MUST repeat the check above, at minimum
+# `dsh --profile acp` answering an ACP `initialize` and opening a session.
 # renovate: datasource=npm depName=@deepseek-ai/dsh
-ARG DSH_VERSION=0.1.2-rc.1
+ARG DSH_VERSION=0.2.1-rc.5
 COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
@@ -336,7 +352,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # behaviour) and fall back to glibc, verifying whichever one we actually pulled
 # against its own sidecar.
 # renovate: datasource=github-releases depName=librefang/librefang
-ARG LIBREFANG_VERSION=v2026.7.31
+ARG LIBREFANG_VERSION=v2026.10.16
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
@@ -402,7 +418,7 @@ RUN apt-get update && apt-get install -y wget \
 # controlled with the repo it describes.
 #
 # renovate: datasource=github-releases depName=redhat-et/ripwire
-ARG RIPWIRE_VERSION=v0.4.0
+ARG RIPWIRE_VERSION=v0.6.9
 # Checksum-verified against the vendor-published .sha256, same posture as
 # docker-compose and kubectl above. The published .sha256 names the asset, so
 # only the digest is taken from it and re-paired with the local path.

@@ -30,7 +30,7 @@ user:
 # Container image configuration
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.69.0
+  tag: devlaptop-v1.77.0
   pullPolicy: Always
   pullSecretName: regcred
 
@@ -94,6 +94,120 @@ holdingPage:
     limits:
       cpu: 50m
       memory: 32Mi
+
+# Always-on keeper (#728). A tiny per-workspace server that receives webhooks
+# and cron fires while the workspace pod sleeps, wakes it on demand, and scales
+# it to 0 when idle. Staged — see docs/always-on-keeper.md §5. Everything is off
+# by default; with these defaults the chart renders exactly as it did before.
+keeper:
+  # Runs keeper-<user> (steps 3 and 4): it replaces holding-<user> as the page
+  # shown while the workspace is away, and wakes a workspace it put to sleep
+  # for a logged-in visit (step 3) or for the phone app (step 4). A workspace
+  # an admin stopped stays stopped. Needs ingress.auth.type basic or oauth2.
+  #
+  # The app's route to it exists in oauth2 mode only, because that is the only
+  # mode in which the phone's bearer ingress exists at all.
+  enabled: false
+  # The keeper image (keeper/Dockerfile). Required when enabled until a release
+  # publishes ghcr.io/imran31415/kube-coder/keeper; the default is then pinned
+  # here by digest, like provision.image in the controller chart.
+  image: ""
+  imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      # 128Mi, not the 32Mi steps 3 and 4a needed. From step 4b the keeper
+      # buffers each proxied request whole — it has to, because the HMAC covers
+      # the exact bytes and a streamed forward cannot state the Content-Length
+      # server.py reads. One 1 MiB body fits in 32Mi; several at once do not,
+      # and GOMEMLIMIT is wired from this number, so the old value would have
+      # the keeper fighting the GC during exactly the burst it must not drop.
+      # queue.maxInFlight below is the other half: the limit bounds the damage,
+      # the semaphore bounds the demand.
+      memory: 128Mi
+  # The keeper's own small volume: the trigger ids and the token hash the
+  # workspace pushes it, and from step 4b the queued webhook bodies. It needs
+  # to be a volume rather than memory because a keeper that restarted while the
+  # workspace slept cannot ask the workspace anything. 1Gi is far more than the
+  # content needs; it is the smallest many storage classes will issue.
+  storage:
+    size: 1Gi
+  # The shared secret the workspace authenticates those pushes with. Left empty,
+  # the chart generates one and preserves it across `helm upgrade`
+  # (keeper-secret.yaml). Pin `value`, or point `existingSecretName` at a Secret
+  # with a `secret` key, if your GitOps flow needs it declared.
+  controlSecret:
+    value: ""
+    existingSecretName: ""
+  # Requests that arrived while the workspace was away and are waiting to be
+  # replayed (#728 step 4b). They live on the volume above.
+  queue:
+    # How many requests may wait. Past this the keeper refuses with a visible
+    # 503 rather than accepting a request it has nowhere to keep — a sender can
+    # retry a refusal and cannot retry a silent loss.
+    maxEntries: 256
+    # And how many bytes, because 256 one-line crons and 256 1 MiB webhooks are
+    # different shapes of the same problem.
+    maxBytes: 67108864
+    # How long a waiting request may still be replayed. Past this it is dropped
+    # with a log line that says why.
+    #
+    # Slack and Stripe override this downwards on their own: both sign a
+    # timestamp and both refuse anything older than 5 minutes, so the keeper
+    # expires those inside that window instead of replaying them into a
+    # `404 bad_signature` that reads to its owner as a wrong secret. GitHub and
+    # generic signatures cover the body alone and keep for the full hour.
+    ttlSeconds: 3600
+    # Forwards in flight at once. Each one holds a body in memory, so this and
+    # resources.limits.memory are one decision. Applied after the request is
+    # durable, never before: shedding load in front of the queue would lose the
+    # events the queue exists to keep.
+    maxInFlight: 4
+  # How many times an hour an unattended caller — a webhook or a cron — may
+  # start this workspace. 0 means no cap.
+  #
+  # Step 4b is the first time a request to a public URL from someone who is not
+  # signed in can start a 4 GiB pod, so the cap arrives with that capability.
+  # Exhausting it discards nothing: the request is queued and answered 202, and
+  # it is delivered at the next wake from any cause, including this budget
+  # freeing up. GitHub does not retry a failed delivery, so dropping would lose
+  # the event for good while delaying it only delays it.
+  #
+  # It deliberately does not apply to a person: a signed-in visit, and the Wake
+  # button in the app, are not what this protects against.
+  maxWakesPerHour: 10
+  sleep:
+    # Let the keeper scale this workspace to 0 when idle. Requires
+    # keeper.enabled. The keeper asks the workspace every minute whether
+    # anything is going on — a task, a Board run, a terminal, an editor tab, a
+    # dashboard tab — and after two quiet answers in a row, once nothing has
+    # happened for idleMinutes, it scales the workspace to 0. A visit, the
+    # app's Wake button, a webhook or a schedule wakes it again. Sleep is as
+    # forceful as the controller's Stop: anything still running is killed,
+    # which is why every doubt counts as busy. By hand, any time:
+    #   kubectl -n <ns> exec deploy/keeper-<user> -- /keeper sleep
+    # Turning it on removes `replicas` from the workspace
+    # Deployment so `helm upgrade` / GitOps reconciles stop waking a sleeping
+    # workspace — the keeper owns the field from then on.
+    #
+    # ⚠ With Helm 3 (what the provisioner and CI run), the FIRST upgrade that
+    # turns this on wakes a sleeping workspace once: the field leaves the chart
+    # and Kubernetes defaults it back to 1. Later upgrades leave it alone.
+    # Turning it back off returns ownership to the chart, so that upgrade also
+    # sets replicas to 1.
+    enabled: false
+    # Minutes every activity signal must stay quiet before the workspace counts
+    # as idle. Exported as KC_KEEPER_IDLE_MINUTES (keeper_idle.py) and, with
+    # sleep on, as KEEPER_IDLE_MINUTES to the keeper.
+    #
+    # Keep it comfortably longer than your most frequent schedule. A workspace
+    # that sleeps between every run of a 5-minute cron needs a wake for each
+    # run, and maxWakesPerHour above caps those: past the cap the runs queue
+    # and fire late rather than on time.
+    idleMinutes: 30
 
 # OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.
 # Real credentials should come from a gitignored overlay (e.g.
@@ -659,13 +773,24 @@ assistant:
   # login persists on the PVC. Only an optional model override lives here.
   antigravity:
     model: ""                             # KC_ANTIGRAVITY_MODEL (blank = agy's default)
-  # LibreFang (https://librefang.ai) — open-source agent OS. The CLI is
-  # pre-installed in the image (like Ante) and reuses whatever provider keys
-  # are configured elsewhere (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so
-  # there is no key to set here. `agent` picks which LibreFang agent tasks
-  # talk to; the registry-bundled "coder" is the right default for a coding
-  # workspace.
+  # LibreFang (https://librefang.ai) — open-source agent OS. OPT-IN, and OFF
+  # by default (#754). The CLI is pre-installed in the image (like Ante) and
+  # reuses whatever provider keys are configured elsewhere
+  # (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so there is no key to set here.
+  #
+  # `enabled` is the whole feature's switch, because installing it was never
+  # passive: boot seeded ~/.librefang from the image, rewrote its config.toml
+  # and pre-warmed its kernel daemon in EVERY workspace, and the dashboard
+  # listed it as an assistant — all for an agent most users never asked for.
+  # With `enabled: false` none of that runs and no picker offers it; the
+  # binary stays in the image, so flipping this to true (and restarting) is
+  # all an existing LibreFang user has to do to keep it.
+  #
+  # `agent` picks which LibreFang agent tasks talk to; the registry-bundled
+  # "coder" is the right default for a coding workspace. It is only emitted
+  # when `enabled` is true.
   librefang:
+    enabled: false                        # KC_LIBREFANG_ENABLED
     agent: "coder"                        # KC_LIBREFANG_AGENT
   # OpenCode → any OpenAI-compatible endpoint
   # (e.g. a private proxy running on your own Digital Ocean droplet)

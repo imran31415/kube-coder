@@ -1,6 +1,6 @@
 /** Bottom-sheet picker for which workspace app to show in the split pane:
  *  running apps from /api/apps, or any port typed by hand. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,

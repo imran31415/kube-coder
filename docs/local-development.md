@@ -175,6 +175,43 @@ make local-down DELETE=1     # also delete the minikube profile entirely
   for multi-tenant clusters.
 - **No TLS.** Local mode serves plain HTTP. That's fine on localhost; don't
   expose it.
+- **NetworkPolicy is not enforced by default — and nothing tells you.**
+  minikube's default CNI accepts every `NetworkPolicy` object and enforces none
+  of them. `kubectl get networkpolicy` lists them, `kubectl describe` looks
+  right, and traffic they forbid flows anyway. So a local test of an isolation
+  rule passes without proving anything, which is worse than not running it.
+  For a cluster that really enforces them:
+
+  ```bash
+  make local-down DELETE=1
+  make local-up LOCAL_CNI=calico
+  ```
+
+  Needed for the always-on keeper's isolation checks (#728 — the workspace pod
+  may reach the keeper's control port and nothing else) and for anything else
+  that asserts on `networkpolicy.yaml` or `networkpolicy-egress.yaml`.
+- **Basic auth, so the bearer and webhook ingresses do not exist.**
+  `ingress-claude-api.yaml` (the phone's API) and `ingress-webhooks.yaml` (the
+  public webhook receiver) are both gated on `ingress.auth.type=oauth2`, and
+  the local overlay is `basic`. They are simply absent here. oauth2 mode needs
+  a real HTTPS host, because `oauth2-proxy.yaml` hardcodes
+  `--cookie-secure=true` and an `https://` redirect URL — so the phone and
+  public-webhook paths cannot be exercised end-to-end on a local cluster at
+  all. Test those against a real host, or drive the keeper's listeners
+  directly from inside the cluster.
+
+  The **cron and page-watch** half of the keeper's front door (#728 step 4b) is
+  not affected and does work here: a CronJob pod reaches the keeper through
+  `WORKSPACE_INTERNAL_URL`, an in-cluster Service, with no ingress involved. So
+  "a schedule that fires while the workspace is asleep still runs its task" is
+  checkable locally; "a GitHub delivery that arrives while it is asleep" is not.
+
+  **Sleep** (#728 step 5) runs here too, since the keeper polls the workspace's
+  Service directly, but in `basic` mode it proves nothing about the poll's
+  credential: `check_claude_auth` returns true for basic mode before it reads
+  any header, so the keeper's poll succeeds with no secret at all. A local run
+  shows the idle loop deciding and scaling; the `X-Keeper-Secret` check needs
+  `oauth2` mode.
 - **Resources.** Defaults are laptop-sized; heavy builds/tests inside the
   workspace may want a bigger `minikube start --memory`.
 - **Apple Silicon: the in-workspace browser/Desktop is degraded.** The image

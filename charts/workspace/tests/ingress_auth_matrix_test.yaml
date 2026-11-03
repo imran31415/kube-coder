@@ -136,6 +136,23 @@ tests:
       - equal:
           path: metadata.annotations["nginx.ingress.kubernetes.io/auth-signin"]
           value: "https://$host/oauth2/start?rd=$escaped_request_uri"
+  - it: oauth2 websockify route strips the /oauth prefix before reaching websockify
+    # Regression test: this ingress used to forward the literal "/oauth/websockify"
+    # path to the backend. websockify only recognizes "/websockify" and 404s on
+    # anything else, which silently broke noVNC's WebSocket upgrade in oauth2 mode.
+    template: templates/ingress-oauth2.yaml
+    set:
+      ingress.auth.type: oauth2
+    documentSelector:
+      path: metadata.name
+      value: ws-testuser-oauth2-websocket
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+          value: /$1
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /oauth/(websockify)
 
   # ---- public mode (auth.type=none) ----
   - it: public mode does NOT render the raw terminal/VNC/websockify ingresses

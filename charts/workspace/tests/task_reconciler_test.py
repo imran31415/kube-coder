@@ -132,6 +132,109 @@ class ReconcileRunningTests(unittest.TestCase):
         self.assertEqual(n, 0)
 
 
+class BootStampTests(unittest.TestCase):
+    """A dead tmux session: completed, or wiped by a pod restart? (#792)
+
+    The only evidence is the boot stamped on the task, because the pod that
+    watched the agent work is gone by the time anyone asks. These tests pin
+    both directions, and — just as importantly — the cases where there is no
+    evidence either way and the answer must stay `completed`: a false
+    `terminated` has an orchestrator redo work that was actually finished.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='kcboot-')
+        self._orig = CTM.TASKS_DIR
+        CTM.TASKS_DIR = self.tmp
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        CTM.TASKS_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _task(self, tid, **meta):
+        d = os.path.join(self.tmp, tid)
+        os.makedirs(d, exist_ok=True)
+        m = {'task_id': tid}
+        m.update(meta)
+        with open(os.path.join(d, 'task.json'), 'w') as f:
+            json.dump(m, f)
+        return d
+
+    def _read(self, tid):
+        with open(os.path.join(self.tmp, tid, 'task.json')) as f:
+            return json.load(f)
+
+    def _reconcile(self, boot, run=_tmux_dead):
+        """One reconcile pass with `boot` as this process's boot identity."""
+        with mock.patch.object(CTM, '_boot_id', boot), \
+             mock.patch.object(server.subprocess, 'run', side_effect=run), \
+             mock.patch.object(CTM, '_fire_completion_hook') as fire:
+            CTM.reconcile_running()
+        return fire
+
+    def test_dead_session_from_an_earlier_boot_is_terminated(self):
+        self._task('t1', status='running', tmux_session='s', boot_id='boot-A',
+                   response_url='http://hook.example/cb')
+        fire = self._reconcile('boot-B')
+        meta = self._read('t1')
+        self.assertEqual(meta['status'], 'terminated')
+        self.assertEqual(meta['termination_reason'], 'pod_restart')
+        self.assertIn('terminated_at', meta)
+        self.assertIn('finished_at', meta)
+        # The orchestrator's webhook must learn about a wipe, not just a finish.
+        fire.assert_called_once()
+        self.assertEqual(fire.call_args[0][0]['status'], 'terminated')
+
+    def test_dead_session_in_this_boot_is_completed(self):
+        self._task('t1', status='running', tmux_session='s', boot_id='boot-A')
+        self._reconcile('boot-A')
+        meta = self._read('t1')
+        self.assertEqual(meta['status'], 'completed')
+        self.assertNotIn('termination_reason', meta)
+
+    def test_unstamped_task_keeps_the_old_completed_behaviour(self):
+        # Written by an image that predates the stamp: no evidence of a
+        # restart, so claiming one would be a guess.
+        self._task('t1', status='running', tmux_session='s')
+        self._reconcile('boot-B')
+        self.assertEqual(self._read('t1')['status'], 'completed')
+
+    def test_unknown_current_boot_keeps_the_old_completed_behaviour(self):
+        # /tmp unreadable, or devcontainer.py absent → '' — equally no evidence.
+        self._task('t1', status='running', tmux_session='s', boot_id='boot-A')
+        self._reconcile('')
+        self.assertEqual(self._read('t1')['status'], 'completed')
+
+    def test_waiting_for_input_task_is_terminated_too(self):
+        # An interactive Build parked at a prompt is still live work, and a
+        # restart takes it just the same.
+        self._task('t1', status='waiting-for-input', tmux_session='s',
+                   boot_id='boot-A', waiting_for_input=True)
+        self._reconcile('boot-B')
+        meta = self._read('t1')
+        self.assertEqual(meta['status'], 'terminated')
+        self.assertNotIn('waiting_for_input', meta)
+
+    def test_live_task_from_an_earlier_boot_is_adopted(self):
+        """So the NEXT restart is detectable even for a task born unstamped."""
+        self._task('t1', status='running', tmux_session='s')
+        alive = lambda *a, **k: mock.Mock(returncode=0, stdout='x', stderr='')
+        self._reconcile('boot-B', run=alive)
+        meta = self._read('t1')
+        self.assertEqual(meta['status'], 'running')
+        self.assertEqual(meta['boot_id'], 'boot-B')
+
+    def test_terminated_is_terminal(self):
+        # No second pass re-opens it, and no tmux call is spent asking.
+        self._task('t1', status='terminated', tmux_session='s', boot_id='boot-A')
+        with mock.patch.object(CTM, '_boot_id', 'boot-B'), \
+             mock.patch.object(server.subprocess, 'run') as run:
+            self.assertEqual(CTM.reconcile_running(), 0)
+        run.assert_not_called()
+        self.assertEqual(self._read('t1')['status'], 'terminated')
+
+
 class TaskReconcilerLifecycleTests(unittest.TestCase):
     def test_start_is_idempotent(self):
         orig = server.TaskReconciler._started

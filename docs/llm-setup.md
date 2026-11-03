@@ -218,8 +218,10 @@ which shares the key and disappeared alongside it.
 ### One behaviour difference worth knowing
 
 **A Build with this assistant does not prompt for tool approval.** For
-`claude`/`ante`, the Build tab leaves the CLI's approval prompts on and
-only the Hypervisor uses the skip-permissions flag. ACP's permission
+`claude`/`ante`, a Build you start from the Build tab keeps the CLI's
+approval prompts on; only launches nobody watches (the Hypervisor's
+tools, signed webhook and cron fires, board runs) use the
+skip-permissions flag. ACP's permission
 requests arrive as JSON-RPC calls that must be answered *inside* the
 turn, and a tmux pane has no way to put that question to you and get an
 answer back — an unanswered request stalls the turn forever. The bridge

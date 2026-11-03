@@ -324,6 +324,22 @@ class CreateTests(ApiTestCase):
         self.assertEqual(body['status'], 'running')
         self.assertEqual(body['target']['url'], 'http://gateway.test:3000')
 
+    def test_a_scan_carries_the_app_name_into_its_record(self):
+        """The scan is titled by the app, not by the address it was reached on.
+
+        The name comes off the targets list, which the workspace works out
+        from the process holding the port, so the whole page — title, list
+        row, the sentence in a finished scan's summary — reads "shop" rather
+        than a port number or an internal container address nobody chose.
+        """
+        self.connect()
+        status, body = self.start_scan()
+        self.assertEqual(status, 202, body)
+        status, view = self.request(f'/api/scans/{body["scan_id"]}')
+        self.assertEqual(status, 200, view)
+        self.assertEqual(view['target']['name'], 'shop')
+        self.assertIn('shop', view['summary'])
+
     def test_create_answers_without_waiting_for_the_scan(self):
         """The promise this endpoint makes. A scan runs for minutes to hours;
         holding the request open would pin a handler thread for all of it."""
@@ -378,6 +394,58 @@ class CreateTests(ApiTestCase):
         self.assertEqual([r['id'] for r in listing['scans']], [scan_id])
         self.assertNotIn('findings', listing['scans'][0])
 
+    def test_a_finished_scan_carries_its_report_to_the_page(self):
+        """The whole point: the scanner's write-up reaches the client. It
+        already arrived inside the run record and was dropped, so a finished
+        scan with nothing proven rendered a blank page."""
+        self.connect()
+        _, created = self.start_scan()
+        scan_id = created['scan_id']
+        StubBackend.state = {
+            'run': {'status': 'completed', 'llm_usage': {'cost': 2.76}},
+            'findings': [],
+            'report': {'text': '# Executive Summary\n\nChecked the login page.',
+                       'location': '/home/dev/.claude-scans/x/report.md'},
+            'coverage': {'complete': False,
+                         'caveats': ['The run stopped before the whole app '
+                                     'was reached.']},
+        }
+        StubBackend.alive = False
+        scans.ScansManager._absorb(scan_id, StubBackend.state, alive=False,
+                                   backend=StubBackend(), handle={})
+
+        status, detail = self.request(f'/api/scans/{scan_id}')
+        self.assertEqual(status, 200)
+        self.assertEqual(detail['status'], 'done')
+        self.assertIn('Checked the login page.', detail['report']['text'])
+        self.assertEqual(detail['report']['location'],
+                         '/home/dev/.claude-scans/x/report.md')
+        self.assertEqual(detail['caveats'], StubBackend.state['coverage']['caveats'])
+        # And the sentence above it no longer reads as an all-clear.
+        self.assertIn('not an all-clear', detail['summary'])
+
+    def test_a_list_row_carries_the_coverage_verdict_but_not_the_report(self):
+        """The verdict is two fields and decides what the row says; the
+        report is pages long and would be sent once per scan on the page."""
+        self.connect()
+        _, created = self.start_scan()
+        scan_id = created['scan_id']
+        StubBackend.state = {
+            'run': {'status': 'completed'},
+            'findings': [],
+            'report': {'text': 'long write-up', 'location': '/x/report.md'},
+            'coverage': {'complete': False, 'caveats': ['cut short']},
+        }
+        StubBackend.alive = False
+        scans.ScansManager._absorb(scan_id, StubBackend.state, alive=False,
+                                   backend=StubBackend(), handle={})
+
+        status, listing = self.request('/api/scans')
+        self.assertEqual(status, 200)
+        row = listing['scans'][0]
+        self.assertNotIn('report', row)
+        self.assertFalse(row['coverage']['complete'])
+
 
 class LifecycleTests(ApiTestCase):
 
@@ -391,6 +459,13 @@ class LifecycleTests(ApiTestCase):
         status, body = self.request(f'/api/scans/{scan_id}/stop', 'POST', {})
         self.assertEqual(status, 200)
         self.assertEqual(body['status'], 'stopped')
+        # What the page reads to say "You stopped this scan", in the detail
+        # and in the list row alike.
+        _, detail = self.request(f'/api/scans/{scan_id}')
+        self.assertEqual(detail['end_reason'], 'user_stopped')
+        self.assertIn('You stopped', detail['summary'])
+        _, listing = self.request('/api/scans')
+        self.assertEqual(listing['scans'][0]['end_reason'], 'user_stopped')
 
     def test_stopping_an_unknown_scan_is_a_404(self):
         status, _ = self.request(f'/api/scans/{SCAN_ID_SHAPE}/stop', 'POST', {})

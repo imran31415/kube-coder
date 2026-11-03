@@ -250,9 +250,26 @@ export interface ScanCounts {
   total: number;
 }
 
+/** The scanner's own verdict on whether it covered the app. Absent on an
+ *  older record, which is "unknown" — never render unknown as a yes. */
+export interface ScanCoverage {
+  complete: boolean;
+  caveats: string[];
+}
+
+/** The scanner's write-up, and where the file sits on the workspace. */
+export interface ScanReport {
+  text: string;
+  /** Opaque path built by the server, shown so the file can be opened. */
+  location: string;
+}
+
 export interface ScanSummary {
   id: string;
   status: ScanStatus;
+  /** Why it ended, as the server classifies it ('' while running). Absent
+   *  from an older server. Same codes as the dashboard's `EndReason`. */
+  end_reason?: string;
   backend: string;
   target: { port: number; name: string; url: string };
   mode: ScanMode;
@@ -264,6 +281,7 @@ export interface ScanSummary {
   started_at: number;
   ended_at: number | null;
   error: string | null;
+  coverage?: ScanCoverage;
 }
 
 export interface ScanDetail extends ScanSummary {
@@ -272,6 +290,12 @@ export interface ScanDetail extends ScanSummary {
   dispositions: Record<string, 'dismissed'>;
   /** One honest sentence about how it ended — never a bare "0 found". */
   summary: string;
+  /** The scanner's write-up. Absent until it finishes a run. */
+  report?: ScanReport;
+  /** What the scanner says it did not reach. Empty when it covered the app. */
+  caveats?: string[];
+  /** Said only when the spending limit is what cut the scan short. */
+  budget_note?: string;
 }
 
 export interface ScanInstallState {
@@ -370,7 +394,9 @@ export interface MissionQueue {
 // ── Controller (admin plane) ────────────────────────────────────────────────
 // Mirrors the workspace-controller's /api/workspaces and /api/capacity/summary.
 
-export type WorkspaceState = 'running' | 'stopped' | 'transitioning' | 'degraded';
+/** `sleeping`: its keeper scaled it to 0 because nobody was using it, and a
+ *  visit wakes it. `stopped`: an admin scaled it to 0, and it stays off (#728). */
+export type WorkspaceState = 'running' | 'sleeping' | 'stopped' | 'transitioning' | 'degraded';
 
 /** One workspace in the controller's list (mirrors controller.py list_workspaces). */
 export interface ControllerWorkspace {
@@ -381,6 +407,10 @@ export interface ControllerWorkspace {
   state: WorkspaceState;
   desiredReplicas: number;
   readyReplicas: number;
+  /** True from a controller that tells sleeping from stopped (#728 step 5).
+   *  Absent from an older one, whose "stopped" means every 0-replica
+   *  workspace — so the app believes a "stopped" only alongside this. */
+  sleepAware?: boolean;
   url: string | null;
   /** Short human status, e.g. "1/1 ready" or "CrashLoopBackOff". */
   detail: string;
@@ -887,6 +917,37 @@ export interface BoardReviewItem {
   decided_by: string;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * One row of the phone's Working or Done tab (#709 Part 3) — an item's newest
+ * run row with its review state and Feed read flag joined in, from
+ * `GET /api/boards/<id>/recent`. Which tab it is on is decided client-side by
+ * `util/boardTabs.classifyBoardRow`.
+ */
+export interface BoardRecentRow {
+  board_id: string;
+  item_id: string;
+  item_key: string;
+  item_title: string;
+  item_url: string;
+  run_id: string;
+  /** What started the run: `manual`, `send_back`, and trigger origins later. */
+  run_origin: string;
+  /** The Build that worked the item, when one was started. */
+  task_id: string;
+  /** The run item's state; the server only returns the shown ones. */
+  state: 'claimed' | 'working' | 'done' | 'failed' | 'pending' | 'skipped';
+  disposition: string | null;
+  review_state: BoardReviewItem['state'] | null;
+  reason: string;
+  error: string;
+  /** One line of result — set on finished rows only. */
+  result: string;
+  updated_at: number;
+  /** The Feed item carrying this row's unread flag; null until it is done. */
+  feed_id: string | null;
+  unread: boolean;
 }
 
 export interface BoardReviewGroup {

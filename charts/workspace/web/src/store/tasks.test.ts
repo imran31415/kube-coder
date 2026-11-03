@@ -84,6 +84,26 @@ describe('tasks store', () => {
     expect(c.error).toBe(1); // killed counts as error
   });
 
+  it('counts a restart-wiped task as a failure, never a completion', () => {
+    // #792: `terminated` means the pod restart killed the task before it
+    // finished. Bucketing it with `completed` is exactly the mistake that
+    // made a mass wipe of 20 agents look like 20 clean finishes.
+    tasks.value = [
+      ...sample,
+      {
+        task_id: '4', name: null, prompt: 'Wiped mid-run',
+        status: 'terminated', created_at: 1699998000, finished_at: 1699998600,
+        source: null, kind: 'claude', memory_injected: [],
+        memory_injection_disabled: false,
+      },
+    ];
+    const c = taskCounts.value;
+    expect(c.all).toBe(4);
+    expect(c.completed).toBe(1);
+    expect(c.error).toBe(2); // killed + terminated
+    expect(c.running).toBe(1);
+  });
+
   it('selectTask(null) clears the selected task', () => {
     selectedTaskId.value = '1';
     selectedTask.value = { ...sample[0] } as never;

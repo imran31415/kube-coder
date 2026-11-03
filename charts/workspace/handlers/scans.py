@@ -92,6 +92,11 @@ class ScanRoutes:
             return
         view = scans.public_view(record)
         view['summary'] = scans.result_summary(record)
+        # Derived on the way out rather than stored: both are sentences about
+        # a record, and a record written by an older build must answer with
+        # today's wording rather than whatever it was told at the time.
+        view['budget_note'] = scans.budget_note(record)
+        view['caveats'] = scans.coverage_caveats(record)
         self.send_json(view)
 
     # ── running a scan ─────────────────────────────────────────────────────

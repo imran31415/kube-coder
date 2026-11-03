@@ -1,0 +1,32 @@
+{{- if .Values.keeper.enabled }}
+# The keeper's own small volume (#728 step 4).
+#
+# Why it needs one at all: the workspace can only tell the keeper things while
+# it is awake. If the keeper restarted while the workspace slept, an in-memory
+# store would come back empty, every webhook would answer 404 for ever, and
+# nothing would wake the workspace to make it re-push. From step 4b it also
+# holds the queued webhook bodies, which is the acceptance criterion "queued
+# events survive a keeper restart".
+#
+# Deliberately WITHOUT `helm.sh/resource-policy: keep`, unlike pvc.yaml. The
+# home volume is irreplaceable user data; everything here is either reconstructed
+# by the workspace at its next boot or belongs to a workspace being removed. An
+# annotation that outlived the release would just accumulate orphaned volumes.
+#
+# The keeper mounts this as its only writable path (its root filesystem is
+# read-only), and the pod's fsGroup is what makes it writable as uid 65532.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keeper-{{ .Values.user.name }}-state
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+spec:
+  # ReadWriteOnce is why keeper-deployment.yaml has to use strategy: Recreate.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.keeper.storage.size | default "1Gi" | quote }}
+{{- end }}

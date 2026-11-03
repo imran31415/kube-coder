@@ -56,9 +56,14 @@ This document describes all environment variables used by kube-coder components.
 | `KC_GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model the `gemini` CLI runs against (e.g. `gemini-2.5-flash`). |
 
 #### LibreFang Integration
+LibreFang is **opt-in and off by default** (#754). Set
+`assistant.librefang.enabled: true` to turn it on; nothing below is emitted
+otherwise, boot does no LibreFang setup, and no assistant picker lists it.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KC_LIBREFANG_AGENT` | `coder` | LibreFang agent name tasks talk to (`librefang chat <agent>` / `librefang message <agent>`). LibreFang has no key of its own — it reuses whatever provider key is in the environment (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). |
+| `KC_LIBREFANG_ENABLED` | unset (off) | `true` enables LibreFang: boot seeds `/home/dev/.librefang` from the image, normalizes its `config.toml` and pre-warms its kernel daemon, and the dashboard/orchestrator offer `librefang` as an assistant (still only when the CLI resolves). Rendered from `assistant.librefang.enabled`. |
+| `KC_LIBREFANG_AGENT` | `coder` | LibreFang agent name tasks talk to (`librefang chat <agent>` / `librefang message <agent>`). Only emitted when `KC_LIBREFANG_ENABLED` is on. LibreFang has no key of its own — it reuses whatever provider key is in the environment (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). |
 
 #### Fallback/Generic AI Backend
 | Variable | Default | Description |
@@ -101,6 +106,7 @@ This document describes all environment variables used by kube-coder components.
 | `KC_PUSH_DIR` | `/home/dev/.claude-push` | Where registered phone tokens and the sent-alert ledger live. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test cannot page a real phone. Leave it unset in every deployment, or that workspace forgets every registered phone. |
 | `KC_PROVIDER_KEYS_FILE` | `/home/dev/.claude-tasks/provider-keys.json` | Where the keys a user sets in **Settings → Provider keys** are stored (and read from by `hypervisor_session` too). Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir, so a test can neither read the owner's real API keys (the assistant list is gated on them, which made two tests fail on a keyed workspace and pass in CI) nor overwrite them. Leave it unset in every deployment, or that workspace forgets every self-service key. |
 | `KC_TRIGGER_RUNS_DIR` | `/home/dev/.claude-triggers/runs` | Where the per-trigger run ledger lives — one append-only, byte-capped JSONL log per webhook / cron / page-watch, read by the **Runs** panel on each trigger row. Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp dir so a test that fires a trigger cannot append to the owner's real history. Leave it unset in every deployment, or that workspace starts with no trigger history. |
+| `KC_CLAUDE_CONFIG_PATH` | `~/.claude.json` | The Claude Code config a Build launch pre-answers first-run dialogs in: folder trust, the API-key prompt, and the auto-mode setup nudge (#762). Read once at import. For tests and throwaway runs only — `make python-tests` points it at a temp file, because every test that launches a Build would otherwise write the developer's real config, and the auto-mode answer there applies to every session. Leave it unset in every deployment, or that workspace's Builds stop on those dialogs again. |
 
 ### Isolated worktrees (#701)
 | Variable | Default | Description |
@@ -115,6 +121,33 @@ This document describes all environment variables used by kube-coder components.
 | `KC_GIT_TIMEOUT` / `KC_GIT_ADD_TIMEOUT` | `15` / `180` | Seconds allowed for one git command, and for `git worktree add` on a large repository. |
 | `KC_WT_LOCK_TIMEOUT` | `60` | Seconds to wait for another worktree operation to finish before answering 503. |
 | `KC_WT`, `KC_WT_BRANCH`, `PORT`, `KC_PORT` | — | **Automatically set** inside an isolated Build: its worktree folder, branch and leased port. |
+
+### Always-on keeper (#728)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KC_KEEPER_IDLE_MINUTES` | `30` | Minutes every activity signal must stay quiet before `GET /api/keeper/idle` reports the workspace idle, when the keeper asks without `?idle_minutes=`. Read once at import. Set from `keeper.sleep.idleMinutes` (only rendered when `keeper.enabled`); the chart refuses anything below 1. Keep it comfortably longer than the most frequent cron, or the wake cap delays the runs. See [always-on-keeper.md](always-on-keeper.md). |
+| `KEEPER_CONTROL_URL` | — | The keeper's control listener, e.g. `http://keeper-<user>-control.<ns>.svc.cluster.local`. Where `keeper_push.py` sends the trigger ids and the hash of the API token. **Unset disables every push**, which is what a workspace with no keeper wants. Set by the chart when `keeper.enabled`. |
+| `KEEPER_CONTROL_SECRET` | — | The shared secret those pushes are authenticated with, from the `keeper-<user>-control` Secret (or `keeper.controlSecret.existingSecretName`). Pushes are skipped unless this *and* `KEEPER_CONTROL_URL` are both set. |
+| `WORKSPACE_INTERNAL_URL` | `http://ws-<user>.<ns>.svc.cluster.local:6080` | The address the scheduled-trigger CronJobs curl to fire a cron or a page-watch. Baked into each CronJob's command and recorded on it as the annotation `kube-coder.dev/internal-url`, so `CronManager.reconcile_internal_url()` can re-apply the ones whose address went stale at the next boot — on a mismatch only. Step 4b sets it to `http://keeper-<user>-api.<ns>.svc.cluster.local` when `keeper.enabled`, so a schedule that fires into a sleeping workspace is queued, wakes it and is replayed instead of dying on an nginx 503. Left unset without a keeper, which is what the default above is for. |
+| `KC_KEEPER_PUSH_ATTEMPTS` | `4` | How many times `keeper_push.py` retries one push before giving up. A lost push is repaired by the next workspace boot, which pushes unconditionally. |
+
+The keeper process itself (the Go binary, not the workspace) reads these; they are set by `keeper-deployment.yaml` and are listed here only so the whole surface is in one place.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KEEPER_NAMESPACE` / `KEEPER_DEPLOYMENT` | — | Which Deployment the keeper looks after. Both required. |
+| `KEEPER_PAGE` | `/etc/keeper/page/holding.html` | The away page, re-read per request so a ConfigMap edit lands without a restart. |
+| `KEEPER_SLEEP_ENABLED` | `false` | Exactly `true` starts the idle loop, which puts the workspace to sleep once it has been idle for `KEEPER_IDLE_MINUTES` (#728 step 5); `keeper sleep` also refuses without it, because without `keeper.sleep.enabled` the chart still sets `replicas` and the next `helm upgrade` would undo the sleep. Read once at start. |
+| `KEEPER_IDLE_MINUTES` | `30` | How long the workspace must be quiet before the idle loop puts it to sleep, sent to the workspace as `?idle_minutes=` on every poll. Set from `keeper.sleep.idleMinutes`, and rendered only with `keeper.sleep.enabled`. Below 1 falls back to 30 with a log line rather than sleeping the moment the workspace goes quiet. |
+| `KEEPER_USER_HEADER` | — | The header carrying the signed-in user, for the wake log. Set to `X-Auth-Request-User` in oauth2 mode only, where the ingress overwrites it from oauth2-proxy's answer. |
+| `KEEPER_STATE_DIR` | — | Where the trigger ids, the token hash and (step 4b) the queue live. **Setting it is what turns the step-4 listeners on**, so a step-4 image on a step-3 chart runs as step 3 rather than crashlooping on an unmounted volume. |
+| `KEEPER_CONTROL_SECRET_FILE` | `/etc/keeper/control/secret` | The mounted shared secret, re-read per request so rotating it needs no restart. |
+| `KEEPER_WORKSPACE_URL` | `http://<KEEPER_DEPLOYMENT>.<KEEPER_NAMESPACE>.svc.cluster.local:6080` | Where a proxied webhook or cron fire is forwarded (step 4b). The same address `server.py` computes for a CronJob; set explicitly by the chart so a cluster whose DNS suffix is not `cluster.local` has one place to change it. |
+| `KEEPER_QUEUE_MAX_ENTRIES` | `256` | How many away requests may wait. Past this the keeper refuses an away request with a visible 503 rather than accepting bytes it has nowhere to keep. From `keeper.queue.maxEntries`. |
+| `KEEPER_QUEUE_MAX_BYTES` | `67108864` | And their total size on disk, because many small crons and a few 1 MiB webhooks are different shapes of the same problem. From `keeper.queue.maxBytes`. |
+| `KEEPER_QUEUE_TTL_SECONDS` | `3600` | How long a waiting request may still be replayed. `slack` and `stripe` webhooks override this down to 240 s on their own, because both sign a timestamp and both refuse anything older than 5 minutes — replaying one later fails as `bad_signature`, which reads as a wrong secret. From `keeper.queue.ttlSeconds`. |
+| `KEEPER_MAX_INFLIGHT` | `4` | Forwards in flight at once; each holds a body in memory, so this and the container's memory limit are one decision. Applied after the request is durable, never before. From `keeper.queue.maxInFlight`. |
+| `KEEPER_MAX_WAKES_PER_HOUR` | `0` (the chart sets `10`) | How often an unattended caller — a webhook or a cron — may start this workspace, in a rolling hour. `0` means no cap. An exhausted budget queues the request and answers 202 without waking; it is delivered at the next wake from any cause, including the budget freeing up. Never applies to a signed-in visit or the app's Wake button. Persisted on the state volume, so a crashloop cannot refill it. From `keeper.maxWakesPerHour`. |
 
 ### Dashboard & UI
 | Variable | Default | Description |

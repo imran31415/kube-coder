@@ -9,6 +9,17 @@
 # behind OAuth via ingress-oauth2.yaml's /oauth/(api/.*) rule. The two ingresses
 # coexist because the path regex below requires a trailing /<id>, so a bare
 # GET /api/webhooks won't match here.
+#
+# With the always-on keeper (#728 step 4b) the backend is the keeper instead of
+# the workspace. While the workspace is awake the keeper forwards the request
+# byte for byte and mirrors the answer, so nothing changes for a sender; while
+# it is asleep the keeper answers 202, queues the raw request, wakes the
+# workspace and replays it. Before this, a delivery that arrived during a sleep
+# got a raw nginx 503 and was lost — GitHub does not retry.
+#
+# The keeper checks only that the id exists, so a stranger walking webhook URLs
+# gets a 404 and starts nothing. The signature is still verified inside
+# server.py, which is the only place that holds the secret.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -45,7 +56,13 @@ spec:
         pathType: ImplementationSpecific
         backend:
           service:
+            {{- if .Values.keeper.enabled }}
+            name: keeper-{{ .Values.user.name }}-api
+            port:
+              name: http
+            {{- else }}
             name: ws-{{ .Values.user.name }}
             port:
               number: 6080
+            {{- end }}
 {{- end }}

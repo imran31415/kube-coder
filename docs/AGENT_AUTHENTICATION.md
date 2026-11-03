@@ -18,7 +18,7 @@ itself, sign in the agent running inside the workspace.
 | OpenRouter | Save an **OpenRouter API key** in Provider settings. This agent uses OpenCode with OpenRouter. |
 | DeepSeek | Save a **DeepSeek API key** in Provider settings. This agent uses OpenCode with DeepSeek. |
 | OpenCode Zen | Save an **OpenCode Zen API key** in Provider settings. If its gateway was not enabled when the workspace started, ask the workspace administrator to enable it. |
-| LibreFang | Configure the agent's provider in the workspace terminal and save its supported provider key in Provider settings. |
+| LibreFang | Opt-in: if it is not offered at all, ask the workspace administrator to set `assistant.librefang.enabled: true`. Once offered, configure the agent's provider in the workspace terminal and save its supported provider key in Provider settings. |
 | Opensource GPU | This uses the workspace fallback endpoint. Ask the workspace administrator to configure authentication if that endpoint requires it. |
 
 After setup, return to Chat, select **Use prompt again**, and send the message.

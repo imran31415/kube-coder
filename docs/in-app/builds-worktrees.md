@@ -75,6 +75,29 @@ A worktree separates files, the branch and the port. It does not separate:
 - **CPU and memory** — parallel Builds still share the workspace's limits.
   On a small workspace, run fewer at once.
 
+## Surviving a pod restart
+
+A workspace pod restarts from time to time — resource pressure, node
+recycling, maintenance — and a restart kills every Build's tmux session. The
+worktree and its commits are on the persistent disk and survive; a Build's
+**uncommitted** edits survive only as files nobody has recorded, and the Build
+itself never gets to report what it did.
+
+So when you start a long Build — especially when you fan several out — tell it
+to **commit and push as soon as its change compiles**, before it validates or
+writes up anything:
+
+```
+Commit and push your branch as soon as your change compiles — before you
+validate, gather evidence or open a PR. Push early, push often.
+```
+
+A Build the restart caught mid-run reads **`terminated`**, not `completed`
+(#792), which is the signal that its work is unfinished: open its Changes tab,
+commit whatever is there as a labelled unvalidated checkpoint, and start a
+short follow-up Build on that branch to rebase, validate and finish. Cleanup
+never touches a worktree with uncommitted changes, so there is no rush.
+
 ## Reviewing and getting the work out
 
 Open the Build and choose the **Changes** tab. It shows:
@@ -96,6 +119,14 @@ toast tells you the branch name, and you delete the branch yourself once it
 is merged.
 
 - A running Build's worktree cannot be removed — stop the Build first.
+- Nor can a worktree **any** live Build is working in, even one it does not
+  own: a Build started with a worktree as its working directory (the
+  `kc-issue` script flow, or one you made by hand with the `worktree` skill)
+  holds that folder for as long as it runs. Removal is refused with
+  `409 live` and names the Build, because on disk a worktree whose agent
+  started seconds ago — clean, nothing to push, no remote branch — looks
+  exactly like one whose work is finished and merged. Only task liveness
+  tells them apart.
 - A worktree with uncommitted changes asks again, spelling out that those
   changes will be lost.
 
@@ -112,6 +143,7 @@ unique:
 | has uncommitted changes | kept |
 | has commits that are on no remote | kept |
 | belongs to a running Build | kept |
+| has a live Build working in it, owned or not | kept |
 
 **Settings → Worktrees** lists every worktree, who owns it and why cleanup
 kept it, and has a *Clean up now* button.
@@ -120,7 +152,14 @@ kept it, and has a *Clean up now* button.
 
 A workspace holds at most **20** worktrees by default. At the limit, a new
 isolated Build is refused with a message pointing at Settings → Worktrees —
-after the cleanup has first taken anything it safely can.
+after the cleanup has first taken anything it safely can. The message counts
+the ones pruning cannot help with, so you know before you start whether there
+is anything to free:
+
+```
+worktree limit reached (20/20; 7 owned by running tasks and not removable).
+Remove finished worktrees in Settings → Worktrees, or raise KC_MAX_WORKTREES.
+```
 
 > :::scenario
 > **Two Builds, one repo.** You start "fix the login bug" and "add dark mode"

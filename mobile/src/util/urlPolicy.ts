@@ -54,7 +54,7 @@ interface ParsedUrl {
  * only need scheme/host/port. Returns null when the string isn't a usable
  * absolute URL.
  */
-function parseUrl(raw: string): ParsedUrl | null {
+export function parseUrl(raw: string): ParsedUrl | null {
   const s = (raw ?? '').trim();
   const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]*)([/?#]|$)/.exec(s);
   if (!m) return null;

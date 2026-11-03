@@ -1,5 +1,6 @@
 """Unit tests for mcp_registry.py (issue #353) — the user-defined MCP server
-registry and its fan-out to Claude / OpenCode / Ante / Codex configs.
+registry and its fan-out to Claude / OpenCode / Ante / Codex configs, plus
+remote (http/sse) entries and the both-homes Claude write (#815).
 
 Run with:    python3 -m unittest tests.mcp_registry_test
 (from charts/workspace/)
@@ -26,7 +27,9 @@ class RegistryTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         patches = {
             'REGISTRY_FILE': os.path.join(self.tmp, 'store', 'mcp-servers.json'),
-            'CLAUDE_CONFIG': os.path.join(self.tmp, '.claude.json'),
+            # Both homes (#815): the server's own and /home/dev's.
+            'CLAUDE_CONFIGS': (os.path.join(self.tmp, '.claude.json'),
+                               os.path.join(self.tmp, 'dev', '.claude.json')),
             'OPENCODE_CONFIG': os.path.join(self.tmp, 'opencode', 'opencode.json'),
             'ANTE_SETTINGS': os.path.join(self.tmp, '.ante', 'settings.json'),
             'CODEX_HOME': os.path.join(self.tmp, '.codex'),
@@ -35,6 +38,7 @@ class RegistryTestCase(unittest.TestCase):
             p = mock.patch.object(mr, attr, value)
             p.start()
             self.addCleanup(p.stop)
+        self.claude_cfg, self.claude_dev_cfg = patches['CLAUDE_CONFIGS']
         # Codex is exercised explicitly in CodexSyncTests; elsewhere the CLI
         # is "absent" so sync_all records an error without spawning anything.
         p = mock.patch.object(mr.shutil, 'which', return_value=None)
@@ -120,7 +124,7 @@ class FanOutTests(RegistryTestCase):
         self.assertEqual(results['ante'], 'ok')
         self.assertIn('skipped', results['codex'])  # CLI absent in this case
 
-        claude = self.read(mr.CLAUDE_CONFIG)['mcpServers']['github']
+        claude = self.read(self.claude_cfg)['mcpServers']['github']
         self.assertEqual(claude, {'type': 'stdio', 'command': 'npx',
                                   'args': ['-y', 'server-github'],
                                   'env': {'GITHUB_TOKEN': 't'}})
@@ -136,7 +140,7 @@ class FanOutTests(RegistryTestCase):
     def test_sync_preserves_seeded_and_user_entries(self):
         # Simulate the boot-seeded defaults + a hand-edit in each config.
         seeded = {'type': 'stdio', 'command': 'python3', 'args': ['/x/mcp_memory.py']}
-        self.write(mr.CLAUDE_CONFIG, {'mcpServers': {'memory': seeded,
+        self.write(self.claude_cfg, {'mcpServers': {'memory': seeded,
                                                      'hand-edit': seeded},
                                       'otherKey': 1})
         self.write(mr.OPENCODE_CONFIG, {'$schema': 's', 'provider': {'p': {}},
@@ -148,7 +152,7 @@ class FanOutTests(RegistryTestCase):
         mr.delete_server('mine')
         mr.sync_all()
 
-        claude = self.read(mr.CLAUDE_CONFIG)
+        claude = self.read(self.claude_cfg)
         self.assertEqual(claude['mcpServers']['memory'], seeded)
         self.assertEqual(claude['mcpServers']['hand-edit'], seeded)
         self.assertEqual(claude['otherKey'], 1)
@@ -165,17 +169,17 @@ class FanOutTests(RegistryTestCase):
     def test_disabled_entry_is_removed_from_providers_but_kept_in_registry(self):
         mr.set_server('svc', 'run')
         mr.sync_all()
-        self.assertIn('svc', self.read(mr.CLAUDE_CONFIG)['mcpServers'])
+        self.assertIn('svc', self.read(self.claude_cfg)['mcpServers'])
         mr.set_server('svc', 'run', enabled=False)
         mr.sync_all()
-        self.assertNotIn('svc', self.read(mr.CLAUDE_CONFIG)['mcpServers'])
+        self.assertNotIn('svc', self.read(self.claude_cfg)['mcpServers'])
         self.assertNotIn('svc', self.read(mr.OPENCODE_CONFIG)['mcp'])
         self.assertEqual(len(mr.public_view()), 1)
         self.assertFalse(mr.public_view()[0]['enabled'])
 
     def test_one_broken_provider_does_not_block_others(self):
-        os.makedirs(os.path.dirname(mr.CLAUDE_CONFIG), exist_ok=True)
-        with open(mr.CLAUDE_CONFIG, 'w') as f:
+        os.makedirs(os.path.dirname(self.claude_cfg), exist_ok=True)
+        with open(self.claude_cfg, 'w') as f:
             f.write('{corrupt json')
         mr.set_server('svc', 'run')
         results = mr.sync_all()
@@ -183,7 +187,7 @@ class FanOutTests(RegistryTestCase):
         self.assertEqual(results['opencode'], 'ok')
         self.assertEqual(results['ante'], 'ok')
         # The corrupt file was left alone, not clobbered.
-        with open(mr.CLAUDE_CONFIG) as f:
+        with open(self.claude_cfg) as f:
             self.assertEqual(f.read(), '{corrupt json')
 
     def test_opencode_fresh_file_gets_schema(self):
@@ -201,10 +205,212 @@ class FanOutTests(RegistryTestCase):
             'managed': ['memory'],
         })
         seeded = {'type': 'stdio', 'command': 'python3', 'args': ['/x.py']}
-        self.write(mr.CLAUDE_CONFIG, {'mcpServers': {'memory': seeded}})
+        self.write(self.claude_cfg, {'mcpServers': {'memory': seeded}})
         mr.sync_all()
-        self.assertEqual(self.read(mr.CLAUDE_CONFIG)['mcpServers']['memory'],
+        self.assertEqual(self.read(self.claude_cfg)['mcpServers']['memory'],
                          seeded)
+
+
+class ClaudeBothHomesTests(RegistryTestCase):
+    """#815: a Claude CLI reads $HOME/.claude.json and $HOME differs by spawn
+    path, so the Claude sync writes every home's file."""
+
+    def test_sync_writes_every_home(self):
+        mr.set_server('svc', 'run', args=['a'])
+        self.assertEqual(mr.sync_all()['claude'], 'ok')
+        want = {'type': 'stdio', 'command': 'run', 'args': ['a']}
+        for path in (self.claude_cfg, self.claude_dev_cfg):
+            with self.subTest(path=path):
+                self.assertEqual(self.read(path)['mcpServers']['svc'], want)
+
+    def test_removal_reaches_every_home(self):
+        mr.set_server('svc', 'run')
+        mr.sync_all()
+        mr.delete_server('svc')
+        mr.sync_all()
+        for path in (self.claude_cfg, self.claude_dev_cfg):
+            with self.subTest(path=path):
+                self.assertNotIn('svc', self.read(path)['mcpServers'])
+
+    def test_one_corrupt_home_does_not_block_the_other(self):
+        os.makedirs(os.path.dirname(self.claude_dev_cfg), exist_ok=True)
+        with open(self.claude_dev_cfg, 'w') as f:
+            f.write('{corrupt')
+        mr.set_server('svc', 'run')
+        results = mr.sync_all()
+        self.assertIn('error', results['claude'])
+        self.assertIn(self.claude_dev_cfg, results['claude'])
+        self.assertIn('svc', self.read(self.claude_cfg)['mcpServers'])
+        with open(self.claude_dev_cfg) as f:
+            self.assertEqual(f.read(), '{corrupt')
+        # The failed home keeps the name managed, so a later pass retries.
+        self.assertIn('svc', mr._read_registry()['managed'])
+
+    def test_same_file_through_a_symlink_is_written_once(self):
+        self.write(self.claude_cfg, {'mcpServers': {}})
+        os.makedirs(os.path.dirname(self.claude_dev_cfg), exist_ok=True)
+        os.symlink(self.claude_cfg, self.claude_dev_cfg)
+        self.assertEqual(mr._claude_config_paths(), [self.claude_cfg])
+        mr.set_server('svc', 'run')
+        self.assertEqual(mr.sync_all()['claude'], 'ok')
+        self.assertTrue(os.path.islink(self.claude_dev_cfg))
+        self.assertIn('svc', self.read(self.claude_dev_cfg)['mcpServers'])
+
+
+class RemoteServerTests(RegistryTestCase):
+    """#815: http/sse servers (e.g. Canva's hosted connector)."""
+    CANVA = 'https://mcp.canva.com/mcp'
+
+    def test_http_roundtrip_and_view(self):
+        ok, err = mr.set_server('canva', transport='http', url=self.CANVA)
+        self.assertTrue(ok, err)
+        self.assertEqual(mr._read_registry()['servers']['canva'],
+                         {'type': 'http', 'url': self.CANVA, 'headers': {},
+                          'enabled': True})
+        view = mr.public_view()[0]
+        self.assertEqual(view['type'], 'http')
+        self.assertEqual(view['url'], self.CANVA)
+        self.assertEqual(view['providers'], ['claude'])
+        # stdio fields stay present (empty) for clients that predate #815.
+        self.assertEqual((view['command'], view['args'], view['env']),
+                         ('', [], {}))
+
+    def test_url_validation(self):
+        good = ('https://mcp.canva.com/mcp', 'http://localhost:8080/mcp',
+                'http://127.0.0.1/mcp', 'http://[::1]:9000/sse')
+        for url in good:
+            with self.subTest(url=url):
+                ok, err = mr.set_server('r', transport='http', url=url)
+                self.assertTrue(ok, err)
+        bad = ('', None, 'mcp.canva.com/mcp', 'ftp://x.example/mcp',
+               'http://example.com/mcp', 'https://user:pw@example.com/mcp',
+               'https://example.com/a b', 'https://', 'https://x/\na',
+               'https://' + 'a' * 2100)
+        for url in bad:  # a new name: a blank url on 'r' keeps the stored one
+            with self.subTest(url=url):
+                self.assertFalse(mr.set_server('new', transport='http', url=url)[0])
+
+    def test_rejects_unknown_type_and_bad_headers(self):
+        self.assertFalse(mr.set_server('r', transport='ws', url=self.CANVA)[0])
+        for headers in ({'bad header': 'v'}, {'X-K': 7}, {'X-K': 'a\r\nX: y'},
+                        'notadict'):
+            with self.subTest(headers=headers):
+                self.assertFalse(mr.set_server('r', transport='http',
+                                               url=self.CANVA,
+                                               headers=headers)[0])
+
+    def test_reserved_names_apply_to_remote_too(self):
+        ok, err = mr.set_server('memory', transport='http', url=self.CANVA)
+        self.assertFalse(ok)
+        self.assertIn('built-in', err)
+
+    def test_headers_are_redacted_and_blank_keeps_secret(self):
+        mr.set_server('r', transport='http', url=self.CANVA,
+                      headers={'Authorization': 'Bearer tok_abcd9876'})
+        view = mr.public_view()[0]
+        self.assertEqual(view['headers'], {'Authorization': '…9876'})
+        self.assertNotIn('tok_abcd9876', json.dumps(mr.public_view()))
+        mr.set_server('r', transport='http', url=self.CANVA,
+                      headers={'Authorization': ''})
+        self.assertEqual(mr._read_registry()['servers']['r']['headers'],
+                         {'Authorization': 'Bearer tok_abcd9876'})
+
+    def test_typeless_toggle_from_an_older_client_keeps_the_remote_entry(self):
+        # A pre-#815 client (the shipped mobile app) toggles with the stdio
+        # shape: no type, no url, no headers, blank command.
+        mr.set_server('r', transport='sse', url=self.CANVA,
+                      headers={'X-Key': 'secret'})
+        ok, err = mr.set_server('r', '', args=[], env={}, enabled=False)
+        self.assertTrue(ok, err)
+        self.assertEqual(mr._read_registry()['servers']['r'],
+                         {'type': 'sse', 'url': self.CANVA,
+                          'headers': {'X-Key': 'secret'}, 'enabled': False})
+
+    def test_new_typeless_entry_is_still_stdio(self):
+        self.assertEqual(mr.set_server('r', '')[1], 'command is required')
+
+    def test_legacy_untyped_registry_entry_syncs_as_stdio(self):
+        self.write(mr.REGISTRY_FILE, {'servers': {'old': {
+            'command': 'run', 'args': [], 'env': {}, 'enabled': True}},
+            'managed': []})
+        mr.sync_all()
+        self.assertEqual(self.read(self.claude_cfg)['mcpServers']['old'],
+                         {'type': 'stdio', 'command': 'run', 'args': []})
+        self.assertEqual(mr.public_view()[0]['type'], 'stdio')
+
+    def test_remote_sync_is_claude_only(self):
+        mr.set_server('canva', transport='http', url=self.CANVA)
+        mr.set_server('stream', transport='sse', url='https://x.example/sse',
+                      headers={'Authorization': 'Bearer t'})
+        results = mr.sync_all()
+        self.assertEqual(results['claude'], 'ok')
+        for path in (self.claude_cfg, self.claude_dev_cfg):
+            with self.subTest(path=path):
+                servers = self.read(path)['mcpServers']
+                self.assertEqual(servers['canva'],
+                                 {'type': 'http', 'url': self.CANVA})
+                self.assertEqual(servers['stream'],
+                                 {'type': 'sse', 'url': 'https://x.example/sse',
+                                  'headers': {'Authorization': 'Bearer t'}})
+        # Nothing stdio to write, so the stdio-only configs are not created.
+        self.assertFalse(os.path.exists(mr.OPENCODE_CONFIG))
+        self.assertFalse(os.path.exists(mr.ANTE_SETTINGS))
+
+    def test_switching_stdio_to_http_leaves_stdio_only_providers(self):
+        mr.set_server('svc', 'run')
+        mr.sync_all()
+        self.assertIn('svc', self.read(mr.OPENCODE_CONFIG)['mcp'])
+        mr.set_server('svc', transport='http', url=self.CANVA)
+        mr.sync_all()
+        self.assertNotIn('svc', self.read(mr.OPENCODE_CONFIG)['mcp'])
+        self.assertNotIn('svc', self.read(mr.ANTE_SETTINGS)['mcp_servers'])
+        self.assertEqual(self.read(self.claude_cfg)['mcpServers']['svc'],
+                         {'type': 'http', 'url': self.CANVA})
+        self.assertIn('svc', mr._read_registry()['managed'])
+
+    def test_codex_never_gets_a_remote_add(self):
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return mock.Mock(returncode=0)
+
+        mr.set_server('canva', transport='http', url=self.CANVA)
+        with mock.patch.object(mr.shutil, 'which',
+                               side_effect=lambda n: '/usr/bin/codex'
+                               if n == 'codex' else None), \
+             mock.patch.object(mr.subprocess, 'run', side_effect=fake_run):
+            self.assertEqual(mr.sync_all()['codex'], 'ok')
+        self.assertFalse([c for c in calls if c[:3] == ['codex', 'mcp', 'add']])
+
+
+class SetHandlerTests(RegistryTestCase):
+    """POST /api/mcp-servers passes the remote fields through (#815)."""
+
+    def _post(self, body):
+        import server  # heavy; only this class needs it
+        h = mock.Mock(spec=server.BrowserHandler)
+        h._mcp_registry_gate.return_value = True
+        h.read_json_body.return_value = body
+        responses = []
+        h.send_json.side_effect = lambda o, s=200: responses.append((o, s))
+        server.BrowserHandler.handle_mcp_servers_set(h)
+        return responses[-1]
+
+    def test_http_entry_reaches_the_claude_config(self):
+        body, status = self._post({'name': 'canva', 'type': 'http',
+                                   'url': 'https://mcp.canva.com/mcp',
+                                   'headers': {}})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['sync']['claude'], 'ok')
+        self.assertEqual(self.read(self.claude_cfg)['mcpServers']['canva'],
+                         {'type': 'http', 'url': 'https://mcp.canva.com/mcp'})
+
+    def test_bad_remote_entry_is_a_400(self):
+        body, status = self._post({'name': 'canva', 'type': 'http',
+                                   'url': 'http://example.com/mcp'})
+        self.assertEqual(status, 400)
+        self.assertIn('https', body['error'])
 
 
 class CodexSyncTests(RegistryTestCase):
@@ -254,10 +460,10 @@ class ManagedListTests(RegistryTestCase):
             results = mr.sync_all()
         self.assertIn('error', results['claude'])
         self.assertIn('svc', mr._read_registry()['managed'])
-        self.assertIn('svc', self.read(mr.CLAUDE_CONFIG)['mcpServers'])
+        self.assertIn('svc', self.read(self.claude_cfg)['mcpServers'])
         # Second pass succeeds and completes the cleanup.
         mr.sync_all()
-        self.assertNotIn('svc', self.read(mr.CLAUDE_CONFIG)['mcpServers'])
+        self.assertNotIn('svc', self.read(self.claude_cfg)['mcpServers'])
         self.assertNotIn('svc', mr._read_registry()['managed'])
 
 

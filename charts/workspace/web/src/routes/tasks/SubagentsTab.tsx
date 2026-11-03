@@ -9,6 +9,7 @@ const STATUS_TONE: Record<string, 'success' | 'warn' | 'danger' | 'accent'> = {
   completed: 'success',
   error: 'danger',
   killed: 'warn',
+  terminated: 'danger',
 };
 
 export function SubagentsTab({ taskId }: { taskId?: string }) {

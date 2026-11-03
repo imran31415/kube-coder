@@ -69,14 +69,22 @@ function CapacityView() {
 }
 
 const PAGE_SIZE = 10;
-type StateFilter = 'running' | 'stopped' | 'all';
+type StateFilter = 'running' | 'sleeping' | 'stopped' | 'all';
 type NsFilter = 'all' | 'isolated' | 'shared';
 
-const STATE_LABEL: Record<StateFilter, string> = { running: 'Running', stopped: 'Stopped', all: 'All' };
+const STATE_LABEL: Record<StateFilter, string> = {
+  running: 'Running',
+  sleeping: 'Sleeping',
+  stopped: 'Stopped',
+  all: 'All',
+};
 
-// "running" groups every active state (running/transitioning/degraded) — the
-// useful split for an operator is active-vs-stopped, not the exact pill.
-const isActive = (w: Workspace) => w.state !== 'stopped';
+// Which state chip a workspace counts under. "running" groups every state with
+// a pod (running/transitioning/degraded) — the useful split for an operator is
+// what is costing compute, what is resting and will come back on its own
+// (sleeping, #728), and what is off until somebody starts it (stopped).
+const bucket = (w: Workspace): Exclude<StateFilter, 'all'> =>
+  w.state === 'stopped' || w.state === 'sleeping' ? w.state : 'running';
 
 function WorkspaceList() {
   const rows = workspaces.value;
@@ -102,13 +110,9 @@ function WorkspaceList() {
       (w.version ?? '').toLowerCase().includes(q)
     );
   });
-  const activeCount = base.filter(isActive).length;
-  const counts: Record<StateFilter, number> = {
-    running: activeCount,
-    stopped: base.length - activeCount,
-    all: base.length,
-  };
-  const filtered = stateF === 'all' ? base : base.filter((w) => isActive(w) === (stateF === 'running'));
+  const counts: Record<StateFilter, number> = { running: 0, sleeping: 0, stopped: 0, all: base.length };
+  for (const w of base) counts[bucket(w)] += 1;
+  const filtered = stateF === 'all' ? base : base.filter((w) => bucket(w) === stateF);
   // Workspaces the state chip alone is holding back — drives the empty state's
   // "your workspace didn't vanish, it's just filtered" escape hatch.
   const hiddenByState = base.length - filtered.length;
@@ -125,7 +129,7 @@ function WorkspaceList() {
     setPage(0);
   };
 
-  const stateChips: StateFilter[] = ['running', 'stopped', 'all'];
+  const stateChips: StateFilter[] = ['running', 'sleeping', 'stopped', 'all'];
   const nsChips: NsFilter[] = ['all', 'isolated', 'shared'];
 
   return (
@@ -290,7 +294,13 @@ function Row({ ws }: { ws: Workspace }) {
             e.stopPropagation();
             void toggle(ws);
           }}
-          title={stopped ? 'Start workspace' : 'Stop workspace (data preserved)'}
+          title={
+            stopped
+              ? 'Start workspace'
+              : ws.state === 'sleeping'
+                ? 'Stop workspace — a visit will no longer wake it'
+                : 'Stop workspace (data preserved)'
+          }
         >
           {pending ? '…' : stopped ? 'Start' : 'Stop'}
         </button>

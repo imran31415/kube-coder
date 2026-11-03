@@ -653,3 +653,149 @@ tests:
           content:
             name: KC_MEMORY_INJECT_MAX_CHARS
             value: "2048"
+
+  # ── Always-on keeper: who owns `replicas` (#728 step 2) ───────────────────
+  # With sleep on the keeper scales the workspace 0 <-> 1, so the chart must not
+  # declare replicas — otherwise every helm upgrade / GitOps reconcile wakes a
+  # sleeping workspace. Off (the default) must stay exactly today's chart.
+
+  - it: keeps replicas 1 and no keeper env by default
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+
+  - it: keeps replicas 1 when the keeper is on but sleep is off
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+            value: "30"
+
+  - it: leaves replicas to the keeper when sleep is on
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.enabled: true
+    asserts:
+      - notExists:
+          path: spec.replicas
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: exports a custom idle threshold to the workspace
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 5
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_KEEPER_IDLE_MINUTES
+            value: "5"
+
+  - it: refuses sleep without a keeper to wake the workspace
+    template: templates/deployment.yaml
+    set:
+      keeper.sleep.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.enabled requires keeper.enabled — sleep without a keeper would leave nothing to wake the workspace (#728)"
+
+  - it: refuses an idle threshold below one minute
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.idleMinutes: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got 0)"
+
+  - it: refuses a non-numeric idle threshold (server.py int()s it at import)
+    template: templates/deployment.yaml
+    set:
+      keeper.enabled: true
+      keeper.sleep.idleMinutes: soon
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.sleep.idleMinutes must be a whole number of minutes >= 1 (got soon)"
+  # ── The workspace's side ──────────────────────────────────────────────────
+  - it: tells the workspace where to push, and what to push with
+    set:
+      keeper.enabled: true
+      keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_CONTROL_URL
+            value: http://keeper-testuser-control.test.svc.cluster.local
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_CONTROL_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: keeper-testuser-control
+                key: secret
+
+  - it: says nothing about a keeper to a workspace without one
+    set:
+      keeper.enabled: false
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KEEPER_CONTROL_URL
+
+
+  # ── The always-on keeper in front of the scheduled triggers (#728 4b) ────
+  # Points this workspace's CronJobs at the keeper, so a fire that lands during
+  # a sleep is queued and replayed instead of dying on an nginx 503.
+  - it: points the workspace's scheduled triggers at the keeper
+    set:
+      keeper.enabled: true
+      keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WORKSPACE_INTERNAL_URL
+            value: http://keeper-testuser-api.test.svc.cluster.local
+
+  # Unset without a keeper, so server.py's own inline default — the workspace's
+  # Service — still applies. The chart has never set this variable before.
+  - it: leaves the cron receiver address unset when the keeper is off
+    set:
+      keeper.enabled: false
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: WORKSPACE_INTERNAL_URL

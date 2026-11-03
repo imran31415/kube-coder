@@ -72,13 +72,15 @@ function setBusy(user: string, on: boolean) {
 
 export async function toggle(ws: Workspace): Promise<void> {
   const stopping = ws.state !== 'stopped';
-  if (
-    stopping &&
-    !window.confirm(
-      `Stop ${ws.user}? The pod is scaled to zero and its compute freed. ` +
-        `The workspace's disk (PVC) is preserved, so you can start it again later.`,
-    )
-  ) {
+  // A sleeping workspace has no pod to free; what Stop changes is that a visit
+  // stops waking it, which is the thing the admin needs to know they are doing.
+  const question =
+    ws.state === 'sleeping'
+      ? `Stop ${ws.user}? It is asleep now, so a visit would wake it. ` +
+        `Stopping it means it stays off until someone starts it here.`
+      : `Stop ${ws.user}? The pod is scaled to zero and its compute freed. ` +
+        `The workspace's disk (PVC) is preserved, so you can start it again later.`;
+  if (stopping && !window.confirm(question)) {
     return;
   }
   setBusy(ws.user, true);

@@ -83,6 +83,10 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     waiting_for_input: r.waiting_for_input === true,
     last_input_prompt: typeof r.last_input_prompt === 'string' ? r.last_input_prompt : undefined,
     last_activity_at: typeof r.last_activity_at === 'number' ? r.last_activity_at : null,
+    // Tri-state on purpose (#800): null means the delivery thread hasn't
+    // reported yet, which is not the same as "the prompt was lost".
+    prompt_delivered: typeof r.prompt_delivered === 'boolean' ? r.prompt_delivered : null,
+    stalled_at_trust_dialog: r.stalled_at_trust_dialog === true,
     // Only isolated Builds carry one (#701); absent means "not isolated".
     ...(r.worktree && typeof r.worktree === 'object'
       ? { worktree: coerceWorktreeBrief(r.worktree) }

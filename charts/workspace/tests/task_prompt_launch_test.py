@@ -1,8 +1,9 @@
 """Unit tests for the task-launch prompt-delivery fixes (issue #94 blocker).
 
-Covers ClaudeTaskManager._ensure_claude_trust (pre-accepting Claude's
-folder-trust dialog so the auto-pasted initial prompt isn't swallowed) and
-the pane-readiness helpers that replace the old blind fixed delay.
+Covers ClaudeTaskManager._write_claude_trust (pre-accepting Claude's
+folder-trust dialog so the auto-pasted initial prompt isn't swallowed),
+_ensure_claude_trust's read-back-and-retry around it (issue #800) and the
+pane-readiness helpers that replace the old blind fixed delay.
 
 Run with:    python3 -m unittest tests.task_prompt_launch_test
 (from charts/workspace/)
@@ -22,7 +23,7 @@ import server  # noqa: E402
 CTM = server.ClaudeTaskManager
 
 
-class EnsureClaudeTrustTests(unittest.TestCase):
+class WriteClaudeTrustTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.cfg = os.path.join(self.tmp, '.claude.json')
@@ -32,16 +33,16 @@ class EnsureClaudeTrustTests(unittest.TestCase):
             return json.load(f)
 
     def test_seeds_fresh_config(self):
-        wrote = CTM._ensure_claude_trust('/home/dev', config_path=self.cfg)
+        wrote = CTM._write_claude_trust('/home/dev', config_path=self.cfg)
         self.assertTrue(wrote)
         cfg = self._read()
         self.assertIs(cfg['hasCompletedOnboarding'], True)
         self.assertIs(cfg['projects']['/home/dev']['hasTrustDialogAccepted'], True)
 
     def test_idempotent_no_rewrite(self):
-        self.assertTrue(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         # Second call: everything already present → no write.
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
 
     def test_preserves_unrelated_keys(self):
         with open(self.cfg, 'w') as f:
@@ -52,7 +53,7 @@ class EnsureClaudeTrustTests(unittest.TestCase):
                 'projects': {'/home/dev/other': {'hasTrustDialogAccepted': True,
                                                  'projectOnboardingSeenCount': 3}},
             }, f)
-        wrote = CTM._ensure_claude_trust('/home/dev/new', config_path=self.cfg)
+        wrote = CTM._write_claude_trust('/home/dev/new', config_path=self.cfg)
         self.assertTrue(wrote)
         cfg = self._read()
         # Untouched existing keys.
@@ -65,18 +66,18 @@ class EnsureClaudeTrustTests(unittest.TestCase):
     def test_only_onboarding_missing_triggers_write(self):
         with open(self.cfg, 'w') as f:
             json.dump({'projects': {'/w': {'hasTrustDialogAccepted': True}}}, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['hasCompletedOnboarding'], True)
 
     def test_missing_file_is_created(self):
         self.assertFalse(os.path.exists(self.cfg))
-        self.assertTrue(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         self.assertTrue(os.path.exists(self.cfg))
 
     def test_invalid_json_not_clobbered(self):
         with open(self.cfg, 'w') as f:
             f.write('{not valid json')
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         # Original content left intact.
         with open(self.cfg) as f:
             self.assertEqual(f.read(), '{not valid json')
@@ -84,13 +85,13 @@ class EnsureClaudeTrustTests(unittest.TestCase):
     def test_non_dict_config_not_clobbered(self):
         with open(self.cfg, 'w') as f:
             json.dump(['a', 'list'], f)
-        self.assertFalse(CTM._ensure_claude_trust('/home/dev', config_path=self.cfg))
+        self.assertFalse(CTM._write_claude_trust('/home/dev', config_path=self.cfg))
         self.assertEqual(self._read(), ['a', 'list'])
 
     def test_projects_not_dict_is_replaced(self):
         with open(self.cfg, 'w') as f:
             json.dump({'hasCompletedOnboarding': True, 'projects': 'oops'}, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
         self.assertIs(self._read()['projects']['/w']['hasTrustDialogAccepted'], True)
 
 
@@ -115,11 +116,11 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
     def _seed_trust(self, workdir='/w'):
         # Get the trust/onboarding flags in place so later writes are
         # attributable to the key-rejection seeding alone.
-        self.assertTrue(CTM._ensure_claude_trust(workdir, config_path=self.cfg))
+        self.assertTrue(CTM._write_claude_trust(workdir, config_path=self.cfg))
 
     def test_missing_file_seeds_rejected(self):
         self.assertFalse(os.path.exists(self.cfg))
-        wrote = CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        wrote = CTM._write_claude_trust('/w', config_path=self.cfg,
                                          reject_api_key=self.KEY)
         self.assertTrue(wrote)
         resp = self._read()['customApiKeyResponses']
@@ -127,9 +128,9 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         self.assertEqual(resp['approved'], [])
 
     def test_idempotent_no_rewrite(self):
-        CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        CTM._write_claude_trust('/w', config_path=self.cfg,
                                  reject_api_key=self.KEY)
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                   reject_api_key=self.KEY))
         self.assertEqual(self._read()['customApiKeyResponses']['rejected'],
                          [self.TAIL])
@@ -141,7 +142,7 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         cfg['customApiKeyResponses'] = {'approved': [self.TAIL], 'rejected': []}
         with open(self.cfg, 'w') as f:
             json.dump(cfg, f)
-        self.assertFalse(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                   reject_api_key=self.KEY))
         resp = self._read()['customApiKeyResponses']
         self.assertEqual(resp['approved'], [self.TAIL])
@@ -155,7 +156,7 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
                                         'extra': 'kept'}
         with open(self.cfg, 'w') as f:
             json.dump(cfg, f)
-        self.assertTrue(CTM._ensure_claude_trust('/w', config_path=self.cfg,
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg,
                                                  reject_api_key=self.KEY))
         resp = self._read()['customApiKeyResponses']
         self.assertEqual(resp['approved'], ['otherKeyTail000000AA'])
@@ -163,8 +164,127 @@ class ApiKeyRejectSeedTests(unittest.TestCase):
         self.assertEqual(resp['extra'], 'kept')
 
     def test_no_key_leaves_responses_absent(self):
-        CTM._ensure_claude_trust('/w', config_path=self.cfg)
+        CTM._write_claude_trust('/w', config_path=self.cfg)
         self.assertNotIn('customApiKeyResponses', self._read())
+
+
+class ClaudeConfigPathTests(unittest.TestCase):
+    """`$KC_CLAUDE_CONFIG_PATH` — the override the Makefile's python-tests
+    target sets so a test that launches a Build cannot answer Claude Code's
+    dialogs in the developer's real config (#762)."""
+
+    def test_unset_or_blank_is_the_users_config(self):
+        home = os.path.expanduser('~/.claude.json')
+        self.assertEqual(server._resolve_claude_config_path({}), home)
+        for blank in ('', '   ', '\n'):
+            self.assertEqual(server._resolve_claude_config_path(
+                {'KC_CLAUDE_CONFIG_PATH': blank}), home)
+
+    def test_set_is_used_trimmed(self):
+        self.assertEqual(server._resolve_claude_config_path(
+            {'KC_CLAUDE_CONFIG_PATH': ' /tmp/kc/claude.json \n'}),
+            '/tmp/kc/claude.json')
+
+
+class AutoModeSetupDismissTests(unittest.TestCase):
+    """Pre-answering "Don't show again" to the auto-mode setup nudge (#762).
+
+    Claude Code shows "Set up auto mode for your environment?" after a turn
+    in an auto-mode session and records "Don't show again" GLOBALLY as
+    autoModeEnvSetup.dismissed, next to its own `denials` / `dismissedAt`.
+    """
+
+    def setUp(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        self.cfg = home.name + os.sep + '.claude.json'
+
+    def _read(self):
+        with open(self.cfg) as f:
+            return json.load(f)
+
+    def _seed_others(self, **extra):
+        """Write a config where every OTHER answer is already in place for
+        '/w', so a write is attributable to the auto-mode answer alone."""
+        cfg = {'hasCompletedOnboarding': True,
+               'projects': {'/w': {'hasTrustDialogAccepted': True}}, **extra}
+        with open(self.cfg, 'w') as f:
+            f.write(json.dumps(cfg))
+
+    def test_missing_file_seeds_dismissed(self):
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_cli_counters_preserved(self):
+        self._seed_others(autoModeEnvSetup={'denials': 7, 'dismissedAt': 123})
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'],
+                         {'denials': 7, 'dismissedAt': 123, 'dismissed': True})
+
+    def test_already_dismissed_is_a_no_op(self):
+        self._seed_others(autoModeEnvSetup={'dismissed': True, 'denials': 9})
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg))
+        self.assertEqual(self._read()['autoModeEnvSetup'],
+                         {'dismissed': True, 'denials': 9})
+
+    def test_only_this_answer_missing_triggers_write(self):
+        self._seed_others()
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+        self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
+
+    def test_malformed_value_is_replaced(self):
+        for bad in (None, 'x', [], 3):
+            with self.subTest(bad=bad):
+                self._seed_others(autoModeEnvSetup=bad)
+                self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+                self.assertEqual(self._read()['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_helper_reports_change_only_once(self):
+        cfg = {}
+        self.assertTrue(CTM._dismiss_auto_mode_setup(cfg))
+        self.assertFalse(CTM._dismiss_auto_mode_setup(cfg))
+        self.assertEqual(cfg, {'autoModeEnvSetup': {'dismissed': True}})
+
+    def test_falsy_dismissed_is_set_true(self):
+        # The CLI only ever writes `true` here, so `false` is not a user answer.
+        self._seed_others(autoModeEnvSetup={'dismissed': False})
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+        self.assertIs(self._read()['autoModeEnvSetup']['dismissed'], True)
+
+    def test_new_workdir_after_dismissal_keeps_it_global(self):
+        # The answer lives once at the top level; a second workdir only adds
+        # its own trust entry and never a per-project copy of the answer.
+        CTM._write_claude_trust('/a', config_path=self.cfg)
+        self.assertTrue(CTM._write_claude_trust('/b', config_path=self.cfg))
+        cfg = self._read()
+        self.assertEqual(cfg['projects'], {'/a': {'hasTrustDialogAccepted': True},
+                                           '/b': {'hasTrustDialogAccepted': True}})
+        self.assertEqual(cfg['autoModeEnvSetup'], {'dismissed': True})
+
+    def test_unrelated_keys_untouched(self):
+        self._seed_others(
+            oauthAccount={'userID': 'abc'},
+            mcpServers={'memory': {'type': 'stdio'}},
+            customApiKeyResponses={'approved': ['t' * 20], 'rejected': []},
+            numStartups=42,
+        )
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg))
+        cfg = self._read()
+        self.assertEqual(cfg['oauthAccount'], {'userID': 'abc'})
+        self.assertEqual(cfg['mcpServers'], {'memory': {'type': 'stdio'}})
+        self.assertEqual(cfg['customApiKeyResponses'],
+                         {'approved': ['t' * 20], 'rejected': []})
+        self.assertEqual(cfg['numStartups'], 42)
+
+    def test_lands_with_api_key_answer_in_one_write(self):
+        key = 'synthetic-test-key-' + 'y' * 40 + 'AbCdEfGhIjKlMnOpQrSt'
+        self.assertTrue(CTM._write_claude_trust('/w', config_path=self.cfg,
+                                                 reject_api_key=key))
+        cfg = self._read()
+        self.assertEqual(cfg['customApiKeyResponses']['rejected'], [key[-20:]])
+        self.assertIs(cfg['autoModeEnvSetup']['dismissed'], True)
+        self.assertFalse(CTM._write_claude_trust('/w', config_path=self.cfg,
+                                                  reject_api_key=key))
 
 
 class ApiKeyToRejectTests(unittest.TestCase):
@@ -353,63 +473,421 @@ class WaitForPaneReadyTests(unittest.TestCase):
                                          interval=0, expect_composer=True))
 
 
-class DeliverPromptTests(unittest.TestCase):
-    """The core issue #288 fix: verify the paste landed and re-PASTE (not just
-    re-Enter) when it didn't."""
+# ── Scripted-pane fixtures for the delivery path (issue #805) ───────────────
+# Claude Code 2.1.x shapes, as `tmux capture-pane -p` hands them over.
 
-    def _ok(self, *a, **k):
+#: The folder-trust modal, drawn over (and covering) the composer (#800).
+TRUST_DIALOG_SCREEN = (
+    "╭──────────────────────────────────────────────────────────╮\n"
+    "│ Quick safety check: Is this a project you created or one  │\n"
+    "│ you trust?                                                │\n"
+    "│                                                           │\n"
+    "│ ❯ 1. Yes, I trust this folder                             │\n"
+    "│   2. No, exit                                             │\n"
+    "╰──────────────────────────────────────────────────────────╯\n"
+    "  ? for shortcuts\n"
+)
+
+
+def composer_screen(box_lines, transcript=()):
+    """Render a Claude Code screen: transcript, then the input box, then the
+    shortcuts footer. `box_lines` is what sits INSIDE the box."""
+    out = list(transcript)
+    out.append('╭──────────────────────────────────────────────────────────╮')
+    out.extend(f'│ {line:<56} │' for line in box_lines)
+    out.append('╰──────────────────────────────────────────────────────────╯')
+    out.append('  ? for shortcuts')
+    return '\n'.join(out) + '\n'
+
+
+class FakeSession:
+    """A scripted tmux session, driven by a virtual clock.
+
+    Models the one thing the 0.4s check got wrong: a paste becomes VISIBLE in
+    the composer `paste_delay` virtual seconds after `paste-buffer` returns,
+    not immediately. Patch `subprocess.run` at it and the real delivery code
+    runs end to end — `_capture_pane` included.
+
+    - `drops`      — this many pastes vanish entirely (the #288 failure).
+    - `swallow`    — this many Enters are absorbed (bracketed-paste eats one).
+    - `preloaded`  — copies already sitting in the box (a pre-fix stacked box).
+    - `placeholder`— render pastes as `[Pasted text #N +14 lines]`, which is
+                     what Claude shows for a long or multi-line prompt.
+    - `unclearable`— C-u / Escape do nothing (the box refuses to empty).
+    - `dialog`     — start parked on the folder-trust modal.
+    - `needs_escape` — Claude Code v2.1.310 (#813): after a paste, a bare Enter
+                     does nothing, however often it is pressed; only an Enter
+                     that follows an Escape submits. Escape leaves the text.
+    """
+
+    PROMPT = 'implement the thing and open a PR'
+
+    def __init__(self, paste_delay=0.0, drops=0, swallow=0, preloaded=0,
+                 placeholder=False, unclearable=False, dialog=False,
+                 needs_escape=False):
+        self.clock = 0.0
+        self.needs_escape = needs_escape
+        self.armed = False
+        self.paste_delay = paste_delay
+        self.drops = drops
+        self.swallow = swallow
+        self.placeholder = placeholder
+        self.unclearable = unclearable
+        self.dialog = dialog
+        self.visible = preloaded
+        self.pending = []
+        self.submitted = []
+        self.pastes = 0
+        self.enters = 0
+        self.keys = []
+
+    # -- virtual clock --------------------------------------------------
+    def sleep(self, secs):
+        # A zero sleep still has to advance time or a bounded poll loop would
+        # never reach its deadline.
+        self.clock += float(secs) if secs else 0.01
+
+    def time(self):
+        return self.clock
+
+    def _tick(self):
+        due = [t for t in self.pending if t <= self.clock]
+        self.pending = [t for t in self.pending if t > self.clock]
+        self.visible += len(due)
+
+    # -- the pane -------------------------------------------------------
+    def render(self):
+        self._tick()
+        if self.dialog:
+            return TRUST_DIALOG_SCREEN
+        # Every submitted copy stays on screen in the transcript above the
+        # box. A whole-pane search would read that as "still unsent".
+        transcript = []
+        for _ in self.submitted:
+            transcript.append(f'> {self.PROMPT}')
+            transcript.append('● Working on it…')
+        if not self.visible:
+            return composer_screen(['>'], transcript)
+        if self.placeholder:
+            body = [f'[Pasted text #{i + 1} +14 lines]'
+                    for i in range(self.visible)]
+        else:
+            body = [self.PROMPT] * self.visible
+        body[0] = '> ' + body[0]
+        return composer_screen(body, transcript)
+
+    # -- tmux -----------------------------------------------------------
+    def run(self, cmd, **kwargs):
+        self._tick()
+        argv = list(cmd)
+        verb = argv[1] if len(argv) > 1 else ''
+        if verb == 'capture-pane':
+            return mock.Mock(returncode=0, stdout=self.render(), stderr='')
+        if verb == 'paste-buffer':
+            self.pastes += 1
+            if self.drops > 0:
+                self.drops -= 1
+            else:
+                self.pending.append(self.clock + self.paste_delay)
+        elif verb == 'send-keys':
+            keys = argv[4:]
+            self.keys.append(tuple(keys))
+            for key in keys:
+                self._key(key)
         return mock.Mock(returncode=0, stdout='', stderr='')
 
-    def test_delivers_on_first_try(self):
-        captures = iter(['empty-composer', 'text-pasted', 'assistant-working'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf'))
-        # Exactly one paste-buffer (no retry needed).
-        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
-        self.assertEqual(len(pastes), 1)
+    def _key(self, key):
+        if key == 'Enter':
+            self.enters += 1
+            if self.dialog:
+                self.dialog = False
+                return
+            if self.swallow > 0:
+                self.swallow -= 1
+                return
+            if self.needs_escape and not self.armed:
+                return
+            self.armed = False
+            self._tick()
+            if self.visible:
+                # Enter sends the WHOLE box as one message, however many
+                # copies of the prompt are in it.
+                self.submitted.append(self.visible)
+                self.visible = 0
+        elif key == 'Escape' and self.needs_escape:
+            self.armed = True
+        elif key in ('C-u', 'Escape') and not self.unclearable:
+            # Keys reach the TUI in order, so a clear also discards a paste
+            # that was still queued behind it.
+            self.visible = 0
+            self.pending = []
 
-    def test_retries_paste_when_dropped(self):
-        # Attempt 1: composer unchanged after paste (dropped). Attempt 2 lands.
-        captures = iter([
-            'empty', 'empty',                 # attempt 1: before, pasted (dropped)
-            'empty', 'text-pasted', 'working'  # attempt 2: before, pasted, after
-        ])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf', retries=3))
-        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
-        self.assertEqual(len(pastes), 2)  # re-PASTE, not just re-Enter
 
-    def test_returns_false_when_all_pastes_dropped(self):
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok), \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: 'empty'), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertFalse(CTM._deliver_prompt('sess', '/f', 'buf', retries=2))
+class ComposerTextTests(unittest.TestCase):
+    """Reading the input box REGION, not the whole screen (#805)."""
 
-    def test_nudges_enter_when_submit_not_registered(self):
-        # Paste lands, but first Enter is absorbed (screen unchanged); the
-        # nudge submits it.
-        captures = iter(['empty', 'text-pasted', 'text-pasted', 'working'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf'))
-        enters = [c for c in run.call_args_list
-                  if 'send-keys' in c.args[0] and 'Enter' in c.args[0]]
-        self.assertEqual(len(enters), 2)  # initial + one nudge
+    def test_empty_box_is_empty_string_not_none(self):
+        self.assertEqual(CTM._pane_composer_text(composer_screen(['>'])), '')
+
+    def test_box_contents_are_returned_without_chrome(self):
+        pane = composer_screen(['> do the thing'])
+        self.assertEqual(CTM._pane_composer_text(pane), 'do the thing')
+
+    def test_transcript_above_the_box_is_not_box_content(self):
+        pane = composer_screen(['>'], transcript=['> do the thing', '● Working'])
+        self.assertEqual(CTM._pane_composer_text(pane), '')
+
+    def test_bare_affordance_without_a_box(self):
+        self.assertEqual(CTM._pane_composer_text('❯ typed text\n? for shortcuts'),
+                         'typed text')
+
+    def test_no_input_box_at_all_is_unknown(self):
+        self.assertIsNone(CTM._pane_composer_text(STARTUP_QUIET))
+        self.assertIsNone(CTM._pane_composer_text(None))
+        self.assertIsNone(CTM._pane_composer_text(''))
+
+    def test_wrapped_paste_still_matches(self):
+        needle = CTM._match_text('open a PR when the tests pass')
+        pane = composer_screen(['> open a PR when the', 'tests pass'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 1)
+
+    def test_counts_stacked_copies(self):
+        needle = CTM._match_text('do the thing')
+        pane = composer_screen(['> do the thing', 'do the thing', 'do the thing'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 3)
+
+    def test_counts_paste_placeholders(self):
+        # The real triple-paste evidence from #805: Claude shows a placeholder
+        # for a long prompt, so the prompt's words are nowhere on screen.
+        pane = composer_screen(['> [Pasted text #1 +14 lines]'
+                                '[Pasted text #2 +7 lines]'])
+        self.assertEqual(CTM._paste_copies(pane, 'nowhere-in-this-pane'), 2)
+
+    def test_submitted_box_reads_as_zero_copies(self):
+        needle = CTM._match_text('do the thing')
+        pane = composer_screen(['>'], transcript=['> do the thing'])
+        self.assertEqual(CTM._paste_copies(pane, needle), 0)
+
+    def test_unreadable_box_is_minus_one(self):
+        self.assertEqual(CTM._paste_copies(None, 'x'), -1)
+        self.assertEqual(CTM._paste_copies(STARTUP_QUIET, 'x'), -1)
+
+    def test_hint_text_without_a_needle_is_unknown_not_empty(self):
+        # Claude draws greyed suggestion text in an empty box; without a
+        # fingerprint that is not evidence either way.
+        pane = composer_screen(['> Try "fix the typecheck errors"'])
+        self.assertEqual(CTM._paste_copies(pane, None), -1)
+        self.assertEqual(CTM._paste_copies(composer_screen(['>']), None), 0)
+
+
+class PasteNeedleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, 'prompt.txt')
+
+    def _write(self, text):
+        with open(self.path, 'w') as f:
+            f.write(text)
+        return self.path
+
+    def test_tail_is_the_fingerprint(self):
+        needle = CTM._paste_needle(self._write('a' * 10 + 'TAILEND'),
+                                   chars=7)
+        self.assertEqual(needle, 'tailend')
+
+    def test_whitespace_is_dropped_so_wrapping_cannot_break_it(self):
+        self.assertEqual(CTM._paste_needle(self._write('Do\n The  Thing\n')),
+                         'dothething')
+
+    def test_unreadable_or_trivial_file_has_no_fingerprint(self):
+        self.assertIsNone(CTM._paste_needle(os.path.join(self.tmp.name, 'nope')))
+        self.assertIsNone(CTM._paste_needle(self._write('\n \n')))
+
+
+class ClearComposerTests(unittest.TestCase):
+    def _drive(self, sess):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._clear_composer('sess', CTM._match_text(sess.PROMPT))
+
+    def test_empty_box_costs_no_keys(self):
+        sess = FakeSession()
+        self.assertTrue(self._drive(sess))
+        self.assertEqual(sess.keys, [])
+
+    def test_stacked_box_is_emptied(self):
+        sess = FakeSession(preloaded=3)
+        self.assertTrue(self._drive(sess))
+        self.assertEqual(sess.visible, 0)
+        self.assertEqual(sess.keys[0], ('C-u',))
+
+    def test_box_that_refuses_to_empty_reports_false(self):
+        sess = FakeSession(preloaded=1, unclearable=True)
+        self.assertFalse(self._drive(sess))
+        self.assertEqual(len(sess.keys), len(CTM.COMPOSER_CLEAR_KEYS))
+
+
+class DeliverPromptTests(unittest.TestCase):
+    """Delivery against a scripted pane.
+
+    #288 (a DROPPED paste must be pasted again) and #805 (a LATE paste must
+    not be) pull in opposite directions, so each case here pins which one the
+    screen is actually showing.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.prompt_file = os.path.join(self.tmp.name, 'prompt.txt')
+        with open(self.prompt_file, 'w') as f:
+            f.write(FakeSession.PROMPT)
+
+    def _deliver(self, sess, **kw):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._deliver_prompt('sess', self.prompt_file, 'buf', **kw)
+
+    def _launch(self, sess, **kw):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._deliver_launch_prompt('sess', self.prompt_file, 'buf', **kw)
+
+    def test_fast_start_pastes_once_and_submits(self):
+        sess = FakeSession(paste_delay=0.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_slow_start_paste_is_late_not_lost(self):
+        # The #805 case: the paste shows up 8s after `paste-buffer` returns,
+        # long past the old 0.4s check. One paste, one copy, one Enter.
+        sess = FakeSession(paste_delay=8.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.enters, 1)
+
+    def test_slow_start_with_a_paste_placeholder(self):
+        # A long prompt renders as `[Pasted text #1 +14 lines]`, so delivery
+        # cannot look for the prompt's own words.
+        sess = FakeSession(paste_delay=12.0, placeholder=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_dropped_paste_is_pasted_again(self):
+        # #288 must not regress: the box is still empty at the deadline, so
+        # this paste really was lost.
+        sess = FakeSession(drops=1)
+        self.assertTrue(self._deliver(sess, retries=3))
+        self.assertEqual(sess.pastes, 2)
+        self.assertEqual(sess.submitted, [1])  # exactly one copy sent
+
+    def test_paste_that_never_appears_fails_without_submitting(self):
+        sess = FakeSession(drops=99)
+        self.assertFalse(self._deliver(sess, retries=3))
+        self.assertEqual(sess.pastes, 3)
+        self.assertEqual(sess.submitted, [])
+        self.assertEqual(sess.enters, 0)
+        # Bounded patience: the appear budget is spent once across attempts,
+        # not once per attempt, so delivery stays inside the Board run's
+        # quiet-settle window.
+        self.assertLess(sess.clock, CTM.PASTE_APPEAR_TIMEOUT + 20)
+
+    def test_swallowed_enter_gets_one_nudge(self):
+        sess = FakeSession(paste_delay=1.0, swallow=1, unclearable=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.enters, 2)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.pastes, 1)
+
+    def test_enter_that_needs_an_escape_first_still_submits(self):
+        # #813: on Claude Code v2.1.310 a bare Enter after a paste is inert.
+        # The nudge must be Escape, a pause, Enter -- and still one paste.
+        sess = FakeSession(paste_delay=1.0, needs_escape=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.keys[-2:], [('Escape',), ('Enter',)])
+
+    def test_escape_that_clears_the_box_is_not_a_submit(self):
+        # An older CLI where Escape empties the composer: the nudge must not
+        # mistake the emptied box for a sent prompt. It pastes again, and
+        # exactly one copy is ultimately sent.
+        sess = FakeSession(paste_delay=1.0, swallow=1)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 2)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_first_attempt_is_a_bare_enter(self):
+        # A CLI that still submits on Enter never sees an Escape.
+        sess = FakeSession(paste_delay=1.0)
+        self.assertTrue(self._deliver(sess))
+        self.assertNotIn(('Escape',), sess.keys)
+
+    def test_unsubmittable_box_is_reported_not_re_pasted(self):
+        # Enter never registers. The prompt IS in the box; pasting again would
+        # only stack a second copy of a prompt a human can still send.
+        sess = FakeSession(swallow=99, unclearable=True)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.visible, 1)
+        self.assertEqual(sess.submitted, [])
+
+    def test_recovers_a_box_that_already_holds_copies(self):
+        # The pre-fix wreckage: three copies queued in the box. Delivery must
+        # empty it first and send exactly one.
+        sess = FakeSession(preloaded=3)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.submitted, [1])
+        self.assertIn(('C-u',), sess.keys)
+
+    def test_refuses_to_paste_onto_a_box_it_cannot_empty(self):
+        sess = FakeSession(preloaded=1, unclearable=True)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 0)
+        self.assertEqual(sess.submitted, [])
 
     def test_paste_without_submit_skips_enter(self):
-        captures = iter(['empty', 'text-pasted'])
-        with mock.patch.object(server.subprocess, 'run', side_effect=self._ok) as run, \
-             mock.patch.object(CTM, '_capture_pane', side_effect=lambda s: next(captures)), \
-             mock.patch.object(server.time, 'sleep'):
-            self.assertTrue(CTM._deliver_prompt('sess', '/f', 'buf', submit=False))
-        enters = [c for c in run.call_args_list
-                  if 'send-keys' in c.args[0] and 'Enter' in c.args[0]]
-        self.assertEqual(len(enters), 0)
+        sess = FakeSession(paste_delay=2.0)
+        self.assertTrue(self._deliver(sess, submit=False))
+        self.assertEqual(sess.enters, 0)
+        self.assertEqual(sess.visible, 1)
+
+    def test_trust_dialog_is_handed_back_rather_than_waited_out(self):
+        # No composer is coming while the modal is up, so delivery must not
+        # spend its whole appear budget on it (#800).
+        sess = FakeSession(dialog=True)
+        self.assertFalse(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertLess(sess.clock, CTM.PASTE_APPEAR_TIMEOUT)
+
+    def test_dialog_then_slow_start_delivers_once(self):
+        # Both failures at once: the trust modal is up AND the paste that
+        # follows it is late. One answered dialog, one paste, one submit.
+        sess = FakeSession(paste_delay=6.0, dialog=True)
+        delivered, saw_dialog = self._launch(sess)
+        self.assertTrue(delivered)
+        self.assertTrue(saw_dialog)
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_unobservable_session_is_not_pasted_into_twice(self):
+        # Captures that keep failing cannot prove anything; re-pasting into a
+        # session we cannot see is how text gets duplicated.
+        def dead(cmd, **kw):
+            return mock.Mock(returncode=1, stdout='', stderr='no server')
+
+        with mock.patch.object(server.subprocess, 'run', side_effect=dead) as run, \
+             mock.patch.object(server.time, 'sleep'), \
+             mock.patch.object(server.time, 'time', side_effect=iter(range(500))):
+            self.assertTrue(CTM._deliver_prompt('sess', self.prompt_file, 'buf'))
+        pastes = [c for c in run.call_args_list if 'paste-buffer' in c.args[0]]
+        self.assertEqual(len(pastes), 1)
 
 
 class CapturePaneTests(unittest.TestCase):

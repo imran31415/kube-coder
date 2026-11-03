@@ -1,0 +1,67 @@
+{{- if .Values.keeper.enabled }}
+{{- /* oauth2 mode: under the dashboard's /oauth prefix like its other API
+calls, leaving /api/keeper/* on the phone's bearer ingress to step 4. */}}
+{{- $prefix := ternary "/oauth" "" (eq .Values.ingress.auth.type "oauth2") }}
+# The keeper's two actions, behind the same auth as the dashboard: basic auth
+# in basic mode, oauth2-proxy in oauth2 mode (keeper-deployment.yaml refuses
+# auth.type=none). Exact paths — though ingress-nginx widens them to
+# case-insensitive prefix regexes on this host (other Ingresses here use
+# regex), so the keeper checks the exact path itself. This is the one route to the
+# keeper-<user>-wake Service, so only a visitor who passed auth can wake the
+# workspace — the page itself is served unauthenticated on the oauth2 root
+# path, and its Service has no wake port.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keeper-{{ .Values.user.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keeper-{{ .Values.user.name }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
+    {{- end }}
+    {{- if eq .Values.ingress.auth.type "basic" }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: {{ required "ingress.auth.secretName is required when ingress.auth.type=basic (an empty value here disables basic auth and exposes the workspace publicly)" .Values.ingress.auth.secretName }}
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+    {{- else if eq .Values.ingress.auth.type "oauth2" }}
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    # The user only, for the keeper's wake log (KEEPER_USER_HEADER): set from
+    # oauth2-proxy's answer, so a client can't supply it. Not the access token
+    # the dashboard ingresses forward — the keeper has no use for it.
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user"
+    {{- end }}
+    {{- if .Values.ingress.tls.enabled }}
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.user.host }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.user.host }}
+    http:
+      paths:
+      - path: {{ $prefix }}/api/keeper/status
+        pathType: Exact
+        backend:
+          service:
+            name: keeper-{{ .Values.user.name }}-wake
+            port:
+              name: http
+      - path: {{ $prefix }}/api/keeper/wake
+        pathType: Exact
+        backend:
+          service:
+            name: keeper-{{ .Values.user.name }}-wake
+            port:
+              name: http
+{{- end }}

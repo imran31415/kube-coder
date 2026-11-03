@@ -77,3 +77,10 @@ backups/
 
 # Local issue verification logs.
 artifacts/issue-710/
+
+# The keeper binary, when someone runs `go build` inside keeper/ instead of
+# `go vet` / `go test` (#728). The Dockerfile builds to /out, so a stray
+# executable here is always a local accident — and a 7 MB one that git would
+# happily take.
+keeper/keeper
+keeper/keeper.exe

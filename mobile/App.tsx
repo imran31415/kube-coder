@@ -15,29 +15,11 @@ import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import OnboardingScreen from './src/screens/OnboardingScreen';
-import TasksScreen from './src/screens/TasksScreen';
-import TaskDetailScreen from './src/screens/TaskDetailScreen';
-import NewTaskScreen from './src/screens/NewTaskScreen';
-import AppsScreen from './src/screens/AppsScreen';
-import AppViewScreen from './src/screens/AppViewScreen';
 import DesktopScreen from './src/screens/DesktopScreen';
-import HypervisorScreen from './src/screens/HypervisorScreen';
-import WalkieScreen from './src/screens/WalkieScreen';
-import MissionControlScreen from './src/screens/MissionControlScreen';
-import FeedScreen from './src/screens/FeedScreen';
-import BoardScreen from './src/screens/BoardScreen';
-import SecurityScreen from './src/screens/SecurityScreen';
-import ScanDetailScreen from './src/screens/ScanDetailScreen';
-import MemoryScreen from './src/screens/MemoryScreen';
-import FilesScreen from './src/screens/FilesScreen';
-import SkillsScreen from './src/screens/SkillsScreen';
-import TriggersScreen from './src/screens/TriggersScreen';
-import DocsScreen from './src/screens/DocsScreen';
-import DocsArticleScreen from './src/screens/DocsArticleScreen';
-import MetricsScreen from './src/screens/MetricsScreen';
-import SettingsScreen from './src/screens/SettingsScreen';
-import ControllerScreen from './src/screens/ControllerScreen';
-import { NavDrawer } from './src/components/NavDrawer';
+import { lazyScreen } from './src/components/LazyScreen';
+import { NavDrawer, NavSidebar } from './src/components/NavDrawer';
+import { useWideLayout } from './src/components/WideLayout';
+import { WakeBanner } from './src/components/WakeBanner';
 import { MenuButton } from './src/components/ui';
 import type {
   AppsStackParams,
@@ -47,9 +29,39 @@ import type {
 } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
-import { initPush, registerForPush, flushPendingNotification } from './src/push/notifications';
+import {
+  initPush,
+  registerForPush,
+  replayParkedNotificationTap,
+} from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
+import { initDesktop, onNavigatorReady, saveDesktopNavState } from './src/desktop/desktopApp';
+import { initWindowVisibility } from './src/util/useWindowVisible';
 import { colors, font } from './src/theme';
+
+// The home screen and Onboarding load with the shell; every other screen
+// loads the first time it is opened (#833, src/screenRegistry.ts).
+const TasksScreen = lazyScreen('TaskList');
+const TaskDetailScreen = lazyScreen('TaskDetail');
+const NewTaskScreen = lazyScreen('NewTask');
+const AppsScreen = lazyScreen('AppList');
+const AppViewScreen = lazyScreen('AppView');
+const HypervisorScreen = lazyScreen('Hypervisor');
+const WalkieScreen = lazyScreen('Walkie');
+const MissionControlScreen = lazyScreen('MissionControl');
+const FeedScreen = lazyScreen('Feed');
+const BoardScreen = lazyScreen('Board');
+const SecurityScreen = lazyScreen('ScanList');
+const ScanDetailScreen = lazyScreen('ScanDetail');
+const MemoryScreen = lazyScreen('Memory');
+const FilesScreen = lazyScreen('Files');
+const SkillsScreen = lazyScreen('Skills');
+const TriggersScreen = lazyScreen('Triggers');
+const DocsScreen = lazyScreen('DocsList');
+const DocsArticleScreen = lazyScreen('DocsArticle');
+const MetricsScreen = lazyScreen('Metrics');
+const SettingsScreen = lazyScreen('Settings');
+const ControllerScreen = lazyScreen('Controller');
 
 const navTheme = {
   ...DefaultTheme,
@@ -149,41 +161,51 @@ function MainTabs() {
   // navigation from the NavDrawer overlay. Desktop is first so it's the home.
   // The Controller screen is only registered once a controller connection
   // exists — with none, the app is unchanged.
+  //
+  // A desktop-width window in the desktop app (#833) shows the drawer's panel
+  // as a permanent sidebar instead. The navigator keeps the same place in the
+  // tree either way (the pane), so resizing across the breakpoint keeps its
+  // state rather than remounting every screen.
   const showController = hasController(useConfig());
+  const wide = useWideLayout();
   return (
-    <View style={styles.tabsHost}>
-      <Tab.Navigator
-        tabBar={() => null}
-        backBehavior="history"
-        screenOptions={{ headerShown: false }}
-        screenListeners={{
-          state: (e) => {
-            const st = e.data?.state as { index?: number; routeNames?: string[] } | undefined;
-            if (st && typeof st.index === 'number' && st.routeNames) {
-              setActiveTab(st.routeNames[st.index]);
-            }
-          },
-        }}
-      >
-        <Tab.Screen name="Desktop" component={DesktopScreen} />
-        <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
-        <Tab.Screen name="Walkie" component={WalkieScreen} />
-        <Tab.Screen name="MissionControl" component={MissionControlScreen} />
-        <Tab.Screen name="Feed" component={FeedScreen} />
-        <Tab.Screen name="Board" component={BoardScreen} />
-        <Tab.Screen name="Tasks" component={TasksStack} />
-        <Tab.Screen name="Security" component={SecurityStack} />
-        <Tab.Screen name="Apps" component={AppsStack} />
-        <Tab.Screen name="Memory" component={MemoryScreen} />
-        <Tab.Screen name="Files" component={FilesScreen} />
-        <Tab.Screen name="Skills" component={SkillsScreen} />
-        <Tab.Screen name="Triggers" component={TriggersScreen} />
-        <Tab.Screen name="Docs" component={DocsStack} />
-        <Tab.Screen name="Metrics" component={MetricsScreen} />
-        {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
-        <Tab.Screen name="Settings" component={SettingsScreen} />
-      </Tab.Navigator>
-      <NavDrawer />
+    <View style={wide ? styles.wideHost : styles.tabsHost}>
+      {wide ? <NavSidebar /> : null}
+      <View style={styles.pane}>
+        <Tab.Navigator
+          tabBar={() => null}
+          backBehavior="history"
+          screenOptions={{ headerShown: false }}
+          screenListeners={{
+            state: (e) => {
+              const st = e.data?.state as { index?: number; routeNames?: string[] } | undefined;
+              if (st && typeof st.index === 'number' && st.routeNames) {
+                setActiveTab(st.routeNames[st.index]);
+              }
+            },
+          }}
+        >
+          <Tab.Screen name="Desktop" component={DesktopScreen} />
+          <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
+          <Tab.Screen name="Walkie" component={WalkieScreen} />
+          <Tab.Screen name="MissionControl" component={MissionControlScreen} />
+          <Tab.Screen name="Feed" component={FeedScreen} />
+          <Tab.Screen name="Board" component={BoardScreen} />
+          <Tab.Screen name="Tasks" component={TasksStack} />
+          <Tab.Screen name="Security" component={SecurityStack} />
+          <Tab.Screen name="Apps" component={AppsStack} />
+          <Tab.Screen name="Memory" component={MemoryScreen} />
+          <Tab.Screen name="Files" component={FilesScreen} />
+          <Tab.Screen name="Skills" component={SkillsScreen} />
+          <Tab.Screen name="Triggers" component={TriggersScreen} />
+          <Tab.Screen name="Docs" component={DocsStack} />
+          <Tab.Screen name="Metrics" component={MetricsScreen} />
+          {showController && <Tab.Screen name="Controller" component={ControllerScreen} />}
+          <Tab.Screen name="Settings" component={SettingsScreen} />
+        </Tab.Navigator>
+        <WakeBanner />
+      </View>
+      {wide ? null : <NavDrawer />}
     </View>
   );
 }
@@ -202,19 +224,36 @@ function Gate() {
 
 export default function App() {
   useEffect(() => {
-    // Install the notification display handler + tap→navigate listener, then
-    // register once the saved connection is hydrated (registerForPush no-ops
-    // until host+token are present).
+    // Install the notification display handler + tap→navigate listener, route
+    // the tap that launched the app, then register once the saved connection
+    // is hydrated (registerForPush no-ops until host+token are present).
     const detach = initPush();
+    // The desktop app's live events, deep links and notification clicks
+    // (#833). A no-op on the phone and in a browser.
+    const detachDesktop = initDesktop();
+    // Whether the window can be seen: polling and spinners pause while it
+    // cannot (#833).
+    const detachVisibility = initWindowVisibility();
     hydrate().then(() => {
       void registerForPush();
-      flushPendingNotification();
     });
-    return detach;
+    return () => {
+      detach();
+      detachDesktop();
+      detachVisibility();
+    };
   }, []);
   return (
     <SafeAreaProvider>
-      <NavigationContainer theme={navTheme} ref={navigationRef} onReady={flushPendingNotification} onStateChange={flushPendingNotification}>
+      {/* A cold-start tap lands while Gate still shows the boot screen, with
+          no navigator to route to; onReady is when it can be replayed. In the
+          desktop app a rebuilt window first returns to its last screen. */}
+      <NavigationContainer
+        theme={navTheme}
+        ref={navigationRef}
+        onReady={() => onNavigatorReady(replayParkedNotificationTap)}
+        onStateChange={saveDesktopNavState}
+      >
         <StatusBar style="light" />
         <Gate />
       </NavigationContainer>
@@ -224,6 +263,8 @@ export default function App() {
 
 const styles = StyleSheet.create({
   tabsHost: { flex: 1 },
+  wideHost: { flex: 1, flexDirection: 'row' },
+  pane: { flex: 1 },
   boot: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
   bootText: { color: colors.text, fontSize: font.size.xl, fontWeight: '800' },
 });

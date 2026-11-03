@@ -70,3 +70,17 @@ spec:
     ports:
     - protocol: TCP
       port: 6080
+  {{- if .Values.keeper.enabled }}
+  # The keeper's forwards and replays (#728 step 4b). It stands in front of the
+  # webhook and cron receivers, so every request it passes on arrives from its
+  # pod rather than from the ingress controller. Without this rule each one dies
+  # on a connect timeout — the same silent failure described above for crons,
+  # and worse here, because the keeper has already told the sender 202.
+  - from:
+    - podSelector:
+        matchLabels:
+          app: keeper-{{ .Values.user.name }}
+    ports:
+    - protocol: TCP
+      port: 6080
+  {{- end }}

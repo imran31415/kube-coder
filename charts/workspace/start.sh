@@ -34,40 +34,132 @@ fi
 log_stage "preparing home and credential directories"
 cd /home/dev
 mkdir -p /home/dev/.local/bin /home/dev/.local/share/code-server/extensions
-mkdir -p ~/.config ~/.config/git ~/.config/gh
+# Spell both homes out; never `~`/$HOME here. Which home a process gets is
+# not ours to predict (#793): /home/ubuntu for PID 1, terminal tabs and sshd,
+# /home/dev for the CLIs server.py spawns. A credential symlink written
+# through `~` therefore lands wherever that lottery fell — and `ln -sf`
+# through a `~` that already resolves to a link would write *inside* the
+# credential store instead of replacing the link.
+mkdir -p /home/ubuntu/.config /home/ubuntu/.config/git
 mkdir -p /home/dev/.credentials/.ssh /home/dev/.credentials/.config/git /home/dev/.credentials/.config/gh
 chmod 700 /home/dev/.credentials/.ssh
-ln -sf /home/dev/.credentials/.ssh ~/.ssh
 touch /home/dev/.credentials/.config/git/config
-ln -sf /home/dev/.credentials/.config/git/config ~/.gitconfig
-ln -sf /home/dev/.credentials/.config/gh ~/.config/gh
+# Link a config DIRECTORY onto the PVC (issue #797).
+#
+# `ln -sf <target> <link>` cannot do this on its own: when ln's final
+# argument already resolves to a directory it treats it as a destination
+# *directory* and drops the link inside it — exit 0, no diagnostic. That is
+# what happened to ~/.config/gh, which the line above used to pre-create
+# with `mkdir -p`: every boot wrote the useless ~/.config/gh/gh and left the
+# real, ephemeral directory in place, so `gh auth login` had to be redone
+# after every pod restart even though the docs promised it was persisted.
+#
+# `-n` alone is not the fix. It un-dereferences a *symlink* to a directory
+# (so re-runs replace the link instead of following it into the target —
+# without it, a second run writes a self-referential link INSIDE
+# /home/dev/.credentials/.config/gh), but onto a REAL directory ln still
+# nests. The pre-existing directory has to be got out of the way first, and
+# an established workspace may have a live login in it — so copy it onto the
+# PVC no-clobber (a login already on the PVC always wins) and park the
+# original beside itself rather than deleting it. /home/ubuntu is ephemeral,
+# so the parked copy costs nothing and is gone next boot.
+#
+# Kept separate from persist_cred (below) even after #795 made that helper
+# non-destructive too: this directory needs the extra drop-the-nested-link
+# step for workspaces that booted with the old bug, which persist_cred's
+# generic migrate does not know about. Folding them together is fine once no
+# live workspace predates this fix.
+link_cred_dir() {                     # $1 = link path, $2 = PVC target
+  local link="$1" target="$2" parked
+  mkdir -p "$target"
+  mkdir -p "$(dirname "$link")"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    # Drop the nested link this bug used to create, so it is not copied
+    # into the target as a link pointing at its own parent.
+    [ -L "$link/$(basename "$target")" ] && rm -f "$link/$(basename "$target")"
+    cp -an "$link/." "$target/" 2>/dev/null || true
+    parked="$link.pre-797.$(date +%s)"
+    if mv "$link" "$parked" 2>/dev/null; then
+      log_stage "migrated real $link onto the PVC (original parked at $parked)"
+    else
+      log_stage "WARNING: could not move $link aside; $target link not created"
+      return 1
+    fi
+  fi
+  ln -sfn "$target" "$link"
+  chown -h ubuntu:ubuntu "$link" 2>/dev/null || true
+}
+link_cred_dir /home/ubuntu/.config/gh /home/dev/.credentials/.config/gh
+link_cred_dir /home/dev/.config/gh    /home/dev/.credentials/.config/gh
 
-# Persist per-tool API logins across pod restarts (issue #243). The
-# interactive terminals (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
-# which is ephemeral — so `eas login` (Expo), `npm login`, `docker login`,
-# `aws configure`, `gcloud auth` etc. are lost on every restart. Redirect
-# those credential files/dirs onto the persistent /home/dev/.credentials
-# store, the same way ~/.ssh and ~/.gitconfig are handled above. Dirs and
-# single files are treated separately so we never shadow a real login with
-# an empty stub, and any pre-existing ephemeral login is migrated onto the
-# PVC once (no-clobber) so upgrading an established workspace keeps a session
-# that was active before this change shipped.
+# Persist per-tool API logins across pod restarts (issue #243) and keep BOTH
+# homes reading the SAME store (issue #795).
+#
+# The interactive terminals (ttyd, code-server, SSH) run with
+# HOME=/home/ubuntu, which is ephemeral — so `eas login` (Expo), `npm login`,
+# `docker login`, `aws configure`, `gcloud auth` etc. are lost on every
+# restart. That is what this helper was written for. But server.py forces
+# HOME=/home/dev on the CLIs it spawns (agent tasks, hooks, the hypervisor),
+# and /home/dev is a real directory that had grown its own *unmanaged*
+# .gitconfig, .ssh, .git-credentials, .expo and .docker — so an agent shell
+# read a different identity than the user's terminal, and a re-login from one
+# was invisible to the other. The sharpest edge was `git push`:
+# /home/dev/.gitconfig carried the issue #454 empty-`helper =` chain reset,
+# and no self-heal reached it because every heal writes the managed file that
+# only /home/ubuntu/.gitconfig linked to. Linking .gitconfig from both homes
+# makes `git config --global` — the boot-time --configure-git, its 50-minute
+# re-assert, and the extraheader scrub — land on one file for every context.
+#
+# This loop now runs over real PVC data, so it obeys stricter rules than the
+# ephemeral-only version did:
+#   * It NEVER deletes. A real file/dir shadowing the store is merged in
+#     where merging is safe, then MOVED ASIDE to <path>.pre795.<epoch>: a
+#     reversible rename, logged, so a judgement call about someone's
+#     credentials is never made silently. (The displaced copy is yours to
+#     delete once you have looked at it.)
+#   * Directories merge no-clobber (`cp -an`): a key only the shadowing copy
+#     has — e.g. a deploy key in /home/dev/.ssh — is carried into the store,
+#     and the managed copy always wins a name collision.
+#   * A single file is a unit, not a merge: the managed copy wins unless it
+#     is still an empty stub. Importing a shadowing .gitconfig over a
+#     configured one would reinstate exactly the #454 breakage above.
+#   * Already-linked, dangling-link and nested-link cases are no-ops: `-L`
+#     skips migration, and `ln -sfn` replaces the link itself rather than
+#     resolving through it (plain `ln -sf` writes *inside* the target dir).
+#   * A target that lives inside its own link is refused, not linked — the
+#     store is a subdirectory of /home/dev, so a wrong subpath could
+#     otherwise bury it under the link that is supposed to reach it.
 persist_cred() {                      # $1 = subpath under HOME, $2 = dir|file
-  local sub="$1" kind="$2"
-  local target="/home/dev/.credentials/$sub"
+                                      # $3 = subpath under .credentials,
+                                      #      default $1 (see .gitconfig)
+  local sub="$1" kind="$2" rel="${3:-$1}"
+  local target="/home/dev/.credentials/$rel"
   if [ "$kind" = dir ]; then
     mkdir -p "$target"; chmod 700 "$target"
   else
     mkdir -p "$(dirname "$target")"; touch "$target"; chmod 600 "$target"
   fi
-  for HOME_DIR in /home/ubuntu; do
+  for HOME_DIR in /home/ubuntu /home/dev; do
     [ -d "$HOME_DIR" ] || continue
-    local link="$HOME_DIR/$sub"
-    if [ -e "$link" ] && [ ! -L "$link" ]; then   # migrate a real login once
+    local link="$HOME_DIR/$sub" aside=""
+    case "$target" in                 # never bury the store under its link
+      "$link"|"$link"/*)
+        log_stage "persist_cred: refusing $link -> $target (target is inside the link)"
+        continue ;;
+    esac
+    if [ -e "$link" ] && [ ! -L "$link" ]; then   # a real file/dir is here
       if [ "$kind" = dir ]; then
-        cp -an "$link/." "$target/" 2>/dev/null || true; rm -rf "$link"
+        cp -an "$link/." "$target/" 2>/dev/null || true
+      elif [ ! -s "$target" ]; then   # adopt only into an empty stub
+        cp -a "$link" "$target" 2>/dev/null || true
+      fi
+      aside="$link.pre795.$(date +%s)"
+      [ -e "$aside" ] && aside="$aside.$$"
+      if mv -T "$link" "$aside" 2>/dev/null; then
+        log_stage "persist_cred: $link shadowed the credential store; merged what was safe and kept the original at $aside"
       else
-        cp -an "$link" "$target" 2>/dev/null || true; rm -f "$link"
+        log_stage "persist_cred: WARNING $link is in the way and could not be moved aside — left untouched, so $HOME_DIR keeps its own copy of $sub"
+        continue
       fi
     fi
     mkdir -p "$(dirname "$link")"
@@ -75,6 +167,8 @@ persist_cred() {                      # $1 = subpath under HOME, $2 = dir|file
     chown -h ubuntu:ubuntu "$link" 2>/dev/null || true
   done
 }
+persist_cred .ssh             dir    # SSH keys, config, known_hosts (#795)
+persist_cred .gitconfig       file .config/git/config  # git identity + the #454 helper chain (#795)
 persist_cred .expo            dir    # Expo / EAS (eas login, expo login)
 persist_cred .docker          dir    # docker login (registry auth)
 persist_cred .aws             dir    # aws configure / SSO cache
@@ -85,14 +179,27 @@ persist_cred .config/.wrangler dir   # wrangler / Cloudflare Workers auth
 
 # Interactive shells (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
 # which is rebuilt from skel on every pod restart — so rc-file edits and
-# PATH entries made there don't survive, and rc-file edits made under
-# /home/dev are never read (issue #334). Re-assert env hooks into the
-# ephemeral rc files on each boot, the same contract as the credential
+# PATH entries made there don't survive (issue #334). Re-assert env hooks
+# into the rc files on each boot, the same contract as the credential
 # symlinks above. Absolute paths only: $HOME/~ must not appear inside a
 # block, because it resolves differently across shells and boot contexts.
+#
+# Seed BOTH homes, because which one a login shell reads is not ours to
+# predict (issue #793). $HOME is /home/ubuntu for PID 1 and for sshd, but
+# server.py forces HOME=/home/dev on the CLIs it spawns so they find their
+# config on the PVC — and tmux bakes the environment of whoever started its
+# server into every later session. So an agent task's `bash -l` (and any
+# terminal tab served by that same tmux server) can read /home/dev/.profile
+# instead, where none of these blocks used to exist: no /home/dev/.local/bin
+# on PATH, no $BROWSER, no KC_AGENT_DISPLAY. Writing both is idempotent (the
+# marker grep guards the append) and costs one extra pair of touch+grep.
+# One asymmetry to remember when editing a block: /home/ubuntu is rebuilt
+# from skel every boot, so it always gets the current text, while the PVC's
+# /home/dev copy is written once and kept. Changing a block's body therefore
+# needs a new marker, or the old text lives on in /home/dev's rc files.
 bootstrap_rc() {                      # $1 = grep marker, $2 = block to append
   local marker="$1" block="$2"
-  for HOME_DIR in /home/ubuntu; do
+  for HOME_DIR in /home/ubuntu /home/dev; do
     [ -d "$HOME_DIR" ] || continue
     for rc in "$HOME_DIR/.profile" "$HOME_DIR/.bashrc"; do
       touch "$rc"
@@ -112,6 +219,34 @@ bootstrap_rc '/home/dev/.local/bin' '# --- kube-coder: user-installed tools on t
   *":/home/dev/.local/bin:"*) ;;
   *) export PATH="/home/dev/.local/bin:$PATH" ;;
 esac'
+
+# A browser for CLIs that open a login page (issue #763). `gh auth login`,
+# `gh … --web`, Python's webbrowser, gcloud and friends look for $BROWSER,
+# then xdg-open / x-www-browser / wslview. This pod has none of them (and no
+# desktop for them to drive), so they fail with a red "Failed opening a web
+# browser … executable file not found" that reads like the login broke — even
+# though gh is still polling. The user's real browser is on their own machine,
+# so the honest handler just prints the link to click or copy and exits 0.
+# Only fills in an UNSET $BROWSER: code-server exports its own helper into its
+# terminals, which opens the link in the user's browser and should win.
+cat > /home/dev/.local/bin/kc-open-url <<'OPENURL'
+#!/usr/bin/env bash
+# kube-coder's $BROWSER (issue #763): print the link instead of opening it.
+if [ "$#" -eq 0 ]; then
+  echo "usage: kc-open-url URL..." >&2
+  exit 2
+fi
+{
+  printf '\n  This workspace has no browser of its own. Open this link on your computer:\n'
+  for url in "$@"; do printf '\n    %s\n' "$url"; done
+  printf '\n'
+} >&2
+OPENURL
+chmod 0755 /home/dev/.local/bin/kc-open-url
+bootstrap_rc 'kc-open-url' '# --- kube-coder: print links that CLIs try to open (issue #763) ---
+if [ -z "${BROWSER:-}" ] && [ -x /home/dev/.local/bin/kc-open-url ]; then
+  export BROWSER=/home/dev/.local/bin/kc-open-url
+fi'
 
 # CLAUDE.md is chart-managed (describes the workspace environment to
 # Claude). Always overwrite from the configmap so chart updates land
@@ -169,9 +304,10 @@ tmux source-file /home/dev/.tmux.conf 2>/dev/null || true
 # from the workspace's own kube-coder clone AND the global config on every boot
 # so this self-heals instead of wedging the user. Safe to always remove: we
 # never legitimately set one for github.com.
-# Target the workspace's persisted global config file directly (the interactive
-# terminals' ~/.gitconfig symlinks here), not `--global` — start.sh's own $HOME
-# may differ from the terminal user's.
+# Target the workspace's persisted global config file directly, not
+# `--global` — start.sh's own $HOME may differ from the terminal user's.
+# Both homes' .gitconfig symlink onto this file (persist_cred, #795), so one
+# scrub now heals terminals and agent shells alike.
 git config --file /home/dev/.credentials/.config/git/config \
   --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 if [ -d /home/dev/kube-coder/.git ]; then
@@ -380,13 +516,14 @@ if [ -n "$GITHUB_APP_ID" ]; then
   #                          → non-interactive bash: `bash -c …`, hooks,
   #                            the gh/git credential helper — the path that
   #                            actually breaks when this is missing
-  #   2. /home/ubuntu/.bashrc  → interactive non-login bash
-  #   3. /home/ubuntu/.profile → login shells
-  # (2)/(3) go through bootstrap_rc because interactive shells run with
-  # HOME=/home/ubuntu — the previous /home/dev/.bashrc + .profile writes
-  # were files no shell ever read (issue #334). All three read
-  # /home/dev/.profile.d-github-env, which the refresh daemon rewrites in
-  # place, so new shells pick up rotated tokens without restart. The hook
+  #   2. <home>/.bashrc  → interactive non-login bash
+  #   3. <home>/.profile → login shells
+  # (2)/(3) go through bootstrap_rc, which seeds both /home/ubuntu and
+  # /home/dev because $HOME differs by context: /home/ubuntu for terminals
+  # and sshd, /home/dev for the CLIs server.py spawns (issues #334, #793).
+  # All three read /home/dev/.profile.d-github-env, which the refresh daemon
+  # rewrites in place, so new shells pick up rotated tokens without a
+  # restart — one absolute path, read from either home. The hook
   # self-guards on auth mode, so sourcing it in "personal" mode is a no-op.
   bootstrap_rc '/home/dev/.profile.d-github-env' \
     '# github-app token (rewritten in place by the refresh daemon)
@@ -797,113 +934,121 @@ for HOME_DIR in /home/ubuntu; do
   ln -sfn "$GEMINI_TARGET" "$LINK" 2>/dev/null || true
 done
 
-# Persist LibreFang's home across pod restarts — same pattern as ~/.ante
-# above. LibreFang keeps everything (config.toml, agents, sessions, the
-# registry cache, and the binary at bin/librefang) under ~/.librefang, so
-# one PVC symlink covers data + binary. /usr/local/bin/librefang is a
-# build-time symlink to the PVC path; we seed/refresh it from the image's
-# copy (/opt/librefang/librefang) below so a LIBREFANG_VERSION bump
-# propagates on rebuild.
-LIBREFANG_TARGET=/home/dev/.librefang
-mkdir -p "$LIBREFANG_TARGET/bin"
-if [ -L "$LIBREFANG_TARGET" ]; then
-  LFD=$(readlink "$LIBREFANG_TARGET")
-  if [ "$LFD" = "$LIBREFANG_TARGET" ] || [ "$LFD" = ".librefang" ]; then
-    rm -f "$LIBREFANG_TARGET"; mkdir -p "$LIBREFANG_TARGET/bin"
+# LibreFang (#754): opt-in, and off unless the chart says otherwise. All of
+# the setup below — seeding the binary onto the PVC, symlinking ~/.librefang,
+# `init --quick`, rewriting config.toml, pre-warming the kernel daemon — used
+# to run in every workspace for an agent most users never selected. The
+# server and the orchestrator gate their assistant lists on the same env var,
+# so a workspace that skips this block does not offer LibreFang either.
+if [ "${KC_LIBREFANG_ENABLED:-false}" = "true" ]; then
+  # Persist LibreFang's home across pod restarts — same pattern as ~/.ante
+  # above. LibreFang keeps everything (config.toml, agents, sessions, the
+  # registry cache, and the binary at bin/librefang) under ~/.librefang, so
+  # one PVC symlink covers data + binary. /usr/local/bin/librefang is a
+  # build-time symlink to the PVC path; we seed/refresh it from the image's
+  # copy (/opt/librefang/librefang) below so a LIBREFANG_VERSION bump
+  # propagates on rebuild.
+  LIBREFANG_TARGET=/home/dev/.librefang
+  mkdir -p "$LIBREFANG_TARGET/bin"
+  if [ -L "$LIBREFANG_TARGET" ]; then
+    LFD=$(readlink "$LIBREFANG_TARGET")
+    if [ "$LFD" = "$LIBREFANG_TARGET" ] || [ "$LFD" = ".librefang" ]; then
+      rm -f "$LIBREFANG_TARGET"; mkdir -p "$LIBREFANG_TARGET/bin"
+    fi
   fi
-fi
-for HOME_DIR in /home/ubuntu; do
-  [ -d "$HOME_DIR" ] || continue
-  LINK="$HOME_DIR/.librefang"
-  [ "$LINK" = "$LIBREFANG_TARGET" ] && continue
-  if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$LIBREFANG_TARGET" ]; then
-    continue
+  for HOME_DIR in /home/ubuntu; do
+    [ -d "$HOME_DIR" ] || continue
+    LINK="$HOME_DIR/.librefang"
+    [ "$LINK" = "$LIBREFANG_TARGET" ] && continue
+    if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$LIBREFANG_TARGET" ]; then
+      continue
+    fi
+    # Merge any existing ~/.librefang into the PVC (cp -an keeps the PVC copy
+    # canonical), then replace with a symlink.
+    if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
+      cp -an "$LINK"/. "$LIBREFANG_TARGET"/ 2>/dev/null || true
+      rm -rf "$LINK"
+    elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+      rm -f "$LINK"
+    fi
+    ln -sfn "$LIBREFANG_TARGET" "$LINK" 2>/dev/null || true
+  done
+  if [ -f /opt/librefang/librefang ]; then
+    if [ ! -e "$LIBREFANG_TARGET/bin/librefang" ] || ! cmp -s /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang"; then
+      install -m 0755 /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null \
+        || cp -p /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null || true
+    fi
   fi
-  # Merge any existing ~/.librefang into the PVC (cp -an keeps the PVC copy
-  # canonical), then replace with a symlink.
-  if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
-    cp -an "$LINK"/. "$LIBREFANG_TARGET"/ 2>/dev/null || true
-    rm -rf "$LINK"
-  elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
-    rm -f "$LINK"
+  # One-time non-interactive init so the first `librefang chat` inside a task
+  # tmux doesn't block on the interactive setup wizard. Idempotent: skipped
+  # once config.toml exists. Provider keys are read from the environment at
+  # chat time (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so the --quick
+  # defaults are enough here.
+  if [ -x "$LIBREFANG_TARGET/bin/librefang" ] && [ ! -f "$LIBREFANG_TARGET/config.toml" ]; then
+    HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" init --quick >/dev/null 2>&1 || true
   fi
-  ln -sfn "$LIBREFANG_TARGET" "$LINK" 2>/dev/null || true
-done
-if [ -f /opt/librefang/librefang ]; then
-  if [ ! -e "$LIBREFANG_TARGET/bin/librefang" ] || ! cmp -s /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang"; then
-    install -m 0755 /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null \
-      || cp -p /opt/librefang/librefang "$LIBREFANG_TARGET/bin/librefang" 2>/dev/null || true
-  fi
-fi
-# One-time non-interactive init so the first `librefang chat` inside a task
-# tmux doesn't block on the interactive setup wizard. Idempotent: skipped
-# once config.toml exists. Provider keys are read from the environment at
-# chat time (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, …), so the --quick
-# defaults are enough here.
-if [ -x "$LIBREFANG_TARGET/bin/librefang" ] && [ ! -f "$LIBREFANG_TARGET/config.toml" ]; then
-  HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" init --quick >/dev/null 2>&1 || true
-fi
-# Normalize the LibreFang config so the dashboard's `librefang chat` sessions
-# actually work. Runs every boot (idempotent) so it also corrects configs that
-# were already persisted on the PVC, not just freshly-init'd ones.
-#
-#   1. Auth gate. `init --quick` seeds default dashboard credentials
-#      (dashboard_user/pass = "librefang"), which auto-enable bearer auth on the
-#      daemon's API. But `librefang chat` presents no token, so the chat
-#      WebSocket is rejected and the REPL shows "No active connection". The
-#      daemon binds 127.0.0.1 only (network_enabled = false) behind
-#      oauth2-proxy, so this in-pod auth adds no security — blank the triggers.
-#
-#   2. Provider. `init --quick` picks the provider from whichever key it finds
-#      first, so a workspace that also has ANTHROPIC_API_KEY lands on Anthropic
-#      even when its funded/working key is OpenRouter (the same key Ante and the
-#      OpenCode assistant use). When OPENROUTER_API_KEY is present, pin
-#      [default_model] to OpenRouter. Model is overridable via KC_LIBREFANG_MODEL.
-LF_CFG="$LIBREFANG_TARGET/config.toml"
-if [ -f "$LF_CFG" ]; then
-  sed -i -E 's/^(api_key|dashboard_user|dashboard_pass|dashboard_pass_hash)[[:space:]]*=.*/\1 = ""/' "$LF_CFG" || true
-  if [ -n "$OPENROUTER_API_KEY" ]; then
-    LF_MODEL="openrouter/${KC_LIBREFANG_MODEL:-deepseek/deepseek-v3.2}"
-    awk -v model="$LF_MODEL" '
-      /^\[default_model\]/{inblk=1}
-      /^\[/ && $0 !~ /^\[default_model\]/{inblk=0}
-      inblk && /^provider[[:space:]]*=/{print "provider = \"openrouter\""; next}
-      inblk && /^model[[:space:]]*=/{print "model = \"" model "\""; next}
-      inblk && /^api_key_env[[:space:]]*=/{print "api_key_env = \"OPENROUTER_API_KEY\""; next}
-      {print}
-    ' "$LF_CFG" > "$LF_CFG.kc" && mv "$LF_CFG.kc" "$LF_CFG" || rm -f "$LF_CFG.kc"
+  # Normalize the LibreFang config so the dashboard's `librefang chat` sessions
+  # actually work. Runs every boot (idempotent) so it also corrects configs that
+  # were already persisted on the PVC, not just freshly-init'd ones.
+  #
+  #   1. Auth gate. `init --quick` seeds default dashboard credentials
+  #      (dashboard_user/pass = "librefang"), which auto-enable bearer auth on the
+  #      daemon's API. But `librefang chat` presents no token, so the chat
+  #      WebSocket is rejected and the REPL shows "No active connection". The
+  #      daemon binds 127.0.0.1 only (network_enabled = false) behind
+  #      oauth2-proxy, so this in-pod auth adds no security — blank the triggers.
+  #
+  #   2. Provider. `init --quick` picks the provider from whichever key it finds
+  #      first, so a workspace that also has ANTHROPIC_API_KEY lands on Anthropic
+  #      even when its funded/working key is OpenRouter (the same key Ante and the
+  #      OpenCode assistant use). When OPENROUTER_API_KEY is present, pin
+  #      [default_model] to OpenRouter. Model is overridable via KC_LIBREFANG_MODEL.
+  LF_CFG="$LIBREFANG_TARGET/config.toml"
+  if [ -f "$LF_CFG" ]; then
+    sed -i -E 's/^(api_key|dashboard_user|dashboard_pass|dashboard_pass_hash)[[:space:]]*=.*/\1 = ""/' "$LF_CFG" || true
+    if [ -n "$OPENROUTER_API_KEY" ]; then
+      LF_MODEL="openrouter/${KC_LIBREFANG_MODEL:-deepseek/deepseek-v3.2}"
+      awk -v model="$LF_MODEL" '
+        /^\[default_model\]/{inblk=1}
+        /^\[/ && $0 !~ /^\[default_model\]/{inblk=0}
+        inblk && /^provider[[:space:]]*=/{print "provider = \"openrouter\""; next}
+        inblk && /^model[[:space:]]*=/{print "model = \"" model "\""; next}
+        inblk && /^api_key_env[[:space:]]*=/{print "api_key_env = \"OPENROUTER_API_KEY\""; next}
+        {print}
+      ' "$LF_CFG" > "$LF_CFG.kc" && mv "$LF_CFG.kc" "$LF_CFG" || rm -f "$LF_CFG.kc"
 
-    # The agent the dashboard launches (KC_LIBREFANG_AGENT, default "coder")
-    # ships a template that breaks against OpenRouter in two ways:
-    #   - model = "default" (inherit [default_model]). LibreFang's *streaming*
-    #     chat path — the one the dashboard REPL uses — sends that literal
-    #     "default" to the provider instead of resolving it, so OpenRouter 400s
-    #     ("default is not a valid model ID") and the REPL shows no reply. The
-    #     non-streaming /message path resolves it, which is why headless works
-    #     but interactive chat doesn't.
-    #   - api_key_env hardcoded to GEMINI_API_KEY / GROQ_API_KEY (unset here),
-    #     which surfaces as "LLM provider authentication failed".
-    # Pin just this agent's model + key env to explicit values. Scoped to the
-    # dashboard agent only — we don't touch the user's other agents (hands,
-    # multi-agent setups), whose providers may differ.
-    LF_AGENT="${KC_LIBREFANG_AGENT:-coder}"
-    for _af in "$LIBREFANG_TARGET"/workspaces/agents/"$LF_AGENT"/agent.toml \
-               "$LIBREFANG_TARGET"/registry/agents/"$LF_AGENT"/agent.toml; do
-      [ -f "$_af" ] || continue
-      sed -i -E "s#^provider = \"default\"#provider = \"openrouter\"#; \
-                 s#^model = \"(default|openrouter/.*)\"#model = \"$LF_MODEL\"#; \
-                 s#^api_key_env = \".*\"#api_key_env = \"OPENROUTER_API_KEY\"#" "$_af" 2>/dev/null || true
-    done
+      # The agent the dashboard launches (KC_LIBREFANG_AGENT, default "coder")
+      # ships a template that breaks against OpenRouter in two ways:
+      #   - model = "default" (inherit [default_model]). LibreFang's *streaming*
+      #     chat path — the one the dashboard REPL uses — sends that literal
+      #     "default" to the provider instead of resolving it, so OpenRouter 400s
+      #     ("default is not a valid model ID") and the REPL shows no reply. The
+      #     non-streaming /message path resolves it, which is why headless works
+      #     but interactive chat doesn't.
+      #   - api_key_env hardcoded to GEMINI_API_KEY / GROQ_API_KEY (unset here),
+      #     which surfaces as "LLM provider authentication failed".
+      # Pin just this agent's model + key env to explicit values. Scoped to the
+      # dashboard agent only — we don't touch the user's other agents (hands,
+      # multi-agent setups), whose providers may differ.
+      LF_AGENT="${KC_LIBREFANG_AGENT:-coder}"
+      for _af in "$LIBREFANG_TARGET"/workspaces/agents/"$LF_AGENT"/agent.toml \
+                 "$LIBREFANG_TARGET"/registry/agents/"$LF_AGENT"/agent.toml; do
+        [ -f "$_af" ] || continue
+        sed -i -E "s#^provider = \"default\"#provider = \"openrouter\"#; \
+                   s#^model = \"(default|openrouter/.*)\"#model = \"$LF_MODEL\"#; \
+                   s#^api_key_env = \".*\"#api_key_env = \"OPENROUTER_API_KEY\"#" "$_af" 2>/dev/null || true
+      done
+    fi
   fi
-fi
-# Pre-warm the daemon at boot. Otherwise it only starts lazily when the first
-# `librefang chat` opens, and a cold start (daemon launch + model-catalog sync
-# of ~57 files) can outlast the per-chat bootstrap's 10s poll window — so the
-# first message after opening a fresh session appears to get no reply until it
-# warms up. Backgrounded + idempotent (no-op if already running).
-if [ -x "$LIBREFANG_TARGET/bin/librefang" ]; then
-  HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" status -q >/dev/null 2>&1 \
-    || HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" start >/dev/null 2>&1 &
+  # Pre-warm the daemon at boot. Otherwise it only starts lazily when the first
+  # `librefang chat` opens, and a cold start (daemon launch + model-catalog sync
+  # of ~57 files) can outlast the per-chat bootstrap's 10s poll window — so the
+  # first message after opening a fresh session appears to get no reply until it
+  # warms up. Backgrounded + idempotent (no-op if already running).
+  if [ -x "$LIBREFANG_TARGET/bin/librefang" ]; then
+    HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" status -q >/dev/null 2>&1 \
+      || HOME=/home/dev "$LIBREFANG_TARGET/bin/librefang" start >/dev/null 2>&1 &
+  fi
 fi
 
 # ── Workspace Python backend: seed from the image (issue #430) ─────────────

@@ -1,4 +1,6 @@
-{{- if .Values.holdingPage.enabled }}
+{{- /* The keeper (#728 step 3) serves holding.html too: it needs this ConfigMap
+even with holdingPage.enabled=false, and adds its own script below. */}}
+{{- if or .Values.holdingPage.enabled .Values.keeper.enabled }}
 # Static assets for the always-up "workspace is restarting…" holding backend
 # (issue #184). Served by the holding-<user> Deployment (nginx), which the
 # workspace ingresses point at as their custom-error backend so the raw nginx
@@ -88,6 +90,10 @@ data:
           animation: slide 1.4s ease-in-out infinite;
         }
         @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+        @media (max-width: 400px) { .card { padding: 32px 22px; } }
+        @media (prefers-reduced-motion: reduce) {
+          .spinner, .bar::before { animation: none; }
+        }
         @media (prefers-color-scheme: dark) {
           body { background: #0f1420; color: #e6ebf2; }
           .card { background: #161c28; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
@@ -111,6 +117,7 @@ data:
         // the live workspace. While the pod is down /health is itself
         // intercepted and returns 503, so a 2xx unambiguously means "back up".
         var POLL_MS = 4000;
+        var timer;
         function check() {
           fetch('/health', { cache: 'no-store', redirect: 'manual' })
             .then(function (r) {
@@ -119,10 +126,102 @@ data:
             })
             .catch(schedule);
         }
-        function schedule() { setTimeout(check, POLL_MS); }
+        function schedule() { clearTimeout(timer); timer = setTimeout(check, POLL_MS); }
+        // Phones pause timers in background tabs: check the moment the page is
+        // looked at again instead of waiting out a stalled poll.
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') { clearTimeout(timer); check(); }
+        });
         // Small initial delay so the old pod has begun terminating.
-        setTimeout(check, 1500);
+        timer = setTimeout(check, 1500);
       </script>
+      {{- if .Values.keeper.enabled }}
+      <script>
+        // Keeper (#728 step 3): this page is also what an ASLEEP workspace
+        // shows. Ask the keeper what state the workspace is in — behind the
+        // same login as the dashboard — and if the keeper put it to sleep,
+        // wake it; the /health poll above then brings the live workspace
+        // back. One an admin stopped stays stopped. Only a page someone is
+        // looking at wakes it, never a tab restored in the background.
+        (function () {
+          {{- if eq .Values.ingress.auth.type "oauth2" }}
+          var API = '/oauth/api/keeper/', SIGN_IN = '/oauth2/start?rd=';
+          {{- else }}
+          var API = '/api/keeper/', SIGN_IN = '';
+          {{- end }}
+          // Screen readers hear the state changes below, not just the first copy.
+          document.querySelector('main').setAttribute('aria-live', 'polite');
+          var h1 = document.querySelector('h1');
+          var lead = document.querySelector('main p');
+          var eta = document.querySelector('.eta');
+          var busy = [document.querySelector('.spinner'), document.querySelector('.bar')];
+          var asked = false, retry;
+          function say(title, text, note, spinning) {
+            h1.textContent = title; document.title = title;
+            lead.textContent = text; eta.textContent = note;
+            busy.forEach(function (el) { el.style.display = spinning ? '' : 'none'; });
+          }
+          function call(method, name) {
+            return fetch(API + name, {
+              method: method, cache: 'no-store', redirect: 'manual', credentials: 'same-origin',
+              headers: method === 'POST' ? { 'X-Keeper-Wake': '1' } : {}
+            }).then(function (r) {
+              // Signed out: oauth2-proxy answers with a redirect to sign in.
+              if (r.type === 'opaqueredirect' || r.status === 401) { throw 'signin'; }
+              if (!r.ok) { throw r.status; }
+              return r.json();
+            });
+          }
+          // Why it is starting, where the keeper knows (#728 step 4b). A
+          // workspace that started because a schedule fired or a webhook
+          // arrived did so without anybody asking it to, and saying which is
+          // the difference between "that explains it" and "why is this
+          // running?". Any other reason, or none at all, keeps step 3's
+          // wording, which is still right for a visit.
+          var WHY = {
+            webhook: 'A webhook arrived while it was asleep, so it is starting to handle it.',
+            cron: 'A scheduled task is due, so it is starting to run it.',
+            app: 'You asked for it from the mobile app.'
+          };
+          {{- /* With the idle loop on (step 5) a plain wake can say why it went
+          to sleep, from the same value the keeper sleeps on, so the two cannot
+          disagree. One line on purpose: sleep off renders step 4b's byte for
+          byte. Present tense, because an operator can also sleep it by hand. */}}
+          function waking(reason) {
+            say('Waking up your workspace…', WHY[reason] || {{ if .Values.keeper.sleep.enabled }}{{ $m := int64 .Values.keeper.sleep.idleMinutes }}'It goes to sleep after {{ $m }} minute{{ if ne $m 1 }}s{{ end }} with nobody using it.'{{ else }}'It was asleep while nobody was using it.'{{ end }},
+              'This usually takes about a minute — the page refreshes automatically when it\'s ready.', true);
+          }
+          function show(s) {
+            if (s.state === 'stopped') {
+              say('Your workspace is stopped',
+                'It was stopped from the workspace controller, so visiting won\'t start it. Start it there, or ask your admin.', '', false);
+            } else if (s.state === 'asleep') {
+              waking(s.reason);
+              if (!asked && document.visibilityState === 'visible') {
+                asked = true;
+                call('POST', 'wake').then(show, failed);
+              }
+            } else if (s.woken) {
+              waking(s.reason);
+            }
+          }
+          function failed(e) {
+            asked = false;
+            if (e !== 'signin') { clearTimeout(retry); retry = setTimeout(check, 10000); return; }
+            say('Your workspace isn\'t running', 'If it\'s asleep, signing in wakes it.', '', false);
+            var a = document.createElement('a');
+            a.href = SIGN_IN ? SIGN_IN + encodeURIComponent(location.pathname + location.search) : location.href;
+            a.textContent = 'Sign in';
+            eta.appendChild(a);
+          }
+          function check() { call('GET', 'status').then(show, failed); }
+          document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'visible') { check(); }
+          });
+          check();
+        })();
+      </script>
+      {{- end }}
     </body>
     </html>
 {{- end }}

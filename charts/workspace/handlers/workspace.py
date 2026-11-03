@@ -186,7 +186,7 @@ class WorkspaceRoutes:
                 running += 1
             elif status in ('completed',):
                 completed += 1
-            elif status in ('error', 'killed'):
+            elif status in ('error', 'killed', 'terminated'):
                 errored += 1
         self.send_json({
             'subagents': subagents,

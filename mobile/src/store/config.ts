@@ -6,6 +6,7 @@
  * A tiny pub/sub lets React screens re-render when config changes without
  * pulling in a heavier state library.
  */
+import { isDesktop } from '../desktop/bridge';
 import { getItem, getSecret, setItem, setSecret, deleteSecret } from './storage';
 
 const HOST_KEY = 'kc.apiBase';
@@ -45,9 +46,11 @@ export interface Config {
 }
 
 /** True when a controller connection is available (both host + token, or mock).
- *  Gates the Controller tab + API calls. */
+ *  Gates the Controller tab + API calls. Never in the desktop app outside the
+ *  demo (#833): its core reaches only the connected workspace. */
 export function hasController(c: Config = state): boolean {
-  return c.mock || (!!c.controllerHost && !!c.controllerToken);
+  if (c.mock) return true;
+  return !isDesktop() && !!c.controllerHost && !!c.controllerToken;
 }
 
 // EXPO_PUBLIC_MOCK=1 forces demo mode at build time (screenshot/web build).

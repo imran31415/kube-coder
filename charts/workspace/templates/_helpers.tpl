@@ -49,10 +49,15 @@ build Job, the solver, and margin. */}}
 {{- end -}}
 {{- end -}}
 
-{{/* dind sidecar defaults, mirrored from deployment.yaml's dindResources default. */}}
-{{- define "workspace.dindDefault" -}}
-{{- $d := dict "limits" (dict "cpu" "2" "memory" "4Gi") "requests" (dict "cpu" "100m" "memory" "256Mi") -}}
-{{- index $d .kind .dim -}}
+{{/* dind sidecar's default resources, as YAML. The ONE definition: the
+Deployment renders it and the quota below sums it, so the two cannot drift —
+which is how a strix workspace (dind raised to 8Gi for a scan) used to derive
+a quota that counted dind at 4Gi and had no room left for its own pod. An
+explicit build.dindResources still wins in both places. Call with the root
+context. */}}
+{{- define "workspace.dindDefaults" -}}
+{{- $mem := ternary "8Gi" "4Gi" (dig "enabled" false (.Values.strix | default dict)) -}}
+{{- toYaml (dict "requests" (dict "cpu" "50m" "memory" "256Mi") "limits" (dict "cpu" "2" "memory" $mem)) -}}
 {{- end -}}
 
 {{/* Sum one (kind, dim) across the pod's containers (ide + dind when
@@ -65,7 +70,7 @@ Call: (dict "ctx" $ "kind" "limits" "dim" "memory"). */}}
 {{- $dind := 0 -}}
 {{- if eq $ctx.Values.build.mode "buildkit" -}}
 {{- $drk := index ($ctx.Values.build.dindResources | default dict) $kind | default dict -}}
-{{- $dindVal := (index $drk $dim) | default (include "workspace.dindDefault" (dict "kind" $kind "dim" $dim)) -}}
+{{- $dindVal := (index $drk $dim) | default (index (include "workspace.dindDefaults" $ctx | fromYaml) $kind $dim) -}}
 {{- $dind = include $conv $dindVal | int -}}
 {{- end -}}
 {{- add $ide $dind -}}

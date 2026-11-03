@@ -5,8 +5,14 @@
  *
  * Lifecycle:
  *  - `initPush()` is called once from App boot: it installs the foreground
- *    display handler, attaches the tap→navigate listener, and attempts to
- *    register this device (a no-op until the app is connected).
+ *    display handler, attaches the tap→navigate listener, routes the tap that
+ *    launched the app (if any), and attempts to register this device (a no-op
+ *    until the app is connected).
+ *  - A cold-start tap (#709) and a warm tap take the same path:
+ *    `handleNotificationResponse()`. It routes each response once — whichever
+ *    of the launch read and the listener sees it first wins — and a tap that
+ *    arrives before the navigator is mounted is parked until App's
+ *    `onReady` calls `replayParkedNotificationTap()`.
  *  - `registerForPush()` is also called on onboarding success, so a freshly
  *    connected device registers without waiting for the next cold start.
  *  - `setPushNotificationsEnabled()` is the Settings switch (#685): off drops
@@ -23,17 +29,22 @@
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
-import { Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
-import { markFeedRead, registerPushToken, unregisterPushToken } from '../api/client';
-import { getConfig, setPushEnabled, subscribe } from '../store/config';
-import { navigateTo, navigationRef } from '../store/nav';
-import { requestBoardFocus } from '../store/boardFocus';
-import { pushTargetFromData, type PushData } from '../util/push';
+import { registerPushToken, unregisterPushToken } from '../api/client';
+import { isDesktop } from '../desktop/bridge';
+import { getConfig, setPushEnabled } from '../store/config';
+import type { PushData } from '../util/push';
+import { handleNotificationTap } from './tapRouter';
+
+// Where a tap lands lives in ./tapRouter, shared with the web build.
+export { handleNotificationTap, replayParkedNotificationTap } from './tapRouter';
 
 let handlerConfigured = false;
-let detachResponseListener: (() => void) | null = null;
+let responseSub: Notifications.EventSubscription | null = null;
 let lastRegistered = '';
+/** Responses already routed this launch — see `responseKey()`. */
+const handledResponses = new Set<string>();
 
 /** Show high-signal pushes while the app is foregrounded (they'd otherwise be
  *  suppressed by the OS on iOS). */
@@ -65,6 +76,9 @@ function projectId(): string | undefined {
 export async function registerForPush(): Promise<void> {
   try {
     if (!Device.isDevice) return; // push isn't delivered to simulators/emulators
+    // The desktop app (#833) raises its own notifications from the Feed; it
+    // has no Expo push token and must not prompt for web push permission.
+    if (isDesktop()) return;
     const { host, token, pushEnabled } = getConfig();
     if (!host || !token) return; // not connected yet — register after onboarding
     if (!pushEnabled) return; // switched off: don't even ask for permission
@@ -166,128 +180,66 @@ export async function unregisterForPush(): Promise<void> {
   }
 }
 
-/** Mark a tapped alert's Feed row read. A tap that cold-starts the app arrives
- *  before the saved connection is hydrated, when a request has no host or token
- *  to use — so wait for hydration instead of sending one that cannot land. */
-function markTappedRead(feedId: string): void {
-  const send = () => {
-    Promise.resolve()
-      .then(() => markFeedRead(feedId))
-      .catch(() => {});
-  };
-  if (getConfig().loaded) {
-    send();
-    return;
-  }
-  const unsubscribe = subscribe((c) => {
-    if (!c.loaded) return;
-    unsubscribe();
-    send();
-  });
+/** What makes two sightings of a response the same tap.
+ *
+ *  The identifier alone is not enough: push_notify sets `collapseId` to the
+ *  Feed row id, and on iOS that BECOMES the request identifier, so every
+ *  re-send of one alert shares it. Keyed on the identifier alone, a tap on a
+ *  repeat later in the same launch would be swallowed. The delivery date tells
+ *  those apart, and is the same whether the listener or the launch read
+ *  reports the response. */
+function responseKey(resp: Notifications.NotificationResponse): string {
+  const n = resp.notification;
+  return `${n?.request?.identifier ?? ''}@${n?.date ?? ''}`;
 }
 
-/** Route a notification tap to the screen its ref points at, reusing the Feed's
- *  mapping. Unknown/empty refs open the Feed so a tap is never a dead end. */
-export function handleNotificationTap(data: PushData | undefined): void {
-  pendingTap = data || {};
-  if (data?.source !== 'build-publish' && data?.feedId?.trim()) {
-    markTappedRead(data.feedId.trim());
-    pendingTap = { ...pendingTap, feedId: undefined };
+/** Route one notification response — from the tap listener or from the launch
+ *  read in `initPush` — exactly once.
+ *
+ *  Both can see the same response: on a cold start the listener may also be
+ *  told about the tap that launched the app, in either order relative to the
+ *  read, and a re-run of App's boot effect reads it again. Without the dedupe
+ *  each would navigate, and mark the row read, a second time. */
+export function handleNotificationResponse(
+  resp: Notifications.NotificationResponse | null | undefined,
+): void {
+  if (!resp?.notification) return;
+  const key = responseKey(resp);
+  if (handledResponses.has(key)) return;
+  handledResponses.add(key);
+  // The dedupe lives in memory, so a JS reload in the same native process (an
+  // update, a dev reload) would read this response again and re-route to it.
+  // Clearing the native copy stops that. Best-effort: absent on web.
+  try {
+    Notifications.clearLastNotificationResponse();
+  } catch {
+    // nothing to clear here
   }
-  flushPendingNotification();
+  handleNotificationTap(resp.notification.request?.content?.data as PushData | undefined);
 }
 
-let pendingTap: PushData | null = null;
-const handledResponses = new Set<string>();
-
-/** Called after connection hydration AND after the navigator becomes ready. */
-export function flushPendingNotification(): void {
-  if (!pendingTap || !getConfig().loaded || !navigationRef.isReady()) return;
-  // onReady can fire while the hydration gate still renders onboarding.
-  // Wait for the actual connected navigator, not just its container.
-  if (typeof navigationRef.getRootState === 'function' &&
-      !navigationRef.getRootState()?.routeNames?.includes('Tasks')) return;
-  const data = pendingTap;
-  pendingTap = null;
-  try { void Notifications.clearLastNotificationResponseAsync().catch(() => {}); } catch { /* older runtime */ }
-  // A Build identifier is only meaningful inside the workspace that sent it.
-  if (data.source === 'build-publish' && (!data.workspaceHost ||
-      data.workspaceHost.replace(/\/+$/, '') !== getConfig().host.replace(/\/+$/, ''))) {
-    navigateTo('Feed');
-    return;
-  }
-  // Reading happens even when navigation can't: the server re-sends a repeat of
-  // this alert only once its row has been read (#685).
-  const feedId = (data?.feedId || '').trim();
-  if (feedId) markTappedRead(feedId);
-  if (!navigationRef.isReady()) return;
-  const target = pushTargetFromData(data);
-  switch (target.kind) {
-    case 'task':
-      navigationRef.navigate(
-        // @ts-expect-error — nested route params are validated at the navigator
-        'Tasks',
-        { screen: 'TaskDetail', params: { id: target.id, ...(data?.source === 'build-publish' ? { tab: 'changes' } : {}) }, initial: false },
-      );
-      break;
-    case 'thread':
-      // Opens THAT chat (#683). It used to open the AI CTO screen and drop the
-      // id, because that screen had no way to open a thread by reference.
-      // @ts-expect-error — tab params are validated at the navigator
-      navigationRef.navigate('Hypervisor', { openThreadId: target.id });
-      break;
-    case 'memory':
-      navigateTo('Memory');
-      break;
-    case 'board':
-      // Park the target BEFORE navigating. Board is a tab screen that stays
-      // mounted, so it may never re-mount to read a route param — it reads
-      // the request from the store and clears it once the card is in view.
-      requestBoardFocus(target.boardId, target.itemId);
-      navigateTo('Board');
-      break;
-    case 'scan':
-      // A finished security scan (#726). Nested like Tasks, because Security
-      // is a stack and the notification points at one scan inside it.
-      navigationRef.navigate(
-        // @ts-expect-error — nested route params are validated at the navigator
-        'Security',
-        { screen: 'ScanDetail', params: { id: target.id }, initial: false },
-      );
-      break;
-    case 'external':
-      Linking.openURL(target.url).catch(() => {});
-      break;
-    default:
-      navigateTo('Feed');
+/** The tap that launched the app from fully closed, if any (#709). The
+ *  listener alone misses it: it is attached after the tap happened. Uses the
+ *  synchronous `getLastNotificationResponse` — the `…Async` form is
+ *  deprecated in this SDK. */
+export function routeLaunchNotification(): void {
+  try {
+    handleNotificationResponse(Notifications.getLastNotificationResponse());
+  } catch {
+    // unavailable (web) — no launch tap to route
   }
 }
 
 /** Attach the tap→navigate listener. Returns a detach function. */
 export function attachNotificationResponseListener(): () => void {
-  detachResponseListener?.();
-  let active = true;
-  const receive = (resp: Notifications.NotificationResponse | null) => {
-    if (!active || !resp) return;
-    const key = `${resp.notification.request.identifier}:${resp.actionIdentifier}`;
-    if (handledResponses.has(key)) return;
-    handledResponses.add(key);
-    if (handledResponses.size > 100) handledResponses.delete(handledResponses.values().next().value!);
-    handleNotificationTap(resp.notification.request.content.data as PushData | undefined);
+  responseSub?.remove();
+  responseSub = Notifications.addNotificationResponseReceivedListener(
+    handleNotificationResponse,
+  );
+  return () => {
+    responseSub?.remove();
+    responseSub = null;
   };
-  const responseSub = Notifications.addNotificationResponseReceivedListener(receive);
-  // Listener and last-response can deliver the same cold-start tap.
-  try { void Notifications.getLastNotificationResponseAsync().then(receive).catch(() => {}); } catch { /* older runtime */ }
-  const unsubscribe = subscribe(() => flushPendingNotification());
-  const detach = () => {
-    if (!active) return;
-    active = false;
-    unsubscribe();
-    responseSub.remove();
-    if (detachResponseListener === detach) detachResponseListener = null;
-  };
-  detachResponseListener = detach;
-  return detach;
 }
 
 /** One-call init from App boot: display handler + tap routing + registration.
@@ -300,6 +252,7 @@ export function initPush(): () => void {
   try {
     configureNotificationHandler();
     const detach = attachNotificationResponseListener();
+    routeLaunchNotification();
     void registerForPush();
     return detach;
   } catch {

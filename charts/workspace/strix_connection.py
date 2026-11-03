@@ -677,6 +677,19 @@ _ERROR_HINTS = (
 )
 
 
+def provider_error_hint(raw):
+    """One plain sentence about what a provider's error means, or ''.
+
+    Shared by the connection check below and by a scan that died on the same
+    error, so the two never give different advice for one failure.
+    """
+    text = (raw or '').strip()
+    for pattern, hint in _ERROR_HINTS:
+        if text and pattern.search(text):
+            return hint
+    return ''
+
+
 def explain_provider_error(raw):
     """A provider's error, plus one plain sentence about what it means.
 
@@ -688,7 +701,5 @@ def explain_provider_error(raw):
     text = (raw or '').strip()
     if not text:
         return 'The connection test failed, and gave no reason.'
-    for pattern, hint in _ERROR_HINTS:
-        if pattern.search(text):
-            return f'{hint}\n\n{text[:400]}'
-    return text[:600]
+    hint = provider_error_hint(text)
+    return f'{hint}\n\n{text[:400]}' if hint else text[:600]

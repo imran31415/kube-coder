@@ -1,0 +1,21 @@
+
+
+╭─ STRIX ──────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  LLM CONNECTION FAILED                                                       │
+│                                                                              │
+│  Could not establish connection to the language model.                       │
+│  Please check your configuration and try again.                              │
+│                                                                              │
+│  Error: litellm.ServiceUnavailableError: GeminiException - {                 │
+│    "error": {                                                                │
+│      "code": 503,                                                            │
+│      "message": "This model is currently experiencing high demand. Spikes    │
+│  in demand are usually temporary. Please try again later.",                  │
+│      "status": "UNAVAILABLE"                                                 │
+│    }                                                                         │
+│  }                                                                           │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+

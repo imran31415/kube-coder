@@ -413,6 +413,12 @@ class PublishTests(PublishFixture):
                 code, result = call('GET', '/diff?preparation_id=' + p['id'] + '&file=f0.txt')
                 self.assertEqual(code, 200, result)
                 self.assertIn('+reviewed', result['diff'])
+                # PATCH saves the draft through do_PATCH's route table.
+                code, status = call('PATCH', '/draft', {'preparation_id': p['id'],
+                    'draft_revision': p['draft_revision'], 'title': 'Edited title', 'body': 'Edited body'})
+                self.assertEqual(code, 200, status)
+                p = status['preparation']
+                self.assertEqual(p['title'], 'Edited title')
                 code, status = call('POST', '', {'idempotency_key': 'http-request', 'preparation_id': p['id'],
                     'fingerprint': p['fingerprint'], 'draft_revision': p['draft_revision']})
                 self.assertEqual(code, 202, status)

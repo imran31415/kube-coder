@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pushTargetFromData } from './push';
+import { pushFromOtherWorkspace, pushTapRoute, pushTargetFromData, tapRoute } from './push';
 
 describe('pushTargetFromData', () => {
   it('maps a task ref to the task target', () => {
@@ -56,5 +56,32 @@ describe('pushTargetFromData · board review pushes (#692)', () => {
     expect(pushTargetFromData({ ref: '  board:acme:412 ' })).toEqual({
       kind: 'board', boardId: 'acme', itemId: '412',
     });
+  });
+});
+
+describe('pushTapRoute · Build publishing pushes (#710)', () => {
+  const host = 'https://ws.example';
+  it('opens the Build on its Changes sheet', () => {
+    expect(pushTapRoute({ source: 'build-publish', workspaceHost: host, ref: 'task:t1' }, host)).toEqual({
+      kind: 'screen', tab: 'Tasks', screen: 'TaskDetail', params: { id: 't1', tab: 'changes' },
+    });
+  });
+
+  it('ignores a trailing slash on either host', () => {
+    expect(pushFromOtherWorkspace({ source: 'build-publish', workspaceHost: `${host}/` }, host)).toBe(false);
+    expect(pushFromOtherWorkspace({ source: 'build-publish', workspaceHost: host }, `${host}//`)).toBe(false);
+  });
+
+  it('sends a push from another workspace, or with no sender, to the Feed', () => {
+    expect(pushTapRoute({ source: 'build-publish', workspaceHost: 'https://old.example', ref: 'task:t1' }, host))
+      .toEqual({ kind: 'screen', tab: 'Feed' });
+    expect(pushTapRoute({ source: 'build-publish', ref: 'task:t1' }, host)).toEqual({ kind: 'screen', tab: 'Feed' });
+  });
+
+  it('leaves every other push exactly as tapRoute routes it', () => {
+    expect(pushFromOtherWorkspace({ ref: 'task:t1' }, host)).toBe(false);
+    expect(pushTapRoute({ ref: 'task:t1' }, host)).toEqual(tapRoute(pushTargetFromData({ ref: 'task:t1' })));
+    expect(pushTapRoute({ ref: 'thread:th', workspaceHost: 'https://other.example' }, host))
+      .toEqual({ kind: 'screen', tab: 'Hypervisor', params: { openThreadId: 'th' } });
   });
 });

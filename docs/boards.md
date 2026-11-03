@@ -373,6 +373,7 @@ that reads a value back.
 | `POST` | `/api/boards/<id>/runs/<run_id>/stop` | stop claiming new items |
 | `GET` | `/api/boards/<id>/review` | the review queue, grouped by disposition |
 | `GET` | `/api/boards/<id>/standing` | what the board is doing, from local state only |
+| `GET` | `/api/boards/<id>/recent?runs=N` | the phone's Working and Done rows for the newest N runs (1–50, default 10), from local state only |
 | `POST` | `/api/boards/<id>/items/<item_id>/disposition` | the agent reports an outcome |
 | `POST` | `/api/boards/<id>/staged/<item_id>/{approve,reject,send-back,edit}` | the human decides (`send-back` requires a `note`) |
 | `GET` | `/api/boards/templates[/<id>]` | starter connectors — never "verified" |
@@ -452,6 +453,53 @@ The run's item table on `/board` goes from each row to what happens next
   `updated_at`, which the server rewrites on every change to the row, so any
   clock built on it measures "since this row last changed", not time spent on
   the ticket.
+
+### Runs a trigger starts (#709)
+
+A cron or webhook can start a run instead of a Build. Pick **Start a Board
+run** on the Triggers page, or save the config with `action: board_run`:
+
+```jsonc
+{
+  "id": "gh-ai", "provider": "github", "action": "board_run",
+  "board_run": { "board_id": "my-repo-issues",
+                 "select": { "tags": ["ai"], "limit": 5 }, "concurrency": 2 },
+  // webhooks only:
+  "match": { "event": "issues",
+             "payload": { "action": "labeled", "label.name": "ai" } },
+  "item_id_from": "issue.id"
+}
+```
+
+- A config with no `action` is a Build, exactly as before. `prompt_template` is
+  required only for a Build.
+- `select` is checked with `boards.runs.validate_select`, and `board_id` must
+  name a saved board, when the trigger is **saved**. A typo is then a form
+  error, not a run that works the whole board. `select.ignore_processed` is
+  refused on a trigger.
+- **Always propose mode.** A saved `mode` other than `propose` is refused, and
+  the fire path forces `propose` even for a hand-edited config.
+- The run's `origin` is `cron` or `webhook`, and `trigger` names the trigger.
+  Both are server-side arguments, as for send-back. The Runs tab shows
+  *started by gh-ai*.
+- `match` compares exact strings at dot-paths (dict keys only, no list
+  indexes and no expressions). `event` is compared with `X-GitHub-Event`. A
+  delivery that doesn't match, and GitHub's `ping`, answer `200 {"skipped":
+  true}` and start nothing. A plain Build webhook with no `match` still fires
+  on `ping`, as before.
+- `item_id_from` sets `select.item_ids = [<value>]`, so the run works only
+  that issue. The GitHub template keys items by the issue's `id`, stringified,
+  so `issue.id` matches. A delivery without that field is skipped, never run
+  unfiltered.
+- A board-run webhook **must be signed**: saving one without an HMAC secret is
+  refused, and `KC_ALLOW_UNSIGNED_WEBHOOKS` does not apply to it.
+- A run that doesn't start (a deleted board, an expired credential, a full
+  pod, a run already in flight) answers `502`, `429` or `409` and posts a
+  **waiting** Feed item, *"gh-ai Board run didn't start: …"*. That item
+  coalesces per trigger.
+- GitHub does not redeliver a delivery that was refused for capacity. Pair a
+  webhook with a **nightly cron on the same filter**: the processed log makes
+  the cron skip whatever the webhook already handled.
 
 ### Runs that change code (#701)
 
@@ -560,7 +608,12 @@ so the count cannot go backwards or show another board's number.
 
 An item needing a human emits a waiting `FeedManager` item, which drives both
 the feed row and the topbar waiting badge. `board:<board_id>:<item_id>` links
-deep-link to the card.
+deep-link to the card. "Needing a human" means either the agent asked for one
+(`needs_review`, `needs_rescoping`, `blocked`) **or** it left a write pending
+approval — so the ordinary propose-mode report, a drafted reply plus
+`completed`, notifies too (#709). With no reason given, the row's body names
+what is waiting (*"Proposed comment: Hi Dana — …"*). Only `pending` writes
+count; superseded or already-done ones do not.
 
 A **board worker's own build** links there too (#712). When its build ends and
 the item still has an open staged record, `FeedManager.emit_task_terminal` puts
@@ -582,6 +635,27 @@ same ref in `data.ref`, so a notification tap and a feed chip land in the same
 place. Mobile passes the ids through **unencoded** — they go into a plain object
 and are matched against `item_id` literally, where the web's query string has
 to encode them.
+
+**A tap that launches the app lands on the card too** (#709). With the app fully
+closed, the tap happens before the tap listener exists, so `initPush` also reads
+the launching response (`getLastNotificationResponse()`) and hands it to the
+same `handleNotificationResponse` the listener uses — one routing path for every
+ref kind (`board:`, `task:`, `thread:` and the rest), not a second one for cold
+starts. At that point the app is still on its boot screen with no navigator
+mounted, so the tap is **parked** and replayed from `NavigationContainer`'s
+`onReady`; a `board:` target then goes through `boardFocus` as it would on a
+warm tap. The tap still marks its Feed row read straight away rather than
+waiting for the replay.
+
+Each response routes **once**. On a cold start the listener can be told about
+the launching tap as well as the read seeing it, in either order, and a re-run
+of the boot effect reads it again. The dedupe key is the request identifier
+**plus the delivery date**: `push_notify` sets `collapseId` to the Feed row id,
+and on iOS that becomes the identifier, so every re-send of one alert shares it
+— keyed on the identifier alone, a tap on a repeat later in the same launch
+would be swallowed. After routing, the native copy is cleared
+(`clearLastNotificationResponse()`), because the dedupe lives in memory and a
+JS reload in the same process would otherwise read the tap again.
 
 **Mobile leads this design.** Approving five staged replies from a phone is the
 realistic workflow; running a board from a phone is not — so `BoardScreen`
@@ -635,6 +709,53 @@ so it replaces the earlier notification instead of stacking beside it, and it
 marks the row unread again. Every push also has a one-hour `ttl`, so a phone
 that was offline gets no stale backlog. The ledger is `sent.json` next to the
 tokens.
+
+### Three tabs on the phone (#709 Part 3)
+
+The phone's Board screen answers three questions, one tab each:
+
+| Tab | Shows items where | Source |
+|---|---|---|
+| **Needs you** | the review is open (a write waits for approval), or the agent concluded `needs_review`, `needs_rescoping` or `blocked` | the review queue, unchanged — approve, reject and send back go through the same offline queue with the same `approval_id` |
+| **Working** | the run item is `claimed` or `working` | `/recent` |
+| **Done** | the review was decided, or the item `completed` or `failed` | `/recent` |
+
+The rule is `mobile/src/util/boardTabs.ts`'s `classifyBoardRow`, spelled the
+same way as `boards/outcome.py`'s `is_done` on the server. Order matters: an
+open review is Needs you whatever the run says, and a row being worked again
+after a send-back is Working, not its earlier result. A queued (`pending`) or
+`skipped` item is on no tab.
+
+![The phone's Board screen on its Done tab: one result line per item and an unread dot](screenshots/board-processor/board-mobile-tabs-done.png)
+
+- **The Needs-you count comes from the Feed**, exactly as the drawer badge
+  does: waiting, unread Feed rows with a `board:<this board>:…` link. Never the
+  boards API.
+- **Working and Done come from one local read**, `GET
+  /api/boards/<id>/recent`: each item's newest run row (so an item sent back
+  shows as working again), its review state, a one-line `result`, and the
+  Feed read flag joined in. One call instead of the run list plus a detail
+  fetch per run.
+- **The unread dot is the Feed's read flag**, not a new store. When an item
+  becomes done, `BoardReviewManager.notify_done` posts one **non-waiting** Feed
+  item carrying the result line (*"Reply posted on #412"*, *"Failed: the build
+  ended as error"*) and a `board:` link the app can open. It is called from
+  both ends — the run settling the item and a human deciding its review —
+  because either can be the moment it becomes done. Opening the row marks that
+  Feed item read through `POST /api/feed/<id>/read`.
+- **One Feed row per item.** The result uses the item's `board:<board>:<item>`
+  dedupe key — the same key as the "needs your review" row — so a decision
+  turns the waiting row into its result in place and the waiting badge drops
+  by one. A repeat with the same result (a retried reap, a replayed approval)
+  writes nothing, and so never brings back a dot you cleared; a new result is
+  marked unread even if the waiting row before it had been read.
+- **The phone still never starts a run.** There is no start control on any
+  tab; runs start from the dashboard or a trigger.
+- Every tab is a 44pt target whose accessibility label carries its count
+  (*"Done, 4 items, 2 unread"*). Each tab has its own empty state, and while
+  the workspace is asleep all three dim their last data under the stale note
+  and the WakeBanner, as the review queue always did. A workspace older than
+  `/recent` keeps its review queue; the two new tabs stay empty.
 
 ---
 
@@ -782,12 +903,6 @@ down.
 
 ## Not yet built
 
-**Cold start from a notification.** Nothing calls
-`getLastNotificationResponseAsync()`, so a tap that launches the app from
-scratch lands on the default screen rather than the item — for every ref kind,
-not just `board:`. The focus store makes the fix two lines (park the target,
-replay it after boot); it is not done.
-
 **iPad.** The app has no tablet layout anywhere, so the review card runs the
 full width of a 1024pt viewport. Capping the list
 (`contentContainerStyle: { maxWidth: 700, alignSelf: 'center' }`) is the whole
@@ -842,6 +957,11 @@ cd mobile && npm run typecheck && npm test
 - `tests/boards_api_test.py` — routes, auth, readonly, the allowlist
 - `tests/boards_state_test.py` — the state vocabulary, `/standing` (and that it
   costs no vendor call), and where a board build's notification lands
+- `tests/boards_outcome_test.py` — the Done rule over every state × conclusion
+  × review combination, and the one-line result
+- `tests/boards_runs_api_test.py` `FinishFeedTests` / `RecentEndpointTests` —
+  the finish-time Feed item (once, deduped, non-waiting, replacing the waiting
+  row) and `/recent` (auth, shape, `runs` limit, newest run wins)
 - `tests/board_persona_test.py` — preambles, binding, MCP tool surface
 - `tests/board_fixtures.py` — the worked GitHub / Jira / Linear connectors
 - `tests/boards_ledger_test.py` — append-only, rotation, and that an entry is
@@ -871,12 +991,21 @@ cd mobile && npm run typecheck && npm test
   forms that must fall back to the Feed rather than to half a target
 - `mobile/src/store/boardFocus.test.ts` — the deep-link handoff, and that the
   **second** of two quick taps wins
+- `mobile/src/push/notifications.test.ts` — a cold-start tap on a `board:`,
+  `task:` and `thread:` notification, the parked tap replayed once the
+  navigator is ready, and one navigation when both the launch read and the
+  listener see the same response
 - `mobile/src/util/lastBoard.test.ts` — which board the phone reopens on, and
   the fallback when the remembered one has been disconnected
+- `mobile/src/util/boardTabs.test.ts` — the three tabs over every state ×
+  conclusion × review combination, the Feed-sourced badge, the dot clearing,
+  and approve / reject through the offline queue under the tabs
 - `web/src/routes/board/BoardState.test.tsx` — the remembered board, the state
   badge's five names, and Start run locked while a run is in flight
 - `mobile/scripts/check-board.mjs` — a **local** Playwright gate (like
   `check-nav.mjs`; neither runs in CI) over the Expo web export: the drawer
-  badge, the 44pt targets, the type scale, the send-back modal, and the feed
-  chip landing on the card its ref names. Run it with
+  badge, the 44pt targets, the type scale, the send-back modal, the feed
+  chip landing on the card its ref names, and the three tabs (counts, result
+  lines, the dot clearing, approve / reject moving cards to Done, no start-run
+  control). Run it with
   `npm run check:board`

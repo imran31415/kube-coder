@@ -1,0 +1,5 @@
+node_modules/
+# The bundled UI: built from ../mobile at desktop build time, never committed.
+dist/
+src-tauri/target/
+src-tauri/gen/

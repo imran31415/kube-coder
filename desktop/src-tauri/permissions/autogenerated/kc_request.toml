@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kc-request"
+description = "Enables the kc_request command without any pre-configured scope."
+commands.allow = ["kc_request"]
+
+[[permission]]
+identifier = "deny-kc-request"
+description = "Denies the kc_request command without any pre-configured scope."
+commands.deny = ["kc_request"]

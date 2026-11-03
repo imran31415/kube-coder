@@ -16,7 +16,12 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    {{- if .Values.holdingPage.enabled }}
+    {{- if .Values.keeper.enabled }}
+    # The keeper (#728 step 3) serves the same page, and also while the
+    # workspace is asleep; a logged-in visit wakes it via keeper-ingress.yaml.
+    nginx.ingress.kubernetes.io/custom-http-errors: "502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: keeper-{{ .Values.user.name }}
+    {{- else if .Values.holdingPage.enabled }}
     # Serve the always-up holding-<user> "restarting…" page (issue #184) while
     # the workspace pod is Recreate-restarted and this upstream has no Ready
     # endpoint. The oauth2 auth sub-request runs first, so it stays behind auth.
@@ -295,6 +300,11 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Unlike the other oauth2 ingresses in this file, this one had no
+    # rewrite-target: nginx forwarded the literal "/oauth/websockify" to
+    # websockify, which only recognizes "/websockify" and 404s on anything
+    # else. Capture + rewrite, matching the vnc-direct ingress below.
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
@@ -309,8 +319,8 @@ spec:
   - host: {{ .Values.user.host }}
     http:
       paths:
-      - path: /oauth/websockify
-        pathType: Prefix
+      - path: /oauth/(websockify)
+        pathType: ImplementationSpecific
         backend:
           service:
             name: ws-{{ .Values.user.name }}

@@ -8,15 +8,28 @@ terminal — and that only covered Claude. This module is the single canonical
 registry behind the dashboard's Settings → MCP servers section:
 
     /home/dev/.claude-tasks/mcp-servers.json      (PVC, 0600)
-    {"servers": {name: {command, args, env, enabled}}, "managed": [name, ...]}
+    {"servers": {name: entry}, "managed": [name, ...]}
+
+    stdio entry   {type: stdio, command, args, env, enabled}
+    remote entry  {type: http | sse, url, headers, enabled}       (#815)
+
+An entry with no `type` predates #815 and is stdio.
 
 `sync_all()` translates the registry into each provider's native config:
 
-    Claude    ~/.claude.json                → mcpServers.<name> (stdio)
+    Claude    ~/.claude.json, BOTH homes  → mcpServers.<name> (stdio/http/sse)
     OpenCode  ~/.config/opencode/opencode.json → mcp.<name> (type=local)
     Ante      ~/.ante/settings.json         → mcp_servers.<name>
     Codex     $CODEX_HOME/config.toml       → via `codex mcp add/remove`
               (the CLI merges TOML for us; best-effort, gated on the binary)
+
+Remote (http/sse) entries are Claude-only for now: OpenCode, Ante and Codex
+get only the stdio entries, and a name that turns remote is removed from them.
+Their remote equivalents (OpenCode `type: remote`, `codex mcp add --url`) are
+not verified here — widen _REMOTE_PROVIDERS once one is. A remote server's
+OAuth login lives in ~/.claude/.credentials.json (`mcpOAuth`), which both
+homes share through the /home/ubuntu/.claude → /home/dev/.claude symlink, so
+the entry itself never holds a secret unless the user adds a header.
 
 LibreFang and kc-harness have no MCP seeding today, so they are out of scope
 here — when they grow one, add a `_sync_*` function and list it in _PROVIDERS.
@@ -47,13 +60,22 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 REGISTRY_FILE = '/home/dev/.claude-tasks/mcp-servers.json'
 
 # Provider config surfaces. $HOME is /home/ubuntu for both start.sh and the
 # dashboard server, matching where the boot seeding writes (~/.claude.json and
 # opencode.json are ephemeral and re-seeded each boot; ~/.codex is PVC-backed).
-CLAUDE_CONFIG = os.path.expanduser('~/.claude.json')
+#
+# Claude gets BOTH homes (#815). A Claude CLI reads $HOME/.claude.json, and
+# $HOME is not one value here: Build tasks and sub-agents inherit it from the
+# tmux server's global environment (whoever started tmux first), while hooks
+# and the Hypervisor are forced to /home/dev. Writing only the server's own
+# home left a task launched with the other one without the server's tools.
+# Duplicates (same file via a symlink, or the server already in /home/dev)
+# are written once.
+CLAUDE_CONFIGS = (os.path.expanduser('~/.claude.json'), '/home/dev/.claude.json')
 OPENCODE_CONFIG = os.path.expanduser('~/.config/opencode/opencode.json')
 ANTE_SETTINGS = os.path.expanduser('~/.ante/settings.json')
 CODEX_HOME = '/home/dev/.codex'
@@ -67,6 +89,16 @@ RESERVED_NAMES = frozenset({
 
 NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,127}$')
+# RFC 9110 field-name (token) characters.
+HEADER_KEY_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
+
+TRANSPORTS = ('stdio', 'http', 'sse')
+REMOTE_TRANSPORTS = frozenset({'http', 'sse'})
+# Plain http only to the pod itself — anything else must be https.
+LOOPBACK_HOSTS = frozenset({'localhost', '127.0.0.1', '::1'})
+URL_MAX = 2048
+# Providers whose sync understands remote entries; the rest get stdio only.
+_REMOTE_PROVIDERS = frozenset({'claude'})
 
 CODEX_TIMEOUT = 30  # seconds per `codex mcp` invocation
 
@@ -99,55 +131,136 @@ def _write_registry(data: dict) -> None:
     os.replace(tmp, REGISTRY_FILE)
 
 
-def _validate(name, command, args, env):
+def _transport(entry):
+    """`stdio` | `http` | `sse` for a stored entry; untyped = stdio (pre-#815)."""
+    t = entry.get('type', 'stdio') if isinstance(entry, dict) else 'stdio'
+    return t if t in TRANSPORTS else 'stdio'
+
+
+def _validate_pairs(pairs, key_re, what):
+    if not isinstance(pairs, dict):
+        return f'{what} must be an object'
+    for k, v in pairs.items():
+        if not isinstance(k, str) or not key_re.match(k):
+            return f'invalid {what} name: {k!r}'
+        if not isinstance(v, str):
+            return f'{what} value for {k} must be a string'
+    return None
+
+
+def _validate_url(url):
+    if not isinstance(url, str) or not url.strip():
+        return 'url is required'
+    url = url.strip()
+    if len(url) > URL_MAX or any(c.isspace() or ord(c) < 0x20 for c in url):
+        return 'url must be a single absolute URL'
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return 'url must be a single absolute URL'
+    if not host:
+        return 'url must be a single absolute URL'
+    if parts.username or parts.password:
+        # The list view shows the URL back; credentials go in a header.
+        return 'url must not embed credentials — use a header instead'
+    if parts.scheme == 'https':
+        return None
+    if parts.scheme == 'http' and host in LOOPBACK_HOSTS:
+        return None
+    return 'url must be https (plain http only for localhost)'
+
+
+def _validate(name, command, args, env, transport='stdio', url=None,
+              headers=None):
     """Returns an error string, or None when the entry is well-formed."""
     if not isinstance(name, str) or not NAME_RE.match(name):
         return 'name must match ^[A-Za-z0-9_-]{1,64}$'
     if name in RESERVED_NAMES:
         return f'"{name}" is a built-in workspace MCP server and cannot be replaced'
+    if transport not in TRANSPORTS:
+        return 'type must be one of: ' + ', '.join(TRANSPORTS)
+    if transport in REMOTE_TRANSPORTS:
+        err = _validate_url(url)
+        if err:
+            return err
+        err = _validate_pairs(headers if headers is not None else {},
+                              HEADER_KEY_RE, 'header')
+        if err:
+            return err
+        if any(c in '\r\n' for v in (headers or {}).values() for c in v):
+            return 'header values must be a single line'
+        return None
     if not isinstance(command, str) or not command.strip():
         return 'command is required'
     if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
         return 'args must be a list of strings'
-    if not isinstance(env, dict):
-        return 'env must be an object'
-    for k, v in env.items():
-        if not isinstance(k, str) or not ENV_KEY_RE.match(k):
-            return f'invalid env var name: {k!r}'
-        if not isinstance(v, str):
-            return f'env value for {k} must be a string'
-    return None
+    return _validate_pairs(env, ENV_KEY_RE, 'env var')
 
 
-def set_server(name, command, args=None, env=None, enabled=True):
-    """Add or update a registry entry. Returns (ok, err).
-
-    Env values may hold secrets, so on an update a BLANK value for an
-    already-stored env key keeps the previous value (the UI's redacted view
-    round-trips without re-entering secrets) — same rule as
-    GatewayCredentialsManager.set(). Blank values for new keys are dropped.
-    """
-    args = args if args is not None else []
-    env = env if env is not None else {}
-    err = _validate(name, command, args, env)
-    if err:
-        return False, err
-    reg = _read_registry()
-    prev = reg['servers'].get(name)
-    prev_env = prev.get('env', {}) if isinstance(prev, dict) else {}
-    out_env = {}
-    for k, v in env.items():
+def _merge_secrets(new, prev):
+    """Strip values; a BLANK value for an already-stored key keeps the stored
+    one (the UI's redacted view round-trips without re-entering secrets) —
+    same rule as GatewayCredentialsManager.set(). Blank new keys are dropped."""
+    prev = prev if isinstance(prev, dict) else {}
+    out = {}
+    for k, v in new.items():
         v = v.strip()
         if v:
-            out_env[k] = v
-        elif isinstance(prev_env.get(k), str) and prev_env[k]:
-            out_env[k] = prev_env[k]
-    reg['servers'][name] = {
-        'command': command.strip(),
-        'args': [a.strip() for a in args if a.strip()],
-        'env': out_env,
-        'enabled': bool(enabled),
-    }
+            out[k] = v
+        elif isinstance(prev.get(k), str) and prev[k]:
+            out[k] = prev[k]
+    return out
+
+
+def set_server(name, command='', args=None, env=None, enabled=True,
+               transport=None, url=None, headers=None):
+    """Add or update a registry entry. Returns (ok, err).
+
+    `transport` is the API's `type`: stdio (command/args/env) or http/sse
+    (url/headers). Omitted, it keeps the stored entry's transport — so an
+    older client that only knows stdio can still toggle a remote entry —
+    and defaults to stdio for a new one. Likewise on a remote update a blank
+    `url` keeps the stored URL and `headers=None` keeps the stored headers.
+
+    Env and header values may hold secrets, so a blank value for an
+    already-stored key keeps the previous value (see _merge_secrets).
+    """
+    reg = _read_registry()
+    prev = reg['servers'].get(name) if isinstance(name, str) else None
+    prev = prev if isinstance(prev, dict) else None
+    if transport is None:
+        transport = _transport(prev) if prev else 'stdio'
+    same_remote = (prev is not None and transport in REMOTE_TRANSPORTS
+                   and _transport(prev) in REMOTE_TRANSPORTS)
+    if same_remote:
+        if not (isinstance(url, str) and url.strip()):
+            url = prev.get('url')
+        if headers is None:
+            headers = {k: '' for k in prev.get('headers') or {}}
+    args = args if args is not None else []
+    env = env if env is not None else {}
+    err = _validate(name, command, args, env, transport, url, headers)
+    if err:
+        return False, err
+    if transport in REMOTE_TRANSPORTS:
+        reg['servers'][name] = {
+            'type': transport,
+            'url': url.strip(),
+            'headers': _merge_secrets(
+                headers or {}, prev.get('headers') if same_remote else None),
+            'enabled': bool(enabled),
+        }
+    else:
+        reg['servers'][name] = {
+            'type': 'stdio',
+            'command': command.strip(),
+            'args': [a.strip() for a in args if a.strip()],
+            'env': _merge_secrets(
+                env, prev.get('env') if prev and _transport(prev) == 'stdio'
+                else None),
+            'enabled': bool(enabled),
+        }
     _write_registry(reg)
     return True, None
 
@@ -164,22 +277,36 @@ def delete_server(name):
     return True
 
 
+def _redact(pairs):
+    pairs = pairs if isinstance(pairs, dict) else {}
+    return {k: (f'…{v[-4:]}' if isinstance(v, str) and len(v) >= 4 else '•••')
+            for k, v in pairs.items()}
+
+
 def public_view():
-    """Redacted listing for the UI/API: env VALUES are never returned (they
-    may hold API keys) — only a last-4 hint per key, like provider-keys."""
+    """Redacted listing for the UI/API: env and header VALUES are never
+    returned (they may hold API keys) — only a last-4 hint per key, like
+    provider-keys. Every row carries the stdio fields (empty for a remote
+    entry) so a client that predates #815 still renders it."""
     reg = _read_registry()
     out = []
     for name in sorted(reg['servers']):
         entry = reg['servers'][name]
         if not isinstance(entry, dict):
             continue
-        env = entry.get('env') if isinstance(entry.get('env'), dict) else {}
+        transport = _transport(entry)
+        remote = transport in REMOTE_TRANSPORTS
         out.append({
             'name': name,
-            'command': entry.get('command', ''),
-            'args': list(entry.get('args', [])),
-            'env': {k: (f'…{v[-4:]}' if isinstance(v, str) and len(v) >= 4 else '•••')
-                    for k, v in env.items()},
+            'type': transport,
+            'command': '' if remote else entry.get('command', ''),
+            'args': [] if remote else list(entry.get('args', [])),
+            'env': {} if remote else _redact(entry.get('env')),
+            'url': entry.get('url', '') if remote else '',
+            'headers': _redact(entry.get('headers')) if remote else {},
+            # Which assistants this entry reaches (#815: remote = Claude-only).
+            'providers': sorted(_REMOTE_PROVIDERS) if remote
+            else list(_PROVIDERS),
             'enabled': bool(entry.get('enabled', True)),
         })
     return out
@@ -231,15 +358,40 @@ def _apply_map(cfg, key, upserts, removals, translate):
     return changed
 
 
+def _claude_config_paths():
+    seen, out = set(), []
+    for path in CLAUDE_CONFIGS:
+        real = os.path.realpath(path)
+        if real not in seen:
+            seen.add(real)
+            out.append(path)
+    return out
+
+
 def _sync_claude(upserts, removals):
     def translate(e):
+        transport = _transport(e)
+        if transport in REMOTE_TRANSPORTS:
+            out = {'type': transport, 'url': e['url']}
+            if e.get('headers'):
+                out['headers'] = e['headers']
+            return out
         out = {'type': 'stdio', 'command': e['command'], 'args': e['args']}
         if e['env']:
             out['env'] = e['env']
         return out
-    cfg = _load_json_file(CLAUDE_CONFIG)
-    if _apply_map(cfg, 'mcpServers', upserts, removals, translate):
-        _atomic_json_write(CLAUDE_CONFIG, cfg)
+    # Each home's file is independent: a corrupt one is left alone and
+    # reported, and the other is still written.
+    failures = []
+    for path in _claude_config_paths():
+        try:
+            cfg = _load_json_file(path)
+            if _apply_map(cfg, 'mcpServers', upserts, removals, translate):
+                _atomic_json_write(path, cfg)
+        except Exception as e:
+            failures.append(f'{path}: {e}')
+    if failures:
+        raise RuntimeError('; '.join(failures))
 
 
 def _sync_opencode(upserts, removals):
@@ -324,10 +476,19 @@ def sync_all():
     known = set(reg['managed']) | set(reg['servers'])
     removals = sorted((known - set(upserts)) - RESERVED_NAMES)
 
+    # Remote entries reach only _REMOTE_PROVIDERS; for the rest they count as
+    # removals, so a server that switched stdio → http leaves those configs.
+    stdio = {n: e for n, e in upserts.items() if _transport(e) == 'stdio'}
+    stdio_removals = sorted(set(removals) | (set(upserts) - set(stdio)))
+
     results = {}
     for provider in _PROVIDERS:
+        if provider in _REMOTE_PROVIDERS:
+            ups, rems = upserts, removals
+        else:
+            ups, rems = stdio, stdio_removals
         try:
-            results[provider] = globals()[f'_sync_{provider}'](upserts, removals) or 'ok'
+            results[provider] = globals()[f'_sync_{provider}'](ups, rems) or 'ok'
         except Exception as e:  # one provider must never block the others
             results[provider] = f'error: {e}'
             print(f'[mcp-registry] {provider} sync failed: {e}',

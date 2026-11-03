@@ -1,0 +1,820 @@
+suite: always-on keeper (#728 steps 3 to 5)
+templates:
+  - templates/keeper-deployment.yaml
+  - templates/keeper-rbac.yaml
+  - templates/keeper-ingress.yaml
+  - templates/keeper-ingress-api.yaml
+  - templates/keeper-networkpolicy.yaml
+  - templates/keeper-pvc.yaml
+  - templates/keeper-secret.yaml
+  - templates/networkpolicy-egress.yaml
+  - templates/ingress-claude-api.yaml
+  - templates/ingress-webhooks.yaml
+  - templates/holding-deployment.yaml
+  - templates/holding-configmap.yaml
+  - templates/ingress.yaml
+  - templates/ingress-oauth2.yaml
+values:
+  - test-values.yaml
+set:
+  keeper.enabled: true
+  keeper.image: ghcr.io/imran31415/kube-coder/keeper:test
+  oauth2.cookieSecret: AAAAAAAAAAAAAAAAAAAAAA==
+  oauth2.clientId: test-id
+  oauth2.clientSecret: test-secret
+tests:
+  # ── Off by default: nothing new renders ───────────────────────────────────
+  - it: renders no keeper objects when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders no keeper RBAC when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders no keeper ingress when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: renders no keeper NetworkPolicy when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-networkpolicy.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: keeps the holding page wired in when off
+    set:
+      keeper.enabled: false
+    template: templates/ingress.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+          value: holding-testuser
+  - it: leaves the page without keeper code when off
+    set:
+      keeper.enabled: false
+    template: templates/holding-configmap.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["holding.html"]
+          pattern: api/keeper
+
+  # ── The keeper replaces holding-<user> ────────────────────────────────────
+  - it: replaces the holding Deployment
+    template: templates/holding-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: is the root ingress's custom-error backend
+    template: templates/ingress.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+          value: keeper-testuser
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/custom-http-errors"]
+          value: "502,503,504"
+  - it: is the oauth2 dashboard's custom-error backend
+    set:
+      ingress.auth.type: oauth2
+    template: templates/ingress-oauth2.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+          value: keeper-testuser
+  - it: still serves the page with holdingPage off
+    set:
+      holdingPage.enabled: false
+    template: templates/holding-configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "call\\('POST', 'wake'\\)"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "var API = '/api/keeper/', SIGN_IN = '';"
+
+  # ── The pod ───────────────────────────────────────────────────────────────
+  - it: runs the keeper image non-root with a read-only root filesystem
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/imran31415/kube-coder/keeper:test
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: keeper-testuser
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+  - it: looks after this user's workspace Deployment
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_DEPLOYMENT
+            value: ws-testuser
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_SLEEP_ENABLED
+            value: "false"
+      # Basic mode: a client could send any user header, so none is trusted.
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_USER_HEADER
+            value: X-Auth-Request-User
+  - it: logs the oauth2 user who woke it from the header the ingress sets
+    set:
+      ingress.auth.type: oauth2
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_USER_HEADER
+            value: X-Auth-Request-User
+  - it: mounts the page as a directory so edits land without a restart
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0]
+          value:
+            name: page
+            mountPath: /etc/keeper/page
+            readOnly: true
+      - equal:
+          path: spec.template.spec.volumes[0].configMap.name
+          value: holding-testuser
+  - it: exposes only the page on the default-backend Service
+    template: templates/keeper-deployment.yaml
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser
+      - equal:
+          path: spec.ports
+          value:
+            - port: 80
+              targetPort: http
+              name: http
+  - it: exposes the wake listener on its own Service
+    template: templates/keeper-deployment.yaml
+    documentIndex: 2
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-wake
+      - equal:
+          path: spec.ports
+          value:
+            - port: 80
+              targetPort: wake
+              name: http
+  - it: requires an image
+    set:
+      keeper.image: ""
+    template: templates/keeper-deployment.yaml
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.image is required when keeper.enabled (ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>)"
+  - it: refuses a public workspace
+    set:
+      ingress.auth.type: none
+      readOnly: true
+    template: templates/keeper-deployment.yaml
+    asserts:
+      - failedTemplate:
+          errorMessage: "keeper.enabled needs ingress.auth.type basic or oauth2: the keeper wakes the workspace for any visitor who passes the ingress auth, and auth.type=none has none"
+
+  # ── RBAC: read and scale one Deployment, nothing else ─────────────────────
+  - it: can read ws-<user> and patch its scale, and nothing else
+    template: templates/keeper-rbac.yaml
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              resourceNames: ["ws-testuser"]
+              verbs: ["get"]
+            - apiGroups: ["apps"]
+              resources: ["deployments/scale"]
+              resourceNames: ["ws-testuser"]
+              verbs: ["patch"]
+
+  # ── The wake route: authenticated, exact, to the wake Service ─────────────
+  - it: puts status and wake behind basic auth in basic mode
+    template: templates/keeper-ingress.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+          value: basic
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-secret"]
+          value: test-auth
+      # Nothing to vouch for a user header in basic mode.
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-response-headers"]
+      - equal:
+          path: spec.rules[0].http.paths
+          value:
+            - path: /api/keeper/status
+              pathType: Exact
+              backend:
+                service:
+                  name: keeper-testuser-wake
+                  port:
+                    name: http
+            - path: /api/keeper/wake
+              pathType: Exact
+              backend:
+                service:
+                  name: keeper-testuser-wake
+                  port:
+                    name: http
+  # oauth2 mode: under /oauth like the dashboard's own API calls, so the phone's
+  # bearer-ingress /api/keeper/wake (step 4) is left alone — today it still
+  # gets the plain 503 the app falls back to the controller on.
+  - it: puts status and wake behind oauth2-proxy, under /oauth, in oauth2 mode
+    set:
+      ingress.auth.type: oauth2
+    template: templates/keeper-ingress.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+          value: https://$host/oauth2/auth
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+      # The user, for the wake log — never the access token the dashboard gets.
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-response-headers"]
+          value: x-auth-request-user
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /oauth/api/keeper/status
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /oauth/api/keeper/wake
+  - it: calls the /oauth routes and signs in through oauth2-proxy in oauth2 mode
+    set:
+      ingress.auth.type: oauth2
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "var API = '/oauth/api/keeper/', SIGN_IN = '/oauth2/start\\?rd=';"
+  - it: sends the wake header a cross-site form can't
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "'X-Keeper-Wake': '1'"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "document.visibilityState === 'visible'"
+
+  # ── Only the ingress controller reaches it ────────────────────────────────
+  # One class of caller per port. The ingress controller reaches the page, the
+  # browser's wake and the app's; the workspace pod reaches the control port and
+  # nothing else, so it can push facts in but cannot wake itself (#728 step 4).
+  - it: admits ingress-nginx to the public ports and only the workspace to control
+    template: templates/keeper-networkpolicy.yaml
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels.app
+          value: keeper-testuser
+      - equal:
+          path: spec.ingress
+          value:
+            - from:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: ingress-nginx
+              ports:
+                - protocol: TCP
+                  port: 8080
+                - protocol: TCP
+                  port: 8081
+                - protocol: TCP
+                  port: 8082
+            - from:
+                - podSelector:
+                    matchLabels:
+                      app: ws-testuser
+              ports:
+                - protocol: TCP
+                  port: 8083
+            # This workspace's scheduled triggers, from step 4b: a cron fire
+            # now lands on the keeper so that it survives a sleep. Both labels
+            # are required, so a co-tenant's cron pods stay denied.
+            - from:
+                - podSelector:
+                    matchLabels:
+                      app: kube-coder-cron
+                      workspace-user: testuser
+                - podSelector:
+                    matchLabels:
+                      app: kube-coder-page-watch
+                      workspace-user: testuser
+              ports:
+                - protocol: TCP
+                  port: 8082
+      # Same-namespace by construction: a namespaceSelector here would let a
+      # co-tenant's workspace push to this keeper.
+      - notExists:
+          path: spec.ingress[1].from[0].namespaceSelector
+      - notExists:
+          path: spec.ingress[2].from[0].namespaceSelector
+      # The cron rule must not reach the control port: a CronJob pod is not
+      # allowed to tell the keeper which triggers exist.
+      - equal:
+          path: spec.ingress[2].ports[0].port
+          value: 8082
+
+  # ── Step 4: nothing new renders with the keeper off ───────────────────────
+  - it: renders no state volume when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no control secret when off
+    set:
+      keeper.enabled: false
+    template: templates/keeper-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no app ingress when off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: leaves the bearer ingress exactly as it was when off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/ingress-claude-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /(api/.*|metrics|health)
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+
+  # ── The app's route in (step 4) ───────────────────────────────────────────
+  # oauth2 only, because ingress-claude-api.yaml — the bearer API this sits
+  # beside — does not exist in basic mode.
+  - it: has no app ingress in basic mode, where there is no bearer API
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: routes the app status and wake to the keeper, with no ingress auth
+    set:
+      ingress.auth.type: oauth2
+    template: templates/keeper-ingress-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          # Anchored: unanchored, /api/keeper/wakeX would match both this
+          # location and ingress-claude-api.yaml's, and emission order
+          # would decide which backend served it.
+          value: /api/keeper/(status|wake)$
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: keeper-testuser-api
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/use-regex"]
+          value: "true"
+      # oauth2-proxy would answer a bearer wake with a 302 the app cannot
+      # follow. The keeper checks the token hash itself instead.
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-type"]
+      # A rewrite-target here would rewrite the path into the workspace's
+      # bearer-marker prefix, and it would never reach the keeper.
+      - notExists:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+
+  # The two location sets must be disjoint: on this host every location renders
+  # as a regex, so an overlap is settled by emission order, and the app's path
+  # is the shorter of the two.
+  - it: hands those two paths over on the bearer ingress, and keeps idle
+    set:
+      ingress.auth.type: oauth2
+    template: templates/ingress-claude-api.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /(api/(?!keeper/(?:status|wake)$).*|metrics|health)
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/default-backend"]
+          value: keeper-testuser
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/custom-http-errors"]
+          value: "502,503,504"
+
+  # ── The pod (step 4) ──────────────────────────────────────────────────────
+  - it: recreates rather than rolling, and can write its own volume
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      # A RollingUpdate would wait for the new pod to mount a ReadWriteOnce
+      # volume the old pod still holds, and deadlock the upgrade.
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      # A fresh volume arrives owned by root; without this the keeper runs as
+      # 65532 and cannot write the one directory it is allowed to write.
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            containerPort: 8082
+            name: app
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            containerPort: 8083
+            name: control
+      # Setting this is what turns the step-4 listeners on, so this image on a
+      # step-3 chart keeps running as step 3 instead of crashlooping.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_STATE_DIR
+            value: /var/lib/keeper
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: state
+            persistentVolumeClaim:
+              claimName: keeper-testuser-state
+
+  - it: gives the app listener its own Service
+    template: templates/keeper-deployment.yaml
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-api
+      - equal:
+          path: spec.ports[0].targetPort
+          value: app
+
+  - it: keeps the control listener on a Service of its own
+    template: templates/keeper-deployment.yaml
+    documentIndex: 4
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-control
+      - equal:
+          path: spec.ports[0].targetPort
+          value: control
+
+  # ── The state volume ──────────────────────────────────────────────────────
+  - it: claims a small volume and does not outlive the release
+    template: templates/keeper-pvc.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: keeper-testuser-state
+      - equal:
+          path: spec.accessModes[0]
+          value: ReadWriteOnce
+      - equal:
+          path: spec.resources.requests.storage
+          value: 1Gi
+      # Deliberately unlike pvc.yaml: everything here is re-pushed at the next
+      # boot, so keeping it past the release would only orphan volumes.
+      - notExists:
+          path: metadata.annotations["helm.sh/resource-policy"]
+
+  # ── The shared secret ─────────────────────────────────────────────────────
+  - it: uses a pinned control secret when one is given
+    set:
+      keeper.controlSecret.value: pinned-secret-value
+    template: templates/keeper-secret.yaml
+    asserts:
+      - equal:
+          path: stringData.secret
+          value: pinned-secret-value
+
+  - it: renders no secret of its own when told to use an existing one
+    set:
+      keeper.controlSecret.existingSecretName: byo-keeper-secret
+    template: templates/keeper-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: mounts whichever secret it was told to use
+    set:
+      keeper.controlSecret.existingSecretName: byo-keeper-secret
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: control
+            secret:
+              secretName: byo-keeper-secret
+              items:
+                - key: secret
+                  path: secret
+              defaultMode: 0400
+
+  # ── Egress: the workspace may reach the control port, and only that ───────
+  - it: opens the control port to the workspace in the portable policy
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    app: keeper-testuser
+            ports:
+              - protocol: TCP
+                port: 8083
+
+  - it: opens the control port to the workspace in the Cilium policy
+    set:
+      networkPolicy.egress.flavor: cilium
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            toEndpoints:
+              - matchLabels:
+                  io.kubernetes.pod.namespace: test
+                  app: keeper-testuser
+            toPorts:
+              - ports:
+                  - port: "8083"
+                    protocol: TCP
+
+  - it: adds no keeper egress rule when the keeper is off
+    set:
+      keeper.enabled: false
+    template: templates/networkpolicy-egress.yaml
+    asserts:
+      - notContains:
+          path: spec.egress
+          any: true
+          content:
+            ports:
+              - protocol: TCP
+                port: 8083
+
+  # ── Step 4b: the queue, the wake cap and the webhook front door ───────────
+  - it: wires the queue limits and the wake cap into the keeper
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_MAX_ENTRIES
+            value: "256"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_MAX_BYTES
+            value: "67108864"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_QUEUE_TTL_SECONDS
+            value: "3600"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_INFLIGHT
+            value: "4"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_WAKES_PER_HOUR
+            value: "10"
+      # Where a proxied request goes: the workspace's own Service, by the same
+      # name server.py computes for a CronJob.
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_WORKSPACE_URL
+            value: http://ws-testuser.test.svc.cluster.local:6080
+
+  - it: lets the cap be turned off, because zero has to mean unlimited
+    set:
+      keeper.maxWakesPerHour: 0
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_MAX_WAKES_PER_HOUR
+            value: "0"
+
+  # From step 4b the keeper buffers each proxied body whole, because the HMAC
+  # covers the exact bytes and a streamed forward cannot state the
+  # Content-Length server.py reads. One 1 MiB body fits in 32Mi; several at
+  # once do not, and GOMEMLIMIT is wired from this number.
+  - it: gives the keeper room for the buffered bodies
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 128Mi
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GOMEMLIMIT
+            valueFrom:
+              resourceFieldRef:
+                resource: limits.memory
+
+  - it: sends the public webhook route to the keeper
+    set:
+      ingress.auth.type: oauth2
+    template: templates/ingress-webhooks.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: keeper-testuser-api
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.name
+          value: http
+      # The path is unchanged, so the keeper receives exactly what server.py
+      # would have: the rewrite-target still hands on /api/webhooks/<id>.
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /api/webhooks/([a-zA-Z0-9_-]+)
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/rewrite-target"]
+          value: /api/webhooks/$1
+      # The body cap the keeper's own 1 MiB limit has to agree with.
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/proxy-body-size"]
+          value: 1m
+
+  - it: leaves the webhook route on the workspace when the keeper is off
+    set:
+      keeper.enabled: false
+      ingress.auth.type: oauth2
+    template: templates/ingress-webhooks.yaml
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: ws-testuser
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 6080
+
+  # The holding page says why a workspace it did not ask for is starting.
+  - it: tells the page what a wake was for
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: 'function waking\(reason\)'
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "A scheduled task is due"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "A webhook arrived while it was asleep"
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: 'waking\(s\.reason\)'
+
+  # ── Step 5: the idle loop ─────────────────────────────────────────────────
+  - it: tells the keeper its idle threshold when sleep is on
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 45
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_SLEEP_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_IDLE_MINUTES
+            value: "45"
+
+  # Without sleep there is no idle loop to configure, and the render stays
+  # step 4b's byte for byte.
+  - it: renders no idle threshold when sleep is off
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: KEEPER_IDLE_MINUTES
+
+  # The int64 rule from step 4b: Helm reads YAML numbers as float64, and a
+  # large one would otherwise reach the keeper in scientific notation.
+  - it: renders a long threshold as a plain number
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 10080000
+    template: templates/keeper-deployment.yaml
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEEPER_IDLE_MINUTES
+            value: "10080000"
+
+  - it: tells a visitor how long it sleeps after, when sleep is on
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 30
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "WHY.reason. .. 'It goes to sleep after 30 minutes with nobody using it.'"
+      - notMatchRegex:
+          path: data["holding.html"]
+          pattern: "It was asleep while nobody was using it"
+
+  - it: says one minute, not one minutes
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 1
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after 1 minute with nobody using it"
+
+  - it: keeps step 4b's sentence when sleep is off
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "WHY.reason. .. 'It was asleep while nobody was using it.'"
+      - notMatchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after"

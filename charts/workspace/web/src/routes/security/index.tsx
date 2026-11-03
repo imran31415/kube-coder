@@ -1,11 +1,13 @@
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { currentPath, navigate, pathSuffix, routeHref } from '../../store/router';
 import { EmptyState } from '../../components/primitives/EmptyState';
 import { Pill } from '../../components/primitives/Pill';
 import { GuidePanel } from '../../components/GuidePanel';
 import {
+  STATUS_LABELS,
   agoLabel,
   outcomeLabel,
+  scanTitle,
   spendLabel,
   type ScanSummary,
 } from '../../api/scans';
@@ -14,8 +16,10 @@ import {
   loadConnection,
   loadScan,
   loadScans,
+  modelSettingsOpen,
   openScan,
   openScanError,
+  revealModelSettings,
   scans,
   scansDisabled,
   scansError,
@@ -65,6 +69,16 @@ export function SecurityRoute() {
   useEffect(() => {
     if (scanId) void loadScan(scanId);
   }, [scanId]);
+
+  // A failed scan's "Model settings" button lands here with the panel open;
+  // it sits at the foot of the page, so bring it into view as well.
+  const settingsRef = useRef<HTMLDetailsElement>(null);
+  const configured = !!connection.value?.configured;
+  useEffect(() => {
+    if (scanId || !revealModelSettings.value || !settingsRef.current) return;
+    revealModelSettings.value = false;
+    settingsRef.current.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  }, [scanId, revealModelSettings.value, configured]);
 
   if (scansDisabled.value) {
     return (
@@ -213,7 +227,14 @@ export function SecurityRoute() {
       </section>
 
       {conn?.configured ? (
-        <details class="security-settings">
+        <details
+          class="security-settings"
+          ref={settingsRef}
+          open={modelSettingsOpen.value}
+          onToggle={(e) => {
+            modelSettingsOpen.value = (e.currentTarget as HTMLDetailsElement).open;
+          }}
+        >
           <summary>Model settings</summary>
           <ConnectStrix />
         </details>
@@ -233,8 +254,10 @@ function ScanRow({ scan }: { scan: ScanSummary }) {
         }}
       >
         <span class="security-row-main">
-          <Pill tone={STATUS_TONE[scan.status] ?? 'neutral'}>{scan.status}</Pill>
-          <strong>{scan.target.name || `Port ${scan.target.port}`}</strong>
+          <Pill tone={STATUS_TONE[scan.status] ?? 'neutral'}>
+            {STATUS_LABELS[scan.status] ?? scan.status}
+          </Pill>
+          <strong>{scanTitle(scan)}</strong>
           {/* Outcome, not a bare number — an empty findings list means very
               different things depending on how the scan ended. */}
           <span class="security-row-outcome">{outcomeLabel(scan)}</span>

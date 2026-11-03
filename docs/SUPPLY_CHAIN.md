@@ -77,13 +77,29 @@ PAT buys you that `GITHUB_TOKEN` can't:
 2. A higher github.com datasource rate limit.
 
 Create it at **Settings → Developer settings → Personal access tokens**
-(fine-grained: Contents RW + Pull requests RW + Workflows RW on this repo; or a
-classic PAT with `repo` + `workflow`), then add it under **Settings → Secrets
-and variables → Actions → New repository secret** named `RENOVATE_TOKEN`, or:
+(fine-grained: Contents RW + Pull requests RW + **Issues RW** + Workflows RW on
+this repo; or a classic PAT with `repo` + `workflow`), then add it under
+**Settings → Secrets and variables → Actions → New repository secret** named
+`RENOVATE_TOKEN`, or:
 
 ```bash
 gh secret set RENOVATE_TOKEN --repo imran31415/kube-coder   # paste the PAT when prompted
+gh workflow run renovate.yml --repo imran31415/kube-coder   # don't wait for Monday
 ```
+
+Issues RW is what lets Renovate rewrite the Dependency Dashboard issue; without
+it branches and PRs still work, but the dashboard silently freezes (a `403
+Resource not accessible by personal access token` on `PATCH /issues/<n>`, which
+is how #343 froze on 2026-07-20).
+
+**The PAT expires, and when it does Renovate stops.** The first one expired on
+2026-08-18 and the workflow failed every week from 2026-08-24 with `github.com
+token 401 unauthorized` (#810); the `GITHUB_TOKEN` fallback never applied,
+because it only covered an *unset* secret. The workflow now checks the PAT
+before running: it posts a warning annotation when the PAT is within 14 days of
+expiry, and if GitHub rejects the PAT it still runs Renovate on `GITHUB_TOKEN`,
+then fails the run with a rotate-the-secret error. A red `renovate` run is
+therefore the signal to rotate — pick the longest expiry your policy allows.
 
 ## oauth2-proxy — the authentication gate
 
@@ -172,7 +188,8 @@ manual login test against both the workspace and the controller console.
 ## Manual-bump exceptions
 
 Two artifacts have no datasource Renovate can track and are bumped by hand
-(current version at the linked probe, then rebuild the image):
+(current version at the linked probe, then rebuild the image), and a third is
+tracked but in practice bumped by hand:
 
 - **Ante** (`ANTE_VERSION`) — channel/manifest distribution, no GitHub release or
   OCI tag. Pinned to a concrete release manifest under
@@ -181,6 +198,12 @@ Two artifacts have no datasource Renovate can track and are bumped by hand
 - **Firefox** (`FIREFOX_VERSION`) — Mozilla CDN, no Renovate datasource. Current
   at `https://product-details.mozilla.org/1.0/firefox_versions.json`
   (`LATEST_FIREFOX_VERSION`).
+- **DeepSeek Harness** (`DSH_VERSION`) — every npm release is a prerelease, and
+  while the pin is unstable Renovate only proposes newer prereleases of the same
+  `x.y.z` (or a stable release). Upstream starts a new `x.y.z` line every week
+  or two, so check `npm view @deepseek-ai/dsh dist-tags` and re-run the ACP
+  probe described above `ARG DSH_VERSION` in `devlaptop/Dockerfile` before
+  bumping.
 
 ## Software Composition Analysis (SCA)
 

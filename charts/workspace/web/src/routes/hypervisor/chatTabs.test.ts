@@ -19,6 +19,11 @@ function thread(over: Partial<HypervisorThread> = {}): HypervisorThread {
 const secAgo = (ms: number) => (NOW - ms) / 1000;
 
 describe('isActiveThread', () => {
+  it.each(['cto', ''])('uses the same activity and timestamp boundaries for %s chats', (persona) => {
+    expect(isActiveThread(thread({ persona, updated_at: secAgo(ACTIVE_WINDOW_MS) }), NOW)).toBe(true);
+    expect(isActiveThread(thread({ persona, updated_at: secAgo(ACTIVE_WINDOW_MS + 1) }), NOW)).toBe(false);
+    expect(isActiveThread(thread({ persona, status: 'running', updated_at: null, created_at: null }), NOW)).toBe(true);
+  });
   it('treats a running thread as active regardless of age', () => {
     const t = thread({ status: 'running', updated_at: secAgo(30 * ACTIVE_WINDOW_MS) });
     expect(isActiveThread(t, NOW)).toBe(true);
