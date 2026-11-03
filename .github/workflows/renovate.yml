@@ -102,7 +102,7 @@ jobs:
           rm -f headers.txt
 
       - name: Renovate
-        uses: renovatebot/github-action@e09d604f8f803bb527bd8321ed5be06c460b8682 # v46.2.2
+        uses: renovatebot/github-action@1c0cf989c02653fba0efe7ca5772338860ca71dc # v46.3.12
         with:
           configurationFile: renovate.json
           # Works with zero setup via the built-in GITHUB_TOKEN. Optionally set a
