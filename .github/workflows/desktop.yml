@@ -60,6 +60,76 @@ jobs:
         run: cargo test --locked
         working-directory: desktop/src-tauri
 
+  # #833: the UI's JS heap must stay flat under a busy workspace's workload
+  # (an idle long chat polled every 2 s, events streaming), and a hidden window
+  # must stop polling and animating. Headless Chromium with a stand-in for the
+  # Tauri bridge; no Rust build needed. See desktop/scripts/soak.mjs.
+  soak:
+    name: Memory soak (UI)
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04, where
+    # Playwright 1.58 refuses to install Chromium's dependencies ("does not
+    # support chromium on ubuntu26.04-x64"). Move this when mobile/'s
+    # playwright supports the newer image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install mobile deps (the bundled UI)
+        run: npm ci --no-audit --no-fund
+        working-directory: mobile
+
+      # The browser soak.mjs drives is the one mobile/'s playwright pins, so the
+      # cache is keyed on that exact version.
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+        working-directory: mobile
+
+      - name: Cache Chromium
+        id: pw-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      # System libraries come from apt, which the cache does not cover; retry
+      # a mirror flake rather than fail the soak on it.
+      - name: Chromium system dependencies
+        run: |
+          for i in 1 2 3; do
+            npx playwright install-deps chromium && exit 0
+            echo "::warning::playwright install-deps failed (attempt $i), retrying"
+            sleep $((i * 15))
+          done
+          exit 1
+        working-directory: mobile
+
+      - name: Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium && exit 0
+            echo "::warning::playwright install failed (attempt $i), retrying"
+            sleep $((i * 15))
+          done
+          exit 1
+        working-directory: mobile
+
+      - name: Export the desktop UI
+        run: node desktop/scripts/build-ui.mjs
+
+      - name: Soak
+        run: node desktop/scripts/soak.mjs --minutes 1.5
+
   build:
     name: Build (${{ matrix.name }})
     needs: rust-tests

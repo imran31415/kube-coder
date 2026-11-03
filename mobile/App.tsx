@@ -36,6 +36,7 @@ import {
 } from './src/push/notifications';
 import { useConfig } from './src/store/useConfig';
 import { initDesktop, onNavigatorReady, saveDesktopNavState } from './src/desktop/desktopApp';
+import { initWindowVisibility } from './src/util/useWindowVisible';
 import { colors, font } from './src/theme';
 
 // The home screen and Onboarding load with the shell; every other screen
@@ -230,12 +231,16 @@ export default function App() {
     // The desktop app's live events, deep links and notification clicks
     // (#833). A no-op on the phone and in a browser.
     const detachDesktop = initDesktop();
+    // Whether the window can be seen: polling and spinners pause while it
+    // cannot (#833).
+    const detachVisibility = initWindowVisibility();
     hydrate().then(() => {
       void registerForPush();
     });
     return () => {
       detach();
       detachDesktop();
+      detachVisibility();
     };
   }, []);
   return (

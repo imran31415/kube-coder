@@ -267,11 +267,17 @@ as workflow artifacts. The AppImage is reported but not held to 20 MB: it
 carries its own WebKitGTK and GTK stack (its AppDir is ~210 MB before
 compression), where the `.deb` uses the system's.
 
+Alongside the builds, a **memory soak** job (`scripts/soak.mjs`, ~2 minutes)
+loads the exported UI in headless Chromium with a stand-in for the Tauri
+bridge and fails if the JS heap grows under a busy workspace's workload, or if
+a hidden window still polls or animates (see *Under a busy workspace* below).
+
 ## Tests
 
 ```bash
 cd desktop/src-tauri && cargo test     # host scope, SSE parsing, Feed alert rules, …
 cd mobile && npx vitest run            # wide layout, storage backends, deep links, transport
+node desktop/scripts/build-ui.mjs && node desktop/scripts/soak.mjs   # memory soak (needs mobile's Chromium)
 ```
 
 ## Measuring memory
@@ -317,6 +323,50 @@ shows) and the physical footprint (Activity Monitor's Memory column):
 desktop/scripts/measure-macos.sh
 # close the window (⌘W), wait 11 minutes so the webview is dropped
 desktop/scripts/measure-macos.sh
+```
+
+### Under a busy workspace (2026-11-02)
+
+The numbers above are an idle window on a fake, quiet workspace. On a real
+one the maintainer's Mac showed the WebContent process at **654 MB of physical
+footprint after 11 minutes** (`vmmap`: ~500 MB of WebKit Malloc dirty +
+compressed, plus ~180 MB of layer backing stores). The workload, not the
+engine, made the difference.
+
+**What the event stream carries.** Recorded for 5 minutes from a real
+workspace with 2 Builds running and 3 waiting: no event at all. The server
+publishes on status transitions only (`task.status`, `feed.item`,
+`boards.*`), never Build output, so the stream is not what grows memory.
+
+**What did.** An open Hypervisor chat. The screen re-read the whole thread
+every 2 s (2.5 MB for a long chat here) and set it through
+`setEvents(prev => same ? prev : d.events)`. On an idle chat that update always
+bails out, and React 19 still queues a bailed-out update, with the closure that
+captured the transcript, until the component next renders. An idle chat never
+does, so every tick's transcript stayed reachable. The poll was a raw
+`setInterval`, so it also ran behind every other screen and while the window
+was hidden. Heap snapshots show it plainly: the retained strings sit in a hook
+queue's `pending` list. The poll now reads incrementally (`since` = the event
+before the last, the overlap is checked) and sets state only on a change, and
+it runs only while the chat is on screen. Hidden windows also stop the other
+polling screens, the sidebar's Feed count and the CSS spinners.
+
+| Measured | Before (main at f8cc66c) | After |
+|---|---|---|
+| WebKitWebProcess private dirty, the real app on a real 2.5 MB chat (Linux, Xvfb) | 139 → 903 MB at 5 min → 1,552 MB at 10 min (stopped there) | 99 MB → 94 MB at 10 min → 94 MB at 20 min → 78 MB at 32 min |
+| Same, home screen / a running Build's detail, 12 min | flat, ~75 / ~143 MB | — |
+| Chromium JS heap after GC, `soak.mjs` (2 events/s) | 51 → 346 MB in 4 min (+72 MB/min) | 14.9 MB → 15.0 MB in 20 min |
+| Heap snapshot retained size, start / middle / end | 52.7 / 181.9 / 347.4 MB (0 / 2 / 4 min) | 16.2 / 16.3 / 16.3 MB (0 / 10 / 20 min) |
+| Transcript bytes read by an idle open chat | 75 MB/min | 0.5 MB/min, the Feed reads included |
+| Workspace requests in 20 s with the window hidden | 10 | 0 |
+
+`scripts/soak.mjs --minutes 20 --snapshots DIR` reproduces the Chromium rows
+and writes the snapshots. On macOS, re-measure the same way at app start, after
+10 minutes and after 30 minutes with a long chat open (the loop sleeps 0, 10
+and 20 minutes between the three samples):
+
+```bash
+for t in 0 600 1200; do sleep $t; date; desktop/scripts/measure-macos.sh | tee /tmp/kc-mem.txt; sudo vmmap --summary "$(awk '/WebContent/ {print $1; exit}' /tmp/kc-mem.txt)" | sed -n '/REGION TYPE/,/TOTAL/p'; done
 ```
 
 ### Linux, measured in a kube-coder pod (Xvfb, no GPU), 2026-11-01

@@ -66,16 +66,42 @@ export function matchesEvent(type: string, prefixes: readonly string[]): boolean
   return prefixes.some((p) => type === p || type.startsWith(p));
 }
 
-/** How a polling screen should refresh right now. */
+/** Call `fn` once per burst of events whose type matches `prefixes`: the
+ *  first match starts a `delayMs` timer and later ones ride along with it.
+ *  Returns the unsubscribe, which also drops a pending call. */
+export function onLiveEventDebounced(
+  prefixes: readonly string[],
+  fn: () => void,
+  delayMs: number = EVENT_DEBOUNCE_MS,
+): () => void {
+  let pending: ReturnType<typeof setTimeout> | null = null;
+  const off = onLiveEvent((e) => {
+    if (pending || !matchesEvent(e.type, prefixes)) return;
+    pending = setTimeout(() => {
+      pending = null;
+      fn();
+    }, delayMs);
+  });
+  return () => {
+    if (pending) clearTimeout(pending);
+    pending = null;
+    off();
+  };
+}
+
+/** How a polling screen should refresh right now. A hidden window does not
+ *  refresh at all (`paused`): it re-reads once when it is shown again. */
 export function pollPlan(
   live: boolean,
   intervalMs: number,
   events?: readonly string[],
-): { intervalMs: number; eventDriven: boolean } {
+  visible: boolean = true,
+): { intervalMs: number; eventDriven: boolean; paused: boolean } {
+  if (!visible) return { intervalMs, eventDriven: false, paused: true };
   if (live && events && events.length > 0) {
-    return { intervalMs: Math.max(intervalMs, SAFETY_POLL_MS), eventDriven: true };
+    return { intervalMs: Math.max(intervalMs, SAFETY_POLL_MS), eventDriven: true, paused: false };
   }
-  return { intervalMs, eventDriven: false };
+  return { intervalMs, eventDriven: false, paused: false };
 }
 
 /** Test seam: module state outlives a vitest file otherwise. */
@@ -83,4 +109,9 @@ export function _resetLiveForTest(): void {
   connected = false;
   statusListeners.clear();
   eventListeners.clear();
+}
+
+/** Test seam: how many listeners are live. */
+export function _liveListenerCounts(): { status: number; events: number } {
+  return { status: statusListeners.size, events: eventListeners.size };
 }
