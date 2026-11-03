@@ -130,6 +130,12 @@
       "matchManagers": ["npm"],
       "matchDepTypes": ["devDependencies"],
       "groupName": "npm dev dependencies"
+    },
+    {
+      "description": "Expo SDK pins react, react-dom and react-native to exact versions (react-native's renderer is built for one React release). Bumping them alone fails expo-doctor and can crash the app with 'Incompatible React versions', so they move only with an Expo SDK upgrade (`npx expo install --fix`), never as their own PR. See #844.",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["react", "react-dom", "react-native"],
+      "enabled": false
     }
   ],
   "vulnerabilityAlerts": {
