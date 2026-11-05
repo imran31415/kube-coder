@@ -36,6 +36,8 @@ Purity: everything in this module is a pure function over plain dicts, except
 filesystem paths, no server import.
 """
 
+import hashlib
+import json
 import re
 import time
 
@@ -217,6 +219,36 @@ def check_approvable(record, *, echoed_hash, fresh_hash, approval_id):
             'someone may have replied. Nothing was written; re-read the item '
             'and re-stage if it still applies')
     return 'proceed', None
+
+
+def proposal_digest(record):
+    """Digest of exactly what an approval would write: the PENDING actions.
+
+    `content_hash` is the TICKET's hash, so it cannot tell that the proposal
+    itself moved — an in-app edit of the text, or a later run superseding it.
+    A card drawn somewhere a reviewer cannot refresh (a WhatsApp message, #709)
+    carries this too, so approving from it fires only the text it showed.
+    """
+    pending = [{'id': a.get('id'), 'action': a.get('action'),
+                'params': a.get('params') or {}}
+               for a in (record or {}).get('actions') or []
+               if a.get('state') == 'pending']
+    raw = json.dumps(pending, sort_keys=True, separators=(',', ':'),
+                     default=str)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def check_proposal(record, expected_digest):
+    """Raise `hash_mismatch` unless the pending proposal is still the one
+    `expected_digest` was taken from. `None` means the caller drew no such
+    card, which is every in-app approval: their echo is `content_hash`."""
+    if expected_digest is None:
+        return
+    if proposal_digest(record) != expected_digest:
+        raise ReviewError(
+            'hash_mismatch',
+            'the proposal changed since this card was sent — open the review '
+            'queue and read it again')
 
 
 def consume(record, approval_id, *, state, result=None, decided_by='',
