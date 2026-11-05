@@ -34,6 +34,7 @@ export function isErrorResponse(v: unknown): v is { error: string } {
 }
 
 interface Options extends Omit<RequestInit, 'body'> {
+  redirectOnNetworkAuthError?: boolean;
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined | null>;
 }
@@ -124,7 +125,7 @@ function isAuthExpiredError(e: unknown): boolean {
 }
 
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {
-  const { body, query, headers, ...rest } = opts;
+  const { body, query, headers, redirectOnNetworkAuthError = true, ...rest } = opts;
   const init: RequestInit = {
     ...rest,
     headers: {
@@ -140,7 +141,7 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
   try {
     res = await fetch(url, init);
   } catch (e) {
-    if (isAuthExpiredError(e)) {
+    if (redirectOnNetworkAuthError && isAuthExpiredError(e)) {
       redirectToSignIn();
       throw new ApiError('Session expired — redirecting to sign in.', 401, null);
     }

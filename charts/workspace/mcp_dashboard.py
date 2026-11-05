@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sys
 import traceback
@@ -161,6 +162,10 @@ def _api(method: str, path: str, body: Optional[Dict[str, Any]] = None,
             url += '?' + urllib.parse.urlencode(clean)
     data = None
     headers = {'Authorization': f'Bearer {_token()}'}
+    if os.environ.get('KC_RUNNER_CONTEXT'):
+        headers['X-KC-Runner-Context'] = os.environ['KC_RUNNER_CONTEXT']
+    if os.environ.get('KC_BOARD_WORKER_CONTEXT'):
+        headers['X-KC-Board-Worker'] = os.environ['KC_BOARD_WORKER_CONTEXT']
     if body is not None:
         data = json.dumps(body).encode('utf-8')
         headers['Content-Type'] = 'application/json'
@@ -364,6 +369,27 @@ def _board_id_env() -> str:
 
 def _board_item_id_env() -> str:
     return (os.environ.get('KC_BOARD_ITEM_ID') or '').strip()
+
+
+def _t_request_board_run(a):
+    if not os.environ.get('KC_RUNNER_CONTEXT'):
+        return _err('Open a Hypervisor conversation to request a Board run.')
+    return _call('POST', '/api/boards/run-requests', body={
+        'board_id': a.get('board_id'), 'repository': a.get('repository'),
+        'options': a.get('options', {}), 'operation': 'start'})
+
+
+def _t_get_board_run(a):
+    request_id = a.get('request_id', '')
+    if not isinstance(request_id, str) or not re.fullmatch(r'brq-[a-f0-9]{32}', request_id):
+        return _err('Provide the Board request ID returned by request_board_run.')
+    return _call('GET', '/api/boards/run-requests/' + request_id)
+
+
+def _t_request_board_stop(a):
+    return _call('POST', '/api/boards/run-requests', body={
+        'board_id': a.get('board_id'), 'repository': a.get('repository'),
+        'operation': 'stop', 'run_id': a.get('run_id')})
 
 
 def _t_list_boards(a):
@@ -1220,6 +1246,23 @@ TOOLS: Dict[str, Any] = {
         }, required=['namespace', 'key'], kind='destructive'),
 
     # ── Board Processor (#588/#589) ────────────────────────────────────────
+    'request_board_run': _tool(
+        'request_board_run',
+        'Prepare a Board run approval card using stored metadata only. Never starts work. '
+        'Choose an explicit board and a registered repository checkout; ask the user if ambiguous. '
+        'After this tool returns, tell the user to approve the card and END your turn. '
+        'Do not poll, use curl to start, or treat typed yes as approval.',
+        _t_request_board_run, kind='write',
+        properties={'board_id': {'type': 'string'}, 'repository': {'type': 'string'},
+                    'options': {'type': 'object', 'description': 'workdir (registered project checkout), isolate=true, mode=propose, select (default limit 3), concurrency (default 1), optional base_ref.'}},
+        required=['board_id', 'repository', 'options']),
+    'get_board_run': _tool(
+        'get_board_run', 'Read local status of a Board approval request and its run. Never polls the vendor.',
+        _t_get_board_run, properties={'request_id': {'type': 'string'}}, required=['request_id']),
+    'request_board_stop': _tool(
+        'request_board_stop', 'Prepare a separate user approval to stop claiming new Board items. Running items finish.',
+        _t_request_board_stop, kind='write', properties={'board_id': {'type': 'string'},
+        'repository': {'type': 'string'}, 'run_id': {'type': 'string'}}, required=['board_id', 'repository', 'run_id']),
     'list_boards': _tool(
         'list_boards',
         'List the external boards (Jira / GitHub / Linear / Zendesk trackers) '

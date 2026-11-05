@@ -52,6 +52,7 @@ import {
   uploadTaskImage,
 } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
+import { BoardRequestCards } from '../components/BoardRequestCards';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, Project, WorkdirOption } from '../api/types';
@@ -812,6 +813,7 @@ export default function HypervisorScreen() {
           onScroll={onTranscriptScroll}
           scrollEventThrottle={100}
         >
+          {activeId && <BoardRequestCards key={activeId} threadId={activeId} />}
           {empty ? (
             <View style={styles.welcome}>
               {/* The AI CTO's own opener, for a chat being composed in CTO mode

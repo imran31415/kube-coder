@@ -2436,6 +2436,10 @@ class HypervisorSession:
         # ahead of the early returns below, so an idle stop disarms the last
         # turn's watchers exactly as #402 intended; only the announcement
         # needs a live turn to ride on.
+        meta = self.read_meta()
+        if meta:
+            meta['board_watch_epoch'] = meta.get('board_watch_epoch', 0) + 1
+            self._write_meta(meta)
         with _RUNLOCK:
             seq = _TURN_SEQ.get(self.id, 0)
         disarmed = WATCHERS.cancel_thread(self.id, turn_seq=seq)
@@ -2592,6 +2596,9 @@ class HypervisorSession:
             # servers), so the dashboard MCP's `watch` tool can arm a cross-turn
             # watcher on THIS thread without any explicit id plumbing (#402).
             env['KC_HYPERVISOR_THREAD_ID'] = self.id
+            # A caller-supplied thread ID is not an authenticated runner association.
+            import approval_auth
+            env['KC_RUNNER_CONTEXT'] = approval_auth.issue_context(self.id)
             # A project-bound thread (#465 for CTO, #358 for a plain chat)
             # exports its project so the dashboard MCP's project tools
             # (get_project_brief / update_project) know which project this turn
@@ -2838,7 +2845,7 @@ def reconcile_stale_running_threads() -> List[str]:
 # registry to lose). Thread stop()/delete() cancels its watchers.
 # ───────────────────────────────────────────────────────────────────────────
 WATCH_TICK = float(os.environ.get('KC_HYPERVISOR_WATCH_TICK', '5'))
-WATCH_KINDS = ('task', 'command', 'file', 'port')
+WATCH_KINDS = ('task', 'command', 'file', 'port', 'board_run')
 WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL, WATCH_DEFAULT_INTERVAL = 5.0, 600.0, 20.0
 WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT, WATCH_DEFAULT_TIMEOUT = 10.0, 86400.0, 3600.0
 # Guard rail: a runaway agent can't accumulate unbounded poll loops per thread.
@@ -2878,6 +2885,7 @@ class WatcherManager:
         # Injected by server.py at startup (this module can't import server).
         # Returns a task's status string, or None when the task doesn't exist.
         self._task_status: Optional[Callable[[str], Optional[str]]] = None
+        self._board_run: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
         # Returns the set/list of loopback dev-server ports currently listening
         # (workspace-internal ports already filtered out). Powers `port`
         # watchers; None when unwired (outside a real pod).
@@ -2893,6 +2901,9 @@ class WatcherManager:
     # ── wiring ─────────────────────────────────────────────────────────────
     def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
         self._task_status = fn
+
+    def set_board_run_provider(self, fn) -> None:
+        self._board_run = fn
 
     def set_ports_provider(self, fn: Callable[[], Any]) -> None:
         """Wire the live-port lister used by `port` watchers. `fn()` returns the
@@ -3003,6 +3014,10 @@ class WatcherManager:
             w['baseline_ports'] = self._current_ports()
         with self._lock:
             items = self._load(thread_id)
+            if kind == 'board_run':
+                prior = next((x for x in items if x.get('kind') == kind and x.get('target') == target), None)
+                if prior:
+                    return prior
             active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
             if active >= WATCH_MAX_PER_THREAD:
                 raise ValueError(
@@ -3049,7 +3064,7 @@ class WatcherManager:
                 for w in items:
                     if w.get('state') not in _WATCH_ACTIVE_STATES:
                         continue
-                    if turn_seq is not None and \
+                    if w.get('kind') != 'board_run' and turn_seq is not None and \
                             int(w.get('turn_seq') or 0) != turn_seq:
                         continue
                     w['state'] = 'cancelled'
@@ -3139,6 +3154,16 @@ class WatcherManager:
         per-thread guard in tick() — a transient error skips the pass rather
         than mis-firing."""
         kind, target = w.get('kind'), w.get('target', '')
+        if kind == 'board_run':
+            if self._board_run is None:
+                return False, ''
+            run = self._board_run(target)
+            if run is None:
+                return True, f'Board run {target} is no longer available. Open Board to check.'
+            if run.get('status') == 'running':
+                return False, ''
+            return True, (f'Board run {target} finished with status {run.get("status")}. '
+                          'Check the persisted Board card and review outcomes; completion does not approve tracker changes.')
         if kind == 'task':
             if self._task_status is None:
                 return False, ''  # provider not wired (shouldn't happen in-pod)

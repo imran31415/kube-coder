@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { BoardRunCards } from './BoardRunCard';
 import { Icon } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
 import { EmptyState } from '../../components/primitives/EmptyState';
@@ -1179,6 +1180,7 @@ export function Chat({
       {active && <ActivityPanel threadId={active} running={working} />}
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
+        {active && <BoardRunCards key={active} threadId={active} />}
         {empty && hideEmptyState ? (
           // Embedding surface (CTO page) supplies its own hero — host it in the
           // centring slot so it sits mid-column, right above the composer. With

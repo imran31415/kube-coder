@@ -224,6 +224,26 @@ jobs:
       - name: Vitest
         run: yarn --cwd charts/workspace/web test
 
+      - name: Set up Go for Board approval acceptance
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: keeper/go.mod
+          cache: false
+
+      - name: Build approval service
+        run: |
+          mkdir -p tmp-screenshots
+          go build -C keeper -o ../tmp-screenshots/kc-board-keeper .
+
+      - name: Install acceptance browser
+        working-directory: charts/workspace/web
+        run: yarn playwright install --with-deps chromium
+
+      - name: Chat to Board acceptance
+        timeout-minutes: 5
+        working-directory: charts/workspace/web
+        run: node scripts/board-handoff-e2e.mjs
+
   # The controller SPA has its own lockfile and vitest suite; without this job
   # its tests never ran in CI (the SCA gate above already covers both SPAs).
   controller-web-tests:

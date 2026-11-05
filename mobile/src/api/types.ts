@@ -991,3 +991,9 @@ export interface BoardSummary {
   vendor: string;
   credential_set?: boolean;
 }
+export interface BoardHandoffRequest {
+  id: string;
+  state: 'pending' | 'rejected' | 'expired' | 'starting' | 'started' | 'failed' | 'interrupted';
+  scope: { board_name: string; repository: string };
+  error?: { error?: string };
+}

@@ -69,8 +69,11 @@ if _LOCAL_HOME:
 # Accept any args/kwargs — server.py's real signatures have grown extra
 # keyword args over time (e.g. check_claude_auth(allow_none_mode=...)); a
 # tolerant stub keeps this harness working as those evolve.
-server.BrowserHandler.check_claude_auth = lambda self, *a, **k: True
-server.BrowserHandler.check_oauth_only = lambda self, *a, **k: True
+if os.environ.get('KC_DEV_STRICT_AUTH') != 'true':
+    if os.environ.get('KC_BOARD_HANDOFF_ENABLED') == 'true':
+        raise RuntimeError('Board handoff requires KC_DEV_STRICT_AUTH=true; screenshot auth bypass is not permitted')
+    server.BrowserHandler.check_claude_auth = lambda self, *a, **k: True
+    server.BrowserHandler.check_oauth_only = lambda self, *a, **k: True
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 7070
 

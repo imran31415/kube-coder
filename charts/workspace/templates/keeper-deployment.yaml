@@ -64,6 +64,12 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- if (.Values.boardHandoff).enabled }}
+        - name: KEEPER_BOARD_AUTH_URL
+          value: http://oauth2-proxy-{{ .Values.user.name }}:4180/oauth2/auth
+        - name: KEEPER_BOARD_ORIGIN
+          value: https://{{ .Values.user.host }}
+        {{- end }}
         - name: KEEPER_DEPLOYMENT
           value: ws-{{ .Values.user.name }}
         - name: KEEPER_PAGE

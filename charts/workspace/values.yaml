@@ -12,6 +12,11 @@
 # bare `helm template`/`helm install` invocations.
 namespace: coder
 
+# Approval authority reuses Keeper's isolated process/PVC and GitHub OAuth.
+# Off until both are configured; no shared-bearer or Basic-auth fallback.
+boardHandoff:
+  enabled: false
+
 # User configuration
 user:
   name: ""

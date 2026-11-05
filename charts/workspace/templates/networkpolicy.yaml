@@ -83,4 +83,8 @@ spec:
     ports:
     - protocol: TCP
       port: 6080
+    {{- if (.Values.boardHandoff).enabled }}
+    - protocol: TCP
+      port: 4180
+    {{- end }}
   {{- end }}
