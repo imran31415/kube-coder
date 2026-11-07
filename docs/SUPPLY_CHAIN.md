@@ -185,29 +185,49 @@ authentication works. A broken config either fails closed (nobody can log in) or
 fails open (the allowlist stops being enforced). Plan for a pod restart and a
 manual login test against both the workspace and the controller console.
 
-## Manual-bump exceptions
+## How the image pins are tracked
 
-Two artifacts have no datasource Renovate can track and are bumped by hand
-(current version at the linked probe, then rebuild the image), and a third is
-tracked but in practice bumped by hand:
+Every versioned pin in `devlaptop/Dockerfile` carries a `# renovate:` marker on
+the line **directly above** its `ARG` (the regex manager only matches that exact
+shape; a comment in between silently untracks it, which is how code-server went
+untracked from #420 until it was fixed). A few need more than a marker:
 
-- **Ante** (`ANTE_VERSION`) — channel/manifest distribution, no GitHub release or
-  OCI tag. Pinned to a concrete release manifest under
-  `https://download.ante.run/releases/<version>/manifest.json`; current stable at
-  `https://download.ante.run/channels/stable/manifest.json`.
-- **Firefox** (`FIREFOX_VERSION`) — Mozilla CDN, no Renovate datasource. Current
-  at `https://product-details.mozilla.org/1.0/firefox_versions.json`
-  (`LATEST_FIREFOX_VERSION`).
-- **DeepSeek Harness** (`DSH_VERSION`) — every npm release is a prerelease, and
-  while the pin is unstable Renovate only proposes newer prereleases of the same
-  `x.y.z` (or a stable release). Upstream starts a new `x.y.z` line every week
-  or two, so check `npm view @deepseek-ai/dsh dist-tags` and re-run the ACP
-  probe described above `ARG DSH_VERSION` in `devlaptop/Dockerfile` before
-  bumping. dsh is installed with npm `overrides` (`DSH_OVERRIDE_*`) because its
-  own sub-packages pin vulnerable `undici`, `fflate` and
-  `@modelcontextprotocol/client` versions exactly. On every bump, drop each
-  override the new version no longer needs. An override forces its version
-  even after dsh moves past it, so a stale one silently downgrades.
+- **code-server** (`CODE_SERVER_VERSION`). Tags are `v`-prefixed and the ARG is
+  bare, so `renovate.json` sets `extractVersion`. Each bump must also re-pin the
+  two `.deb` digests (`CODE_SERVER_SHA256_{AMD64,ARM64}`) or the build fails its
+  `sha256sum -c`. `scripts/renovate/code-server-sha.mjs` recomputes them from the
+  GitHub release API, and Renovate runs it as a `postUpgradeTask`, but only once
+  the self-hosted run allows the command: `allowedCommands` is global-only, so it
+  belongs in `.github/workflows/renovate.yml`'s env
+  (`RENOVATE_ALLOWED_COMMANDS: '["^node scripts/renovate/code-server-sha\\.mjs$"]'`),
+  not in `renovate.json`, which is also read as the repo config. Until that is
+  set, the PR's notes say to run the script by hand on the branch.
+- **Ante** (`ANTE_VERSION`) and **Firefox** (`FIREFOX_VERSION`). Neither has a
+  built-in datasource, so `renovate.json` defines `custom.ante` (the stable-channel
+  manifest `https://download.ante.run/channels/stable/manifest.json`, field
+  `version`) and `custom.firefox` (`https://product-details.mozilla.org/1.0/firefox_versions.json`,
+  `LATEST_FIREFOX_VERSION`). Both use `loose` versioning; Ante moved from the
+  `v0.preview.N` scheme to `v0.x.y`, which `loose` still orders correctly.
+- **DeepSeek Harness** (`DSH_VERSION`) and its overrides (`DSH_OVERRIDE_*`). They
+  share one Renovate group, "dsh and its dependency overrides", whose PR notes
+  carry the checklist below. Every npm release of dsh is a prerelease, and while
+  the pin is unstable Renovate only proposes newer prereleases of the same
+  `x.y.z` (or a stable release). Upstream starts a new `x.y.z` line every week or
+  two, so also check `npm view @deepseek-ai/dsh dist-tags` by hand. Before
+  bumping, re-run the ACP probe described above `ARG DSH_VERSION`. dsh is
+  installed with npm `overrides` because its own sub-packages pin vulnerable
+  `undici`, `fflate` and `@modelcontextprotocol/client` versions exactly; the
+  overrides take non-major updates only. On every dsh bump, drop each override
+  the new version no longer needs: an override forces its version even after dsh
+  moves past it, so a stale one silently downgrades.
+- **Node and npm majors are held on purpose.** The `node:20` stages are the
+  runtime every CLI uses and `node:22` is the separate Node only dsh runs on;
+  npm runs on that Node 20 (npm 12 needs Node >= 22.22). Renovate keeps their
+  digests and minor/patch releases current, but a major is a runtime change that
+  needs its own verification, so those PRs are disabled.
+- **apt-installed tools** (`gh`, `docker-ce-cli` with its buildx and compose
+  plugins) are not pinned. Each image build installs the newest packages from
+  their apt repositories, so they are current as of the last release build.
 
 ## Software Composition Analysis (SCA)
 
