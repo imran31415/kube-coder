@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=11.21.1
+ARG NPM_VERSION=11.21.2
 # Pin Yarn (classic) explicitly instead of installing floating `latest` — a
 # supply-chain hardening from the July 2026 review (finding 7). npm verifies the
 # package integrity/signature against the registry on install.
@@ -116,7 +116,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
-ARG COMPOSE_VERSION=v5.6.1
+ARG COMPOSE_VERSION=v5.7.0
 # Checksum-verified against the vendor-published .sha256 before it is made
 # executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
@@ -159,9 +159,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # the new values from
 #   curl -fsSL https://api.github.com/repos/coder/code-server/releases/tags/v<VER> \
 #     | jq -r '.assets[] | select(.name|endswith(".deb")) | "\(.name) \(.digest)"'
-ARG CODE_SERVER_VERSION=4.137.0
-ARG CODE_SERVER_SHA256_AMD64=f0165952d918092eb321a2d4e75a1e7035807d687b698ccda63aea2bfa1c58bc
-ARG CODE_SERVER_SHA256_ARM64=0d2b58387833f328bec3723f842bf68e59031fc24b1e03a9c6c1659765a420ef
+ARG CODE_SERVER_VERSION=4.145.0
+ARG CODE_SERVER_SHA256_AMD64=43fa1dc0e7929753bb3442e4ef40d4beb8bb5f8fe63601ede31b305536e6275b
+ARG CODE_SERVER_SHA256_ARM64=43813b81df484b49facf19d99faaa51683a2cdd8c652dc97ebddefa9cbe7fd6a
 RUN ARCH=$(dpkg --print-architecture) \
   && case "$ARCH" in \
        amd64) CS_SHA256="$CODE_SERVER_SHA256_AMD64" ;; \
