@@ -223,6 +223,29 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 #     acp` boots that bundle out of the dsh installation. Installing dsh-acp at
 #     top level would add a second, unused copy.
 #
+#  3. npm OVERRIDES, so NOT `npm install -g`. dsh's own sub-packages pin three
+#     dependencies EXACTLY at versions with open advisories (Trivy, 2026-11-07):
+#       undici 8.11.2                  (dsh-http-proxy, dsh-web-fetch-http)
+#                                      4 high + 4 medium, fixed in 8.12.2
+#       fflate 0.8.2                   (libreoffice-kit, every published
+#                                      version of it) 1 high, fixed in 0.8.3
+#       @modelcontextprotocol/client 2.2.0  (dsh-mcp-client) 1 medium, fixed
+#                                      in 2.3.0 (pulls core 2.3.x with it)
+#     No published dsh moves them: 0.2.2-rc.1 (`latest`/`next`) and
+#     0.2.2-alpha.3 still pin all three, and 0.2.2-rc.1 also needs Node >=24.9,
+#     so a bump would have moved this Node to 24 for zero fixed alerts.
+#     Overrides only apply at a project ROOT, never to `-g`, so /opt/dsh/lib is
+#     installed as a tiny private project whose only dependency is dsh. The
+#     `shallow` install strategy is exactly the global layout (dsh at top
+#     level, its whole tree nested under dsh/node_modules), so every path, the
+#     wrapper's included, is unchanged from the old `-g --prefix /opt/dsh`.
+#     A plain rebuild and this one differ in exactly those four packages
+#     (undici, fflate, MCP client + core); see VERSION PIN below for the
+#     ACP check. When bumping DSH_VERSION, re-read the new version's own pins
+#     (`npm view @deepseek-ai/dsh-http-proxy@<ver> dependencies` etc.) and
+#     DROP every override it no longer needs: an override forces its version
+#     even when dsh has moved past it, so a stale one is a silent downgrade.
+#
 # VERSION PIN — read before bumping. Every published version is a prerelease,
 # and a dist-tag is no guarantee of an ACP server: 0.1.1-rc.2 was once `latest`
 # and has no `acp` profile at all (0.1.2-rc.1 was the first that did). Pin an
@@ -242,6 +265,20 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 # DEEPSEEK_API_KEY only the deepseek-v4-flash default is offered; with a key
 # both runtimes.DSH_MODELS (v4-flash, v4-pro) are.
 #
+# The overrides in (3) were verified the same way on 2026-11-07: this exact
+# install (0.2.1-rc.5 + overrides, /opt/node22 v22.23.4, npm 11.21.2) against
+# the shipping 0.2.1-rc.5, both driven by the real acp_bridge.py with a
+# throwaway DSH_HOME. Identical on every method above (initialize result
+# byte-identical; same model/reasoning_effort options and set_config_option
+# results; real tool-using prompt `end_turn`; close; resume from a fresh
+# process with history kept; no-key `-32603`), plus the two paths the
+# overrides actually touch: an MCP `tools/call` through the curated memory
+# server (MCP client 2.3.1) and a `web_fetch` tool call (undici 8.12.4's own
+# Agent/fetch). Upgrade path: resuming a session that the shipping build
+# created in its ~/.dsh worked, with history kept and profiles byte-identical.
+# Not exercised: dsh-http-proxy's ProxyAgent, which only engages under a proxy
+# policy this workspace does not set.
+#
 # Renovate tracks the marker below, but while the current version is unstable
 # it only proposes newer prereleases of the SAME x.y.z (0.2.1-rc.N) or a stable
 # release. Upstream starts a new x.y.z prerelease line every week or two, so
@@ -249,6 +286,11 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 # `dsh --profile acp` answering an ACP `initialize` and opening a session.
 # renovate: datasource=npm depName=@deepseek-ai/dsh
 ARG DSH_VERSION=0.2.1-rc.5
+# Exact versions, see (3) above. Deliberately no `# renovate:` markers: each is
+# a stopgap that should disappear with a dsh bump, not a pin to keep current.
+ARG DSH_OVERRIDE_UNDICI=8.12.4
+ARG DSH_OVERRIDE_FFLATE=0.8.3
+ARG DSH_OVERRIDE_MCP_CLIENT=2.3.1
 COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
@@ -257,9 +299,12 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
     # reached it and Trivy saw TWO npm trees with two sets of CVEs. Pin it to
     # the same version as the main one so they cannot drift apart again.
     && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/node22 npm@${NPM_VERSION} \
-    && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/dsh \
-         @deepseek-ai/dsh@${DSH_VERSION} \
-    && rm -f /opt/dsh/bin/dsh \
+    && mkdir -p /opt/dsh/lib \
+    && printf '{"private":true,"dependencies":{"@deepseek-ai/dsh":"%s"},"overrides":{"undici":"%s","fflate":"%s","@modelcontextprotocol/client":"%s"}}\n' \
+         "${DSH_VERSION}" "${DSH_OVERRIDE_UNDICI}" "${DSH_OVERRIDE_FFLATE}" \
+         "${DSH_OVERRIDE_MCP_CLIENT}" > /opt/dsh/lib/package.json \
+    && PATH=/opt/node22/bin:$PATH retry npm install --prefix /opt/dsh/lib \
+         --install-strategy=shallow --no-package-lock --no-audit --no-fund \
     && printf '%s\n' '#!/bin/sh' \
          'exec /opt/node22/bin/node /opt/dsh/lib/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"' \
          > /usr/local/bin/dsh \

@@ -203,7 +203,11 @@ tracked but in practice bumped by hand:
   `x.y.z` (or a stable release). Upstream starts a new `x.y.z` line every week
   or two, so check `npm view @deepseek-ai/dsh dist-tags` and re-run the ACP
   probe described above `ARG DSH_VERSION` in `devlaptop/Dockerfile` before
-  bumping.
+  bumping. dsh is installed with npm `overrides` (`DSH_OVERRIDE_*`) because its
+  own sub-packages pin vulnerable `undici`, `fflate` and
+  `@modelcontextprotocol/client` versions exactly. On every bump, drop each
+  override the new version no longer needs. An override forces its version
+  even after dsh moves past it, so a stale one silently downgrades.
 
 ## Software Composition Analysis (SCA)
 
