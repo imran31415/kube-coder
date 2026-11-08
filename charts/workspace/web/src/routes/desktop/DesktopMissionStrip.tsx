@@ -6,7 +6,12 @@ import {
   startMissionPolling,
   stopMissionPolling,
 } from '../../store/mission';
-import type { MissionCard, MissionPromptOption, MissionState } from '../../api/mission';
+import {
+  needsYouCount,
+  type MissionCard,
+  type MissionPromptOption,
+  type MissionState,
+} from '../../api/mission';
 import { sendFollowup } from '../../store/tasks';
 import { navigate } from '../../store/router';
 import { Icon } from '../../components/Icon';
@@ -153,8 +158,8 @@ export function DesktopMissionStrip() {
           <span class={pulse.running > 0 ? 'dt-mc-pulse-live' : ''}>
             <b>{pulse.running}</b> running
           </span>
-          <span class={pulse.waiting > 0 ? 'dt-mc-pulse-warn' : ''}>
-            <b>{pulse.waiting}</b> waiting on you
+          <span class={needsYouCount(pulse) > 0 ? 'dt-mc-pulse-warn' : ''}>
+            <b>{needsYouCount(pulse)}</b> waiting on you
           </span>
           {pulse.review > 0 && (
             <span>

@@ -222,6 +222,24 @@
   word-break: break-word;
 }
 
+/* Turn ended with no question detected: neutral, not a call to action. */
+.tl-row-prompt-idle {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.tl-row-prompt-idle .tl-row-prompt-label {
+  color: var(--text-muted);
+}
+
+.tl-waiting-summary {
+  padding: 0 12px 6px;
+  font-size: var(--text-sm);
+}
+.tl-waiting-summary-needs {
+  color: var(--warning-text);
+  font-weight: var(--weight-semibold);
+}
+
 /* Stale variant of the prompt strip — red-tinted to match .tl-row-stale. */
 .tl-row-prompt-stale {
   background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));

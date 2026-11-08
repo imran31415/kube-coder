@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks';
 import type { MissionCard as Card, MissionPromptOption } from '../../api/mission';
+import { WAITING_REASON_LABEL } from '../../api/tasks';
 import { stopThread } from '../../api/hypervisor';
 import { killTask, sendFollowup } from '../../store/tasks';
 import { refreshMission } from '../../store/mission';
@@ -33,7 +34,8 @@ function timeLabel(card: Card): string {
   }
   if (card.state === 'waiting') {
     const since = card.waiting_since ?? card.updated_at;
-    return since ? `${rel(now - since)} waiting` : '';
+    if (!since) return '';
+    return `${rel(now - since)} ${card.waiting_reason === 'idle' ? 'idle' : 'waiting'}`;
   }
   const at = card.finished_at ?? card.updated_at;
   return at ? `${rel(now - at)} ago` : '';
@@ -102,6 +104,8 @@ export function MissionCard({
   const live = card.state === 'running' || card.state === 'waiting';
   const isTask = card.kind !== 'chat';
   const isCto = card.persona === 'cto';
+  const idle = card.waiting_reason === 'idle';
+  const needsYou = card.state === 'waiting' && !idle;
   const open = () => navigate(cardHref(card.id));
   const select = onSelect ? () => onSelect(card.id) : open;
 
@@ -144,7 +148,7 @@ export function MissionCard({
 
   return (
     <article
-      class={`mission-card mission-card-${card.state} ${card.state === 'waiting' ? 'mission-card-attn' : ''}`}
+      class={`mission-card mission-card-${card.state} ${needsYou ? 'mission-card-attn' : ''} ${idle ? 'mission-card-idle' : ''}`}
       onClick={select}
       data-card-id={card.id}
     >
@@ -159,7 +163,15 @@ export function MissionCard({
             {card.model}
           </span>
         )}
-        <span class={`mission-time ${card.state === 'waiting' ? 'mission-time-warn' : ''}`}>
+        {card.waiting_reason && (
+          <span
+            class={`mission-reason ${idle ? '' : 'mission-reason-needs'}`}
+            title={idle ? 'The turn ended and no question was detected.' : undefined}
+          >
+            {WAITING_REASON_LABEL[card.waiting_reason]}
+          </span>
+        )}
+        <span class={`mission-time ${needsYou ? 'mission-time-warn' : ''}`}>
           {timeLabel(card)}
         </span>
       </div>

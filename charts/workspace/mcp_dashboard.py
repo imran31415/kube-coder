@@ -882,13 +882,16 @@ TOOLS: Dict[str, Any] = {
     'list_tasks': _tool(
         'list_tasks',
         'List all build/agent tasks with status (running, completed, waiting, '
-        'killed). Call this when the user asks how many tasks are running or '
-        'what is going on in the workspace.',
+        'killed). A waiting-for-input task also carries waiting_reason: '
+        'question, trust_dialog or undelivered need a person; idle means no '
+        'question was detected, not that the task is done. Call this when the '
+        'user asks how many tasks are running or what is going on in the '
+        'workspace.',
         _t_list_tasks),
     'get_task': _tool(
         'get_task',
-        'Get details for one task by id (status, prompt, assistant, recent '
-        'output).', _t_get_task, properties=dict(_TASK_ID), required=['task_id']),
+        'Get details for one task by id (status, waiting_reason while '
+        'waiting-for-input, prompt, assistant, recent output).', _t_get_task, properties=dict(_TASK_ID), required=['task_id']),
     'get_task_output': _tool(
         'get_task_output',
         'Get the recent output/log of a task by id. Use to see what a task '

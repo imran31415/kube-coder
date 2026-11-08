@@ -796,7 +796,7 @@ Status reconciliation happens automatically: when any API call queries a task wh
 | Status | Meaning |
 |---|---|
 | `running` | The tmux session is alive and the pane is changing. |
-| `waiting-for-input` | Alive but quiescent — finished a turn, or sitting at a prompt. |
+| `waiting-for-input` | Alive but quiescent — finished a turn, or sitting at a prompt. `waiting_reason` says which, see [Why a task is waiting](#why-a-task-is-waiting). |
 | `completed` | The CLI exited. This is the only "the work is done" status. |
 | `error` | The CLI exited non-zero (sub-agent tasks, which record an exit code), **or** the prompt never reached the agent and the [undelivered-prompt reaper](#undelivered-prompts-prompt-reaper) gave up on it (`error` carries the reason, `prompt_undelivered_reaped_at` is set). |
 | `killed` | `DELETE /tasks/{id}` — somebody stopped it on purpose. |
@@ -813,6 +813,40 @@ The inference is conservative in one direction on purpose: when the boot is
 unknowable (an older task.json with no stamp, an unreadable `/tmp`), the status
 falls back to `completed`. A false `terminated` would make an orchestrator redo
 work that was actually finished.
+
+#### Why a task is waiting
+
+While `status` is `waiting-for-input`, list and detail responses and `task.json`
+carry `waiting_reason`. The field is absent in every other status. The status
+string itself never changes, so a client that ignores this field behaves as it
+always has.
+
+| `waiting_reason` | Meaning |
+|---|---|
+| `trust_dialog` | Parked on Claude Code's folder-trust dialog (`stalled_at_trust_dialog`). |
+| `undelivered` | The first prompt never reached the agent (`prompt_delivered: false`). |
+| `question` | A prompt the agent is blocked on was detected on screen (`parse_screen_prompt`). |
+| `idle` | None of the above: the turn ended and no question was detected. |
+
+Reasons apply in that order, first match wins. `question`, `trust_dialog` and
+`undelivered` need a person.
+
+**`idle` does not mean done.** Detection only recognises Claude Code's numbered
+menus and `(y/n)` markers, so an agent that asks something in plain prose, or
+any prompt another assistant draws differently, reads as `idle`. Treat it as "no
+question detected". An absent reason on a waiting task (not reconciled yet)
+should be treated as needing a person.
+
+The value is recorded when the task enters waiting and re-checked on each
+reconcile against the screen already captured for it, so a trust stall or
+delivery result recorded after entry updates it without a status change. That
+update publishes no `task.status` event; clients see it on their next fetch.
+Notifications are unaffected: every `waiting-for-input` entry still notifies,
+whatever the reason.
+
+`GET /api/missioncontrol/queue` carries the same value as `waiting_reason` on
+waiting Build and sub-agent cards, and `pulse.needs_you` is the subset of
+`pulse.waiting` whose reason is not `idle`.
 
 ### Undelivered prompts (prompt reaper)
 

@@ -173,6 +173,7 @@
 .mission-card:hover { border-color: var(--border-2); }
 /* Amber edge marks cards that need a human. */
 .mission-card-attn { border-left: 2px solid var(--warn); }
+.mission-card-idle { opacity: 0.8; }
 .mission-card-done { opacity: 0.85; }
 .mission-card-done .mission-card-title,
 .mission-card-done .mission-card-headline { color: var(--text-muted); }
@@ -216,6 +217,22 @@
   font-variant-numeric: tabular-nums;
 }
 .mission-time-warn { color: var(--warn); font-weight: var(--weight-semibold); }
+
+/* Why a waiting card is parked. Neutral unless it needs the human. */
+.mission-reason {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
+.mission-reason-needs { color: var(--warn); font-weight: var(--weight-semibold); }
+
+/* Divides needs-you cards from idle ones inside the waiting column. */
+.mission-col-sub {
+  padding: 4px 2px 0;
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
 
 .mission-card-title {
   font-size: var(--text-lg);

@@ -394,7 +394,7 @@ export default function TaskDetailScreen() {
         <View style={{ flex: splitApp ? splitRatio : 1 }}>
           <View style={styles.head}>
             <View style={styles.headTop}>
-              <StatusPill status={task.status} />
+              <StatusPill status={task.status} waitingReason={task.waiting_reason} />
               <View style={styles.headTopRight}>
                 <Text style={styles.time}>{relativeTime(task.created_at)}</Text>
                 <Text style={styles.id}>#{task.id}</Text>
