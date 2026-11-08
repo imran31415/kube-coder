@@ -3166,11 +3166,24 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
-    def _spawn_task(task_id, session_id, prompt, workdir, response_url,
-                    response_secret, source, disable_memory_injection, assistant,
-                    parent_task_id, system_preamble, auto_approve, project_id,
-                    model, effort, board_id, board_item_id, resume_session_id,
-                    worktree=None):
+    def _spawn_task(task_id, *args, **kwargs):
+        """Launch a Build with the reconciler held off until tmux has answered.
+
+        See `_launching`: the guard has to outlive every exit from the launch,
+        an exception included, or the task could never be settled.
+        """
+        ClaudeTaskManager._launching.add(task_id)
+        try:
+            return ClaudeTaskManager._launch_task(task_id, *args, **kwargs)
+        finally:
+            ClaudeTaskManager._launching.discard(task_id)
+
+    @staticmethod
+    def _launch_task(task_id, session_id, prompt, workdir, response_url,
+                     response_secret, source, disable_memory_injection, assistant,
+                     parent_task_id, system_preamble, auto_approve, project_id,
+                     model, effort, board_id, board_item_id, resume_session_id,
+                     worktree=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         os.makedirs(task_dir, mode=0o700)
 
@@ -3381,8 +3394,10 @@ class ClaudeTaskManager:
                       'post-launch trust-dialog watchdog (#800)',
                       file=sys.stderr)
                 meta['trust_seed_failed'] = True
-                with open(meta_path, 'w') as f:
-                    json.dump(meta, f, indent=2)
+                # Locked, not a rewrite of `meta`: that copy still says
+                # `running`, and a kill can already have landed.
+                ClaudeTaskManager._atomic_update_meta(
+                    task_dir, lambda m: m.__setitem__('trust_seed_failed', True))
 
         cli_cmd = ClaudeTaskManager.assistant_command(
             assistant, auto_approve=auto_approve, model=model, effort=effort,
@@ -3442,11 +3457,8 @@ class ClaudeTaskManager:
 
         result = subprocess.run(tmux_cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            meta['status'] = 'error'
-            meta['error'] = result.stderr.strip()
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
-            return meta
+            return ClaudeTaskManager._fail_launch(
+                task_dir, meta, result.stderr.strip())
 
         # Mirror the tmux pane output to a log file so it survives session/pod restarts.
         # `pipe-pane -o` toggles output piping; the appended `cat >> ...` keeps writing
@@ -3572,10 +3584,6 @@ class ClaudeTaskManager:
             'tmux_session': session_name,
         }
 
-        meta_path = os.path.join(task_dir, 'task.json')
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
-
         shell_cmd = f'cd {_shell_quote(workdir)} && exec bash -l'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
@@ -3583,13 +3591,17 @@ class ClaudeTaskManager:
             '-x', '220', '-y', '50',
             'bash', '-lc', shell_cmd,
         ]
-        result = subprocess.run(tmux_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            meta['status'] = 'error'
-            meta['error'] = result.stderr.strip()
+        ClaudeTaskManager._launching.add(task_id)
+        try:
+            meta_path = os.path.join(task_dir, 'task.json')
             with open(meta_path, 'w') as f:
                 json.dump(meta, f, indent=2)
-            return meta
+            result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+        finally:
+            ClaudeTaskManager._launching.discard(task_id)
+        if result.returncode != 0:
+            return ClaudeTaskManager._fail_launch(
+                task_dir, meta, result.stderr.strip())
 
         output_log = os.path.join(task_dir, 'output.log')
         subprocess.run(
@@ -3811,46 +3823,20 @@ class ClaudeTaskManager:
     def _fail_undelivered(task_id, task_dir, meta, attempts):
         """Mark an unrecoverable Build `error` and free its tmux slot."""
         failed_at = time.time()
-        fire_hook = False
         reason = (f'the initial prompt was never delivered to the agent after '
                   f'{attempts} re-delivery attempt(s)')
 
-        def mutate(m):
-            nonlocal fire_hook
-            # Re-check inside the lock: the Build may have recovered or been
-            # killed while the reaper was deciding.
-            if m.get('status') != 'waiting-for-input' or \
-                    m.get('prompt_delivered') is not False:
-                return False
-            m['status'] = 'error'
-            m['error'] = reason
-            m['finished_at'] = failed_at
-            m['prompt_undelivered_reaped_at'] = failed_at
-            m.pop('waiting_for_input', None)
-            m.pop('last_input_prompt', None)
-            if m.get('response_url') and not m.get('hook_fired_at'):
-                m['hook_fired_at'] = failed_at
-                fire_hook = True
+        def still_undelivered(m):
+            # The Build may have recovered while the reaper was deciding.
+            return (m.get('status') == 'waiting-for-input'
+                    and m.get('prompt_delivered') is False)
 
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-        if updated is None or updated.get('status') != 'error' or \
-                updated.get('prompt_undelivered_reaped_at') != failed_at:
+        _, moved = ClaudeTaskManager._transition(
+            task_dir, 'error', guard=still_undelivered, at=failed_at,
+            fields={'error': reason, 'prompt_undelivered_reaped_at': failed_at},
+            end_session=True)
+        if not moved:
             return False
-        # Status first, kill second: the reconciler skips a terminal task, so
-        # it cannot race the session's disappearance into `completed`.
-        subprocess.run(
-            ['tmux', 'kill-session', '-t',
-             meta.get('tmux_session') or f'kube-coder-{task_id}'],
-            capture_output=True, text=True,
-        )
-        if fire_hook:
-            ClaudeTaskManager._fire_completion_hook(updated)
-        EventBroker.publish('task.status', {
-            'task_id': task_id, 'status': 'error', 'finished_at': failed_at,
-        })
-        FeedManager.emit_task_terminal(updated, 'error')
-        if updated.get('worktree'):
-            WorktreeManager.snapshot_async(task_id)
         print(f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
               file=sys.stderr)
         return True
@@ -4058,6 +4044,10 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
+        # A finished Build takes no more input, even with a session still up.
+        if meta.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+            return None, 'Session is no longer running'
+
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
 
         # Check if tmux session is still alive
@@ -4095,47 +4085,44 @@ class ClaudeTaskManager:
         # don't drop each other's appends to followups[].
         sent_at = time.time()
 
-        def mutate(m):
-            m['status'] = 'running'
-            fps = m.get('followups', [])
-            fps.append({'prompt': prompt, 'sent_at': sent_at})
-            m['followups'] = fps
+        def record_followup(m):
+            # The Build ended while the text was being pasted, so nothing is
+            # left to read it. Refused rather than recorded: the caller must
+            # hear what a session already dead at the top of this call gets.
+            if m.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+                return False
+            m.setdefault('followups', []).append(
+                {'prompt': prompt, 'sent_at': sent_at})
 
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        updated, _ = ClaudeTaskManager._transition(
+            task_dir, 'running', record=record_followup)
+        if updated is not None and \
+                updated.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+            return None, 'Session is no longer running'
         return updated, None
+
+    @staticmethod
+    def _end_session(meta, task_id):
+        """Kill a Build's tmux session. A session that is already gone is fine."""
+        subprocess.run(
+            ['tmux', 'kill-session', '-t',
+             meta.get('tmux_session') or f'kube-coder-{task_id}'],
+            capture_output=True, text=True,
+        )
 
     @staticmethod
     def delete_task(task_id):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
-        meta_path = os.path.join(task_dir, 'task.json')
-        if not os.path.isfile(meta_path):
+        if not os.path.isfile(os.path.join(task_dir, 'task.json')):
             return None
 
-        with open(meta_path, 'r') as f:
-            meta = json.load(f)
-
-        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
-
-        # Kill the tmux session if alive
-        subprocess.run(
-            ['tmux', 'kill-session', '-t', session_name],
-            capture_output=True, text=True,
-        )
-
-        killed_at = time.time()
-        fire_hook = False
-
-        def mutate(m):
-            nonlocal fire_hook
-            m['status'] = 'killed'
-            m['killed_at'] = killed_at
-            if m.get('response_url') and not m.get('hook_fired_at'):
-                m['hook_fired_at'] = killed_at
-                fire_hook = True
-
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-        if updated is not None and fire_hook:
-            ClaudeTaskManager._fire_completion_hook(updated)
+        updated, moved = ClaudeTaskManager._transition(
+            task_dir, 'killed', end_session=True)
+        if updated is not None and not moved:
+            # Already finished: nothing about the record changes. The kill is
+            # still attempted, because status is written first and a crash
+            # between the two leaves a session only this retry can clean up.
+            ClaudeTaskManager._end_session(updated, task_id)
         return updated
 
     @staticmethod
@@ -4203,6 +4190,138 @@ class ClaudeTaskManager:
                 return meta
             finally:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
+
+    # ── Build lifecycle ──────────────────────────────────────────────────
+    # Every status change goes through `_transition`, so one table says what
+    # is legal and one place runs what a change implies. The values are wire
+    # format: the dashboard, the mobile app and hook receivers all match on
+    # them.
+
+    _TERMINAL_STATUSES = ('completed', 'error', 'killed', 'terminated')
+
+    #: status -> statuses it may become. A terminal status has no entry, and
+    #: neither does a same-status "move", so neither can ever transition.
+    _TRANSITIONS = {
+        'running': frozenset(('waiting-for-input',) + _TERMINAL_STATUSES),
+        'waiting-for-input': frozenset(('running',) + _TERMINAL_STATUSES),
+    }
+
+    #: Terminal statuses that record their moment under a name of their own,
+    #: alongside `finished_at`.
+    _STATUS_TIMESTAMPS = {'killed': 'killed_at', 'terminated': 'terminated_at'}
+
+    #: Task ids between their first task.json write and tmux answering. There
+    #: is no session to find yet, and without this the reconciler would call
+    #: that absence `completed` -- which no longer can be undone, so the Build
+    #: would stay `completed` while it ran and a failed launch could not record
+    #: its error. In-process on purpose: a restart ends every launch with it.
+    _launching = set()
+
+    @staticmethod
+    def _transition(task_dir, to, *, guard=None, record=None, fields=None,
+                    at=None, end_session=False):
+        """Move a Build to status `to`. Returns `(meta, moved)`.
+
+        `meta` is task.json as it now stands (None if the task is gone) and
+        `moved` says whether THIS call made the change, so concurrent callers
+        cannot both run the side effects.
+
+        Under the task lock: `record(m)` runs whether or not the status can
+        move, for fields that travel with this write (returning False abandons
+        the write entirely). The move then needs the table to allow it and
+        `guard(m)`, if given, to return truthy. `fields` are set only when it
+        happens. The completion hook is claimed here too, which is what makes
+        it at-most-once.
+
+        Outside the lock, only when moved: the session is ended if
+        `end_session` (after the write, so the reconciler can't mistake the
+        disappearance for a finish), then `_after_transition`.
+        """
+        cls = ClaudeTaskManager
+        at = time.time() if at is None else at
+        terminal = to in cls._TERMINAL_STATUSES
+        moved = fire_hook = False
+
+        def mutate(m):
+            nonlocal moved, fire_hook
+            if record is not None and record(m) is False:
+                return False
+            if to not in cls._TRANSITIONS.get(m.get('status'), ()) or \
+                    (guard is not None and not guard(m)):
+                return record is not None  # keep only what `record` wrote
+            m['status'] = to
+            m.update(fields or {})
+            if to == 'waiting-for-input':
+                m['waiting_for_input'] = True
+            else:
+                m.pop('waiting_for_input', None)
+                m.pop('last_input_prompt', None)
+            if terminal:
+                m['finished_at'] = at
+                if to in cls._STATUS_TIMESTAMPS:
+                    m[cls._STATUS_TIMESTAMPS[to]] = at
+                if m.get('response_url') and not m.get('hook_fired_at'):
+                    m['hook_fired_at'] = at
+                    fire_hook = True
+            moved = True
+
+        updated = cls._atomic_update_meta(task_dir, mutate)
+        if updated is None or not moved:
+            return updated, False
+        task_id = updated.get('task_id') or os.path.basename(task_dir)
+        if end_session:
+            try:
+                cls._end_session(updated, task_id)
+            except Exception as e:
+                print(f'[task-lifecycle] {task_id}: kill failed: {e}',
+                      file=sys.stderr)
+        cls._after_transition(updated, task_dir, task_id, to, fire_hook,
+                              session_was_gone=not end_session)
+        return updated, True
+
+    @staticmethod
+    def _after_transition(meta, task_dir, task_id, to, fire_hook,
+                          session_was_gone):
+        """The consequences of one status change. Each is independent: the
+        status is already on disk, so a failure here must not cost the rest."""
+        cls = ClaudeTaskManager
+        terminal = to in cls._TERMINAL_STATUSES
+        event = {'task_id': task_id, 'status': to}
+        if terminal:
+            event['finished_at'] = meta.get('finished_at')
+
+        effects = []
+        # Settle spend only once the CLI has really gone. Straight after a kill
+        # it may still be flushing, and this scan is marked final; the next
+        # read of the task does it instead.
+        if terminal and session_was_gone:
+            effects.append(lambda: cls.ingest_usage(meta, task_dir))
+        if fire_hook:
+            effects.append(lambda: cls._fire_completion_hook(meta))
+        effects.append(lambda: EventBroker.publish('task.status', event))
+        if terminal:
+            effects.append(lambda: FeedManager.emit_task_terminal(meta, to))
+        elif to == 'waiting-for-input':
+            effects.append(lambda: FeedManager.emit_task_waiting(meta))
+        # What the Build changed, recorded when it stops or parks (#701), so a
+        # list or a review card can show it without running git.
+        if (terminal or to == 'waiting-for-input') and meta.get('worktree'):
+            effects.append(lambda: WorktreeManager.snapshot_async(task_id))
+        for effect in effects:
+            try:
+                effect()
+            except Exception as e:
+                print(f'[task-lifecycle] {task_id}: side effect of {to} '
+                      f'failed: {type(e).__name__}: {e}', file=sys.stderr)
+
+    @staticmethod
+    def _fail_launch(task_dir, meta, error):
+        """tmux refused the session. Returns the task as it now stands."""
+        updated, _ = ClaudeTaskManager._transition(
+            task_dir, 'error', fields={'error': error})
+        if updated is None:   # the task dir went away under the launch
+            return {**meta, 'status': 'error', 'error': error}
+        return updated
 
     @staticmethod
     def _api_key_to_reject():
@@ -5525,6 +5644,8 @@ class ClaudeTaskManager:
         # If task is already finished, no need to check further
         if current_status not in ('running', 'waiting-for-input'):
             return
+        if meta.get('task_id') in ClaudeTaskManager._launching:
+            return
 
         session_name = meta.get('tmux_session', '')
         if not session_name:
@@ -5544,64 +5665,18 @@ class ClaudeTaskManager:
         # behaviour — a false `terminated` would have an orchestrator redo work
         # that had actually been done.
         if check.returncode != 0:
-            finished_at = time.time()
-            fire_hook = False
             boot = ClaudeTaskManager.boot_id()
             task_boot = meta.get('boot_id') or ''
             wiped = bool(boot) and bool(task_boot) and task_boot != boot
-            new_status = 'terminated' if wiped else 'completed'
-
-            def mutate(m):
-                nonlocal fire_hook
-                # Re-check inside the lock; another reconcile may have run already.
-                if m.get('status') not in ('running', 'waiting-for-input'):
-                    return False
-                m['status'] = new_status
-                m['finished_at'] = finished_at
-                if wiped:
-                    # Why it ended, for an orchestrator deciding whether to
-                    # recover. Separate from `finished_at` because a terminated
-                    # task did not finish — this is when we NOTICED, which is
-                    # boot time, not the moment the work stopped.
-                    m['terminated_at'] = finished_at
-                    m['termination_reason'] = 'pod_restart'
-                # Clear waiting state fields
-                m.pop('waiting_for_input', None)
-                m.pop('last_input_prompt', None)
-                # Decide-and-mark-fired atomically. If we mark hook_fired_at here, a
-                # concurrent reconciler reading the same task.json will see it and
-                # skip firing — so we get at-most-once delivery without needing a
-                # second lock acquire.
-                if m.get('response_url') and not m.get('hook_fired_at'):
-                    m['hook_fired_at'] = finished_at
-                    fire_hook = True
-
-            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-            if updated is not None:
-                meta['status'] = updated.get('status', meta.get('status'))
-                meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
-                if wiped:
-                    meta['terminated_at'] = updated.get('terminated_at')
-                    meta['termination_reason'] = updated.get('termination_reason')
-                meta.pop('waiting_for_input', None)
-                meta.pop('last_input_prompt', None)
-                # The CLI is gone: settle the token figure now (#574) rather than
-                # waiting for the next poll. Separate locked write, so it can't
-                # disturb the status transition above.
-                ClaudeTaskManager.ingest_usage(meta, task_dir)
-                if fire_hook:
-                    ClaudeTaskManager._fire_completion_hook(updated)
-                EventBroker.publish('task.status', {
-                    'task_id': meta.get('task_id'),
-                    'status': meta.get('status') or new_status,
-                    'finished_at': meta.get('finished_at'),
-                })
-                # Feed (#469): one coalesced activity item per task terminal.
-                FeedManager.emit_task_terminal(meta, meta.get('status') or 'completed')
-                # What the Build changed, recorded once it stops (#701), so a
-                # list or a review card can show it without running git.
-                if meta.get('worktree'):
-                    WorktreeManager.snapshot_async(meta.get('task_id'))
+            # `termination_reason` is why it ended, for an orchestrator
+            # deciding whether to recover. Its `terminated_at` is separate from
+            # `finished_at` in meaning because a terminated task did not finish
+            # -- this is when we NOTICED, which is boot time, not the moment
+            # the work stopped.
+            updated, _ = ClaudeTaskManager._transition(
+                task_dir, 'terminated' if wiped else 'completed',
+                fields={'termination_reason': 'pod_restart'} if wiped else None)
+            ClaudeTaskManager._adopt_meta(meta, updated)
             return
         
         # Session is alive. Adopt it into this boot if it predates us (#792):
@@ -5641,48 +5716,30 @@ class ClaudeTaskManager:
         if digest != meta.get('pane_hash'):
             # Screen changed → activity. Record it, reset the idle clock, and
             # if we had flagged waiting, return to running.
-            def mutate(m):
+            def note_activity(m):
                 m['pane_hash'] = digest
                 m['last_activity_at'] = now
-                if m.get('status') == 'waiting-for-input':
-                    m['status'] = 'running'
-                    m.pop('waiting_for_input', None)
-                    m.pop('last_input_prompt', None)
 
-            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-            if updated is not None:
-                meta['pane_hash'] = digest
-                meta['last_activity_at'] = now
-                if meta.get('status') == 'waiting-for-input':
-                    meta['status'] = 'running'
-                    meta.pop('waiting_for_input', None)
-                    meta.pop('last_input_prompt', None)
-                    EventBroker.publish('task.status', {
-                        'task_id': meta.get('task_id'), 'status': 'running',
-                    })
+            updated, _ = ClaudeTaskManager._transition(
+                task_dir, 'running', record=note_activity)
+            ClaudeTaskManager._adopt_meta(meta, updated)
             return
 
         # Screen unchanged since the previous capture.
         if current_status == 'running':
             stable_since = meta.get('last_activity_at') or now
             if now - stable_since >= IDLE_WAITING_SECONDS:
-                def mutate(m):
-                    if m.get('status') == 'running':  # re-check inside lock
-                        m['status'] = 'waiting-for-input'
-                        m['waiting_for_input'] = True
+                updated, _ = ClaudeTaskManager._transition(
+                    task_dir, 'waiting-for-input')
+                ClaudeTaskManager._adopt_meta(meta, updated)
 
-                updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-                if updated is not None:
-                    meta['status'] = 'waiting-for-input'
-                    meta['waiting_for_input'] = True
-                    EventBroker.publish('task.status', {
-                        'task_id': meta.get('task_id'), 'status': 'waiting-for-input',
-                    })
-                    # Feed (#469): flag it "waiting on you" (coalesced per task).
-                    FeedManager.emit_task_waiting(meta)
-                    # A Board item's Build parks here when it is done (#701).
-                    if meta.get('worktree'):
-                        WorktreeManager.snapshot_async(meta.get('task_id'))
+    @staticmethod
+    def _adopt_meta(meta, fresh):
+        """Make a caller's in-memory task match what is on disk, including
+        when another writer got there first."""
+        if fresh is not None:
+            meta.clear()
+            meta.update(fresh)
 
 
 class WorktreeManager:
