@@ -71,6 +71,17 @@ describe('coerceTaskDetail', () => {
 });
 
 describe('coerceTaskSummary', () => {
+  it('keeps a known waiting_reason', () => {
+    for (const reason of ['question', 'trust_dialog', 'undelivered', 'idle']) {
+      expect(coerceTaskSummary({ task_id: 't', waiting_reason: reason }).waiting_reason).toBe(reason);
+    }
+  });
+
+  it('drops an absent or unknown waiting_reason, which then reads as needing you', () => {
+    expect('waiting_reason' in coerceTaskSummary({ task_id: 't' })).toBe(false);
+    expect(coerceTaskSummary({ task_id: 't', waiting_reason: 'nap' }).waiting_reason).toBeUndefined();
+  });
+
   it('coerces wrong types to safe defaults', () => {
     const s = coerceTaskSummary({ task_id: 42, status: 'oops', memory_injected: 'no' });
     expect(s.task_id).toBe('');
