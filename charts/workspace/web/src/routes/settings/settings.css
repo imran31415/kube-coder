@@ -81,6 +81,7 @@
   margin: 0 auto var(--size-5);
 }
 .settings-section-title { font-size: var(--text-lg); font-weight: var(--weight-semibold); margin-bottom: var(--size-2); }
+.settings-subsection-title { font-size: var(--text-md); font-weight: var(--weight-semibold); margin: var(--size-4) 0 var(--size-2); }
 
 .settings-row {
   display: grid;

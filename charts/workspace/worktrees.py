@@ -146,6 +146,13 @@ def git_add_timeout():
     return _int_env('KC_GIT_ADD_TIMEOUT', 180, lo=1)
 
 
+def git_remove_timeout():
+    """Seconds for deleting a worktree. Its own limit because most of a
+    worktree is `node_modules` (40,000+ files here), and cutting a delete off
+    halfway is what leaves a folder nothing can list or remove (#853)."""
+    return _int_env('KC_GIT_REMOVE_TIMEOUT', 600, lo=1)
+
+
 def lock_timeout():
     return _int_env('KC_WT_LOCK_TIMEOUT', 60, lo=1)
 
@@ -778,6 +785,13 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
         registered = {e['path']: e for e in _worktree_list(root)}
         real_path = _real(path)
 
+        interrupted = read_manifest(path) if os.path.exists(path) else None
+        if interrupted is not None and interrupted.get('removing_at'):
+            # Half-deleted (#853), so it cannot be reused. Finish the job; the
+            # branch survives and the code below re-adds it, commits intact.
+            _finish_removal(root, real_path, interrupted)
+            registered = {e['path']: e for e in _worktree_list(root)}
+
         if os.path.exists(path):
             manifest = read_manifest(path)
             if real_path in registered and manifest is not None:
@@ -817,7 +831,8 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
                 raise WorktreeError(
                     'path_conflict',
                     f'{path} already exists and is not a worktree this '
-                    f'workspace manages; move it aside first', path=real_path)
+                    f'workspace manages; remove it under Leftover folders in '
+                    f'Settings → Worktrees, or move it aside', path=real_path)
 
         if max_worktrees:
             rows = list_all(wt_root)
@@ -1089,18 +1104,183 @@ def diff(path, *, base_sha, file, max_bytes=512 * 1024):
 
 # ── remove ────────────────────────────────────────────────────────────────
 
+def _delete_tree(real):
+    """Delete `real`, bounded by the removal timeout. True once it is gone.
+
+    `rm`, not `shutil.rmtree`, because rmtree cannot be given a time limit and
+    this runs under the worktree lock. The chmod pass is for trees rm cannot
+    enter on its own: the Go module cache is written read-only."""
+    limit = git_remove_timeout()
+    for argv in (['rm', '-rf', '--', real],
+                 ['chmod', '-R', 'u+rwX', '--', real],
+                 ['rm', '-rf', '--', real]):
+        if not os.path.lexists(real):
+            return True
+        try:
+            _RUN(argv, capture_output=True, timeout=limit)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return not os.path.lexists(real)
+
+
+def _finish_removal(root, real, manifest):
+    """Complete a removal that was cut off partway. `removing_at` is written
+    only after every check passed, and a half-deleted tree reports nothing but
+    deletions, so there is nothing left here to re-check."""
+    if not _delete_tree(real):
+        _mark_removing(real, manifest)
+        raise WorktreeError('remove_incomplete',
+                            f'could not finish deleting {real}; cleanup will '
+                            f'try again', path=real)
+    if root:
+        _git(['worktree', 'prune'], root, check=False)
+    _forget_status(real)
+    return {'removed': True, 'already': False, 'path': real,
+            'branch': manifest.get('branch') or '', 'branch_kept': True,
+            'resumed': True}
+
+
+def _restore_own_files(real, saved):
+    for name, data in saved.items():
+        try:
+            with open(os.path.join(real, name), 'wb') as f:
+                f.write(data)
+        except OSError:
+            pass
+
+
+def _mark_removing(real, manifest):
+    """Put the manifest back on a half-deleted worktree and say so — without
+    it nothing in this workspace can see the folder again (#853)."""
+    if not os.path.isdir(real):
+        return
+    try:
+        _write_json(os.path.join(real, MANIFEST),
+                    dict(manifest, removing_at=time.time()))
+    except OSError:
+        pass
+
+
+def _is_leftover_slot(wt_root, real):
+    """Whether `real` sits exactly where a worktree would: `<root>/<key>/<name>`.
+    Keeps a forced removal off the key directory and anything inside a tree."""
+    parts = os.path.relpath(real, _real(wt_root)).split(os.sep)
+    return (len(parts) == 2 and not any(p.startswith('.') for p in parts)
+            and os.path.isdir(real))
+
+
+def _remove_leftover_locked(wt_root, real, *, force, occupied_by=None):
+    """Delete a folder with no manifest. Only ever by an explicit `force`:
+    nothing records what such a folder holds, so no check can vouch for it."""
+    if not force or not _is_leftover_slot(wt_root, real):
+        raise WorktreeError('not_worktree', f'{real} is not a managed worktree')
+    tenant = occupied_by(real) if occupied_by is not None else ''
+    if tenant:
+        raise WorktreeError('live', f'task {tenant} is working in this folder; '
+                                    f'stop it first', owner_task_id=tenant)
+    if not _delete_tree(real):
+        raise WorktreeError('remove_incomplete',
+                            f'could not finish deleting {real}', path=real)
+    root = ''
+    try:
+        with open(os.path.join(os.path.dirname(real), REPO_MARKER),
+                  encoding='utf-8') as f:
+            root = f.read().strip()
+    except OSError:
+        pass
+    if root and os.path.isdir(root):
+        _git(['worktree', 'prune'], root, check=False)
+    _forget_status(real)
+    return {'removed': True, 'already': False, 'path': real, 'branch': '',
+            'branch_kept': True, 'leftover': True}
+
+
+def list_leftovers(wt_root=None, *, min_age_s=0, now=None):
+    """Folders in worktree slots with no readable manifest: a removal killed
+    partway, or one made by hand (#853). `list_all` cannot see them, so they
+    hold disk space that no count, cleanup pass or Remove button knows about.
+
+    `min_age_s` hides a worktree still being created: `ensure` writes the
+    manifest only after `git worktree add` returns. Pure file reads."""
+    wt_root = wt_root or default_root()
+    now = time.time() if now is None else now
+    out = []
+    try:
+        keys = sorted(os.listdir(wt_root))
+    except OSError:
+        return out
+    for key in keys:
+        d = os.path.join(wt_root, key)
+        if key.startswith('.') or os.path.islink(d) or not os.path.isdir(d):
+            continue
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for name in names:
+            p = os.path.join(d, name)
+            if (name.startswith('.') or os.path.islink(p)
+                    or not os.path.isdir(p) or read_manifest(p) is not None):
+                continue
+            try:
+                mtime = os.stat(p).st_mtime
+            except OSError:
+                continue
+            if now - mtime < min_age_s:
+                continue
+            out.append({'repo_key': key, 'slug': name, 'path': _real(p),
+                        'has_git': os.path.exists(os.path.join(p, '.git')),
+                        'modified_at': mtime})
+    return out
+
+
+def _count_unpushed(root, rev, *, unknown):
+    """Commits reachable from `rev` that no remote-tracking ref contains, or
+    `unknown` when git cannot say."""
+    proc = _git(['rev-list', '--count', rev, '--not', '--remotes'], root,
+                check=False)
+    if proc.returncode != 0:
+        return unknown
+    try:
+        return int((proc.stdout or '').strip())
+    except ValueError:
+        return unknown
+
+
 def unique_unpushed(root, branch):
     """Commits on `branch` that no remote-tracking ref contains. A repository
     with no remotes counts every commit — conservative on purpose: the sweep
     must never mistake "nowhere to push" for "already pushed"."""
-    proc = _git(['rev-list', '--count', f'refs/heads/{branch}', '--not',
-                 '--remotes'], root, check=False)
-    if proc.returncode != 0:
-        return 0
-    try:
-        return int((proc.stdout or '0').strip() or 0)
-    except ValueError:
-        return 0
+    return _count_unpushed(root, f'refs/heads/{branch}', unknown=0)
+
+
+def head_unpushed(root, head_sha):
+    """Commits reachable from what a worktree has CHECKED OUT that no remote
+    has. The recorded branch is not enough: a commit on a detached HEAD is on
+    no ref at all, so removing the worktree would orphan it (#853). Fails
+    closed — an answer we could not get must not read as "already pushed"."""
+    return _count_unpushed(root, head_sha, unknown=1) if head_sha else 1
+
+
+# Ignored files that exist nowhere else and cannot be regenerated. Matched on
+# the file's own name; the `.example`-style variants hold no secrets.
+_ENV_STYLE_NAME = re.compile(
+    r'^(?:\.env(?!\.(?:example|sample|template|dist|defaults)$)(?:\..+)?'
+    r'|\.envrc|\.netrc|\.npmrc|\.pypirc'
+    r'|.+\.(?:pem|key|p12|pfx)'
+    r'|credentials(?:\.json)?|secrets?\.(?:json|ya?ml|toml))$', re.I)
+
+
+def env_style_ignored(path):
+    """Ignored files in worktree `path` that look like hand-placed secrets.
+    Git cannot rebuild these from the branch, unlike `node_modules`, so the
+    sweep must not delete them (#853). A directory entry is skipped: a Python
+    virtualenv is commonly called `.env`."""
+    raw = _git(['status', '--porcelain=v1', '-z', '--ignored=matching',
+                '--untracked-files=normal', '--no-renames'], path).stdout or ''
+    return [rec[3:] for rec in raw.split('\0')
+            if rec[:2] == '!!' and not rec.endswith('/')
+            and _ENV_STYLE_NAME.match(os.path.basename(rec[3:]))]
 
 
 #: tmux session prefixes a task runs under: Builds as `kube-coder-<id>`,
@@ -1190,7 +1370,10 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner='',
     if manifest is None:
         if not os.path.exists(real):
             return {'removed': False, 'already': True, 'path': real}
-        raise WorktreeError('not_worktree', f'{path} is not a managed worktree')
+        return _remove_leftover_locked(wt_root, real, force=force,
+                                       occupied_by=occupied_by)
+    # Ahead of the `removing_at` resume below: a reservation outranks finishing
+    # a delete, and `force` does not override it.
     if manifest.get('publication'):
         raise WorktreeError('busy', 'This worktree is reserved by a publishing operation.')
     owner = manifest.get('task_id') or ''
@@ -1209,6 +1392,8 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner='',
     branch = manifest.get('branch') or ''
     repo_ok = bool(root) and os.path.isdir(root) and _git(
         ['rev-parse', '--git-dir'], root, check=False).returncode == 0
+    if manifest.get('removing_at'):
+        return _finish_removal(root if repo_ok else '', real, manifest)
     if not repo_ok:
         if not force:
             raise WorktreeError('repo_missing',
@@ -1242,18 +1427,29 @@ def _remove_locked(wt_root, path, *, force, is_owner_live=None, allow_owner='',
         except OSError:
             pass
     args = ['worktree', 'remove'] + (['--force'] if force else []) + [real]
-    proc = _git(args, root, check=False)
-    if proc.returncode != 0 and not force and 'submodule' in (proc.stderr or '').lower():
-        # git refuses a worktree with initialised submodules without --force
-        # even when it is clean; our own check above already said it is.
-        proc = _git(['worktree', 'remove', '--force', real], root, check=False)
+    limit = git_remove_timeout()
+    try:
+        proc = _git(args, root, check=False, timeout=limit)
+        if proc.returncode != 0 and not force and 'submodule' in (proc.stderr or '').lower():
+            # git refuses a worktree with initialised submodules without --force
+            # even when it is clean; our own check above already said it is.
+            proc = _git(['worktree', 'remove', '--force', real], root,
+                        check=False, timeout=limit)
+    except WorktreeError:
+        # The delete was killed partway. Without this the folder has no
+        # manifest and drops out of every list (#853).
+        if os.path.isdir(real):
+            _restore_own_files(real, saved)
+            _mark_removing(real, manifest)
+        raise
     if proc.returncode != 0:
-        for name, data in saved.items():
-            try:
-                with open(os.path.join(real, name), 'wb') as f:
-                    f.write(data)
-            except OSError:
-                pass
+        if os.path.isdir(real):
+            _restore_own_files(real, saved)
+            # Git's refusals happen before it deletes anything; this one means
+            # it got partway, so a later pass has to finish rather than judge
+            # a tree that now reports every missing file as a change.
+            if 'failed to delete' in (proc.stderr or ''):
+                _mark_removing(real, manifest)
         raise WorktreeError('git_failed',
                             f'git worktree remove failed: '
                             f'{(proc.stderr or "").strip()[:400]}')
@@ -1325,6 +1521,19 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
         if occupied_by is not None and occupied_by(m['path']):
             keep(m, 'live')
             continue
+        if m.get('removing_at'):
+            if not dry_run:
+                try:
+                    _remove_locked(wt_root, m['path'], force=False,
+                                   is_owner_live=is_owner_live,
+                                   occupied_by=occupied_by)
+                except WorktreeError as e:
+                    keep(m, e.code)
+                    continue
+            removed.append(dict(_owners(m), path=m['path'], slug=m.get('slug'),
+                                repo_key=m.get('repo_key'), reason='resumed',
+                                branch_deleted=False))
+            continue
         finished = m.get('created_at') or 0
         if owner:
             meta = owner_meta(owner)
@@ -1346,6 +1555,13 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
             continue
         if st['dirty'] or st['untracked']:
             keep(m, 'dirty')
+            continue
+        try:
+            if env_style_ignored(m['path']):
+                keep(m, 'ignored_secrets')
+                continue
+        except WorktreeError:
+            keep(m, 'error')
             continue
         branch = m.get('branch') or ''
         base = m.get('base_sha') or ''
@@ -1380,7 +1596,8 @@ def _sweep_locked(wt_root, *, is_owner_live, owner_meta, now, gc_days, grace_s,
         if not old:
             keep(m, 'recent')
             continue
-        if unique_unpushed(root, branch) > 0:
+        if (unique_unpushed(root, branch) > 0
+                or head_unpushed(root, st['head_sha']) > 0):
             keep(m, 'unpushed')
             continue
         if not dry_run:
@@ -1403,13 +1620,15 @@ def sweep(*, wt_root=None, is_owner_live, owner_meta, now=None, gc_days=7,
           grace_s=600, dry_run=False, pristine_only=False,
           delete_pristine_branches=True, occupied_by=None, timeout=None):
     """Remove worktrees nobody needs. Never removes one that is live, recent,
-    dirty, or holds a commit no remote has.
+    dirty, holds `.env`-style ignored files, or has a commit no remote has on
+    its branch or on whatever is checked out.
 
     - **pristine** (clean, HEAD and branch still at the base): nothing to
       lose, so it goes as soon as its owner has finished — branch too, if we
       created it (compare-and-swap, so a branch that moved is kept);
     - **pushed** (clean, every commit on some remote, owner finished more than
       `gc_days` ago): the directory goes, the branch stays;
+    - **resumed** (a removal that was cut off, see `_mark_removing`): finished;
     - everything else is kept, with a reason Settings can show.
 
     Worktrees with no owner (made by hand with the shell skill) are only

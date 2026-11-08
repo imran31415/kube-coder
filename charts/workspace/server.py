@@ -6355,7 +6355,8 @@ class WorktreeManager:
         """Every worktree on the PVC, with its owner's state. File reads and
         one tmux call — no git — because Settings polls this."""
         if not cls.available():
-            return {'worktrees': [], 'count': 0, 'max': cls.max_worktrees(),
+            return {'worktrees': [], 'leftovers': [], 'count': 0,
+                    'max': cls.max_worktrees(),
                     'root': cls.root(), 'available': False,
                     'sweep': WorktreeSweeper.status()}
         sessions = cls.live_sessions()
@@ -6389,7 +6390,12 @@ class WorktreeManager:
                 'created_at': m.get('created_at'), 'stat': stat,
                 'keep_reason': reasons.get(m['path'], ''),
             })
-        return {'worktrees': rows, 'count': len(rows),
+        leftovers = [{
+            'repo': o['repo_key'], 'slug': o['slug'], 'path': o['path'],
+            'has_git': o['has_git'], 'modified_at': o['modified_at'],
+            'live': bool(occupied_by(o['path'])),
+        } for o in worktrees.list_leftovers(cls.root(), min_age_s=cls.grace_s())]
+        return {'worktrees': rows, 'leftovers': leftovers, 'count': len(rows),
                 'max': cls.max_worktrees(), 'root': cls.root(),
                 'available': True, 'sweep': WorktreeSweeper.status()}
 

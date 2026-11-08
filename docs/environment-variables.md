@@ -119,6 +119,7 @@ otherwise, boot does no LibreFang setup, and no assistant picker lists it.
 | `KC_WORKTREE_SWEEP_KEEP_BRANCHES` | off | `1` keeps even the empty `kc/*` branch of a worktree that changed nothing. |
 | `KC_WT_PORT_LO` / `KC_WT_PORT_HI` | `3100` / `3999` | The range a worktree's `$PORT` is leased from (the workspace's own ports are always skipped). |
 | `KC_GIT_TIMEOUT` / `KC_GIT_ADD_TIMEOUT` | `15` / `180` | Seconds allowed for one git command, and for `git worktree add` on a large repository. |
+| `KC_GIT_REMOVE_TIMEOUT` | `600` | Seconds allowed for deleting one worktree. Other worktree operations wait for it, for up to `KC_WT_LOCK_TIMEOUT`. |
 | `KC_WT_LOCK_TIMEOUT` | `60` | Seconds to wait for another worktree operation to finish before answering 503. |
 | `KC_WT`, `KC_WT_BRANCH`, `PORT`, `KC_PORT` | — | **Automatically set** inside an isolated Build: its worktree folder, branch and leased port. |
 
