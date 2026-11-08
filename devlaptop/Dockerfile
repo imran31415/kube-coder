@@ -150,7 +150,6 @@ RUN ARCH=$(dpkg --print-architecture) \
 # 7.5.16 (MEDIUM) + ws. Note: the deps bundled under lib/vscode/ (undici, ws,
 # tar) track the upstream VS Code build code-server vendors and only move when
 # code-server rebases onto a newer VS Code — so bumping code-server is the lever.
-# renovate: datasource=github-releases depName=coder/code-server
 # SUPPLY-CHAIN (finding 7, resolved): the release ships no SHA256SUMS/.sha256
 # asset, but GitHub's release API exposes a per-asset sha256 `digest` for each
 # .deb. We pin that digest per arch below and `sha256sum -c` the download before
@@ -159,6 +158,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # the new values from
 #   curl -fsSL https://api.github.com/repos/coder/code-server/releases/tags/v<VER> \
 #     | jq -r '.assets[] | select(.name|endswith(".deb")) | "\(.name) \(.digest)"'
+# Renovate bumps the version, and its postUpgradeTask
+# (scripts/renovate/code-server-sha.mjs) re-pins both digests from the same API.
+# renovate: datasource=github-releases depName=coder/code-server
 ARG CODE_SERVER_VERSION=4.145.0
 ARG CODE_SERVER_SHA256_AMD64=43fa1dc0e7929753bb3442e4ef40d4beb8bb5f8fe63601ede31b305536e6275b
 ARG CODE_SERVER_SHA256_ARM64=43813b81df484b49facf19d99faaa51683a2cdd8c652dc97ebddefa9cbe7fd6a
@@ -286,10 +288,15 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 # `dsh --profile acp` answering an ACP `initialize` and opening a session.
 # renovate: datasource=npm depName=@deepseek-ai/dsh
 ARG DSH_VERSION=0.2.1-rc.5
-# Exact versions, see (3) above. Deliberately no `# renovate:` markers: each is
-# a stopgap that should disappear with a dsh bump, not a pin to keep current.
+# Exact versions, see (3) above. Each is a stopgap that should disappear with a
+# dsh bump. Renovate tracks them (non-major only) in the same group as dsh, so a
+# newer fix is still proposed, and its PR notes say to drop any override the new
+# dsh no longer needs and to repeat the ACP check.
+# renovate: datasource=npm depName=undici
 ARG DSH_OVERRIDE_UNDICI=8.12.4
+# renovate: datasource=npm depName=fflate
 ARG DSH_OVERRIDE_FFLATE=0.8.3
+# renovate: datasource=npm depName=@modelcontextprotocol/client
 ARG DSH_OVERRIDE_MCP_CLIENT=2.3.1
 COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
@@ -342,10 +349,9 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # (the pod blocks runtime sudo, so we can't repoint /usr/local/bin at runtime),
 # while the image stays the source of truth: bump ANTE_VERSION + rebuild to
 # update. Pinned to a concrete release manifest (the `stable` channel floats)
-# for reproducible builds. Ante ships no GitHub releases / OCI tag, so Renovate
-# can't auto-track it — this is a documented manual-bump exception (see
-# docs/SUPPLY_CHAIN.md); check https://download.ante.run/channels/stable/manifest.json
-# for the current version.
+# for reproducible builds. Ante ships no GitHub releases / OCI tag, so
+# renovate.json defines `custom.ante` over its stable-channel manifest
+# (https://download.ante.run/channels/stable/manifest.json, field `version`).
 # https://docs.antigma.ai
 # SUPPLY-CHAIN (finding 7, resolved): the previous `curl … install.sh | bash`
 # piped the vendor installer into a root shell. Ante's pinned release manifest
@@ -354,6 +360,7 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # tarball, `sha256sum -c` it (fail-closed on mismatch), then extract the `ante`
 # binary. Nothing is executed before it is verified. The manifest keys linux
 # builds as linux-x86_64 / linux-arm64.
+# renovate: datasource=custom.ante depName=ante versioning=loose
 ARG ANTE_VERSION=v0.preview.60
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
@@ -538,9 +545,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Firefox pinned to an explicit release (the `firefox-latest` redirect floats).
-# Renovate does not have a Mozilla datasource, so this is a documented
-# manual-bump exception (see docs/SUPPLY_CHAIN.md): current version at
-# https://product-details.mozilla.org/1.0/firefox_versions.json (LATEST_FIREFOX_VERSION).
+# Renovate has no built-in Mozilla datasource, so renovate.json defines
+# `custom.firefox` over https://product-details.mozilla.org/1.0/firefox_versions.json
+# (LATEST_FIREFOX_VERSION).
+# renovate: datasource=custom.firefox depName=firefox versioning=loose
 ARG FIREFOX_VERSION=152.0.6
 RUN wget -O /tmp/firefox.tar.xz "https://download-installer.cdn.mozilla.net/pub/firefox/releases/${FIREFOX_VERSION}/linux-x86_64/en-US/firefox-${FIREFOX_VERSION}.tar.xz" \
     && file /tmp/firefox.tar.xz \
