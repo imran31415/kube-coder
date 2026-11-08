@@ -3,7 +3,7 @@ name: Desktop
 # The Tauri desktop client (desktop/, #833). Its own workflow so the main CI
 # never waits on three OS builds. It runs when the desktop app or the mobile
 # app it bundles changes, and builds UNSIGNED installers for every platform:
-# signing, notarization, auto-update and releases are Phase 2 of #833.
+# tagged releases are desktop-release.yml.
 on:
   pull_request:
     branches: [main]
