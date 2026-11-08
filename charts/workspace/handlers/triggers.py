@@ -49,12 +49,38 @@ import json
 import re
 import urllib.parse
 
+import approval_auth
 import handlers
+from approval_auth import HandoffError
 from handlers.routing import RouteTable
 
 
 class TriggerRoutes:
     """BrowserHandler methods backing `ROUTES`."""
+
+    def _board_run_human_ok(self, *configs):
+        """Saving or Test-firing an `action: board_run` trigger needs a human
+        session while Board approval is on (#838). The trigger IS the human's
+        approval of unattended, propose-mode work (#709), so its later deliveries
+        and scheduled fires need no per-run grant, but a shared bearer token must
+        not be able to write that approval for itself. Returns False, having
+        answered, when refused."""
+        action_of = handlers.server.TriggerBoardRuns.action_of
+        if not approval_auth.enabled() or not any(
+                isinstance(c, dict) and action_of(c) == 'board_run' for c in configs):
+            return True
+        try:
+            approval_auth.require_human(self)
+        except HandoffError as exc:
+            self.send_json(exc.body(), exc.status)
+            return False
+        return True
+
+    @staticmethod
+    def _saved_trigger(get, data):
+        """The stored config a create body would overwrite, if any."""
+        trigger_id = data.get('id') if isinstance(data, dict) else None
+        return get(trigger_id) if isinstance(trigger_id, str) else None
 
     def handle_webhook_list(self):
         if not self.check_claude_auth():
@@ -107,6 +133,9 @@ class TriggerRoutes:
             data = self.read_json_body()
         except (json.JSONDecodeError, ValueError):
             self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not self._board_run_human_ok(data, self._saved_trigger(
+                handlers.server.WebhookManager.get_webhook, data)):
             return
         cfg, err = handlers.server.WebhookManager.create_or_update(data)
         if err:
@@ -208,6 +237,8 @@ class TriggerRoutes:
         cfg = handlers.server.WebhookManager.get_webhook(self._webhook_id, include_secrets=True)
         if cfg is None:
             self.send_json({'error': 'Webhook not found'}, 404)
+            return
+        if not self._board_run_human_ok(cfg):
             return
         try:
             data = self.read_json_body()
@@ -417,6 +448,9 @@ class TriggerRoutes:
         except (json.JSONDecodeError, ValueError):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
+        if not self._board_run_human_ok(data, self._saved_trigger(
+                handlers.server.CronManager.get_cron, data)):
+            return
         cfg, err = handlers.server.CronManager.create_or_update(data)
         # err may be a "soft" error (k8s apply failed but config saved); still 4xx.
         if cfg is None:
@@ -456,6 +490,12 @@ class TriggerRoutes:
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         action = self._cron_action
+        # `run` is the cron's Test button. `rotate-token` hands back the
+        # credential the fire route accepts, which is the same thing one step
+        # removed.
+        if action in ('run', 'rotate-token') and not self._board_run_human_ok(
+                handlers.server.CronManager.get_cron(self._cron_id)):
+            return
         if action == 'suspend':
             cfg = handlers.server.CronManager.set_suspended(self._cron_id, True)
             if cfg is None:
