@@ -114,6 +114,9 @@ jobs:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_ONBOARDING: "false"
           RENOVATE_REQUIRE_CONFIG: "required"
+          # Lets the code-server rule's postUpgradeTask re-pin the .deb SHA-256s
+          # (renovate.json). allowedCommands is global-only, so it can't live there.
+          RENOVATE_ALLOWED_COMMANDS: '["^node scripts/renovate/code-server-sha\\.mjs$"]'
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
           RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
           # Token for release/tag datasource lookups (avoids anonymous API rate
