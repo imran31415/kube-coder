@@ -462,5 +462,129 @@ class BuildUnchangedTests(_TriggerBase):
         self.assertEqual(len(self.tasks.created), 1)
 
 
+# ══ #838: a bearer token cannot write a human's standing approval ════════════
+
+class BoardRunApprovalTests(_TriggerBase):
+    BEARER = {'Authorization': 'Bearer workspace-token'}
+    BROWSER = {'Cookie': '_oauth2_proxy=x', 'Origin': 'https://workspace'}
+    WEBHOOK = {'id': 'gh-new', 'provider': 'github', 'action': 'board_run', 'hmac_secret': SECRET,
+               'board_run': {'board_id': 'acme-jira', 'concurrency': 1}}
+    CRON = {'id': 'nightly-new', 'schedule': '0 2 * * *', 'action': 'board_run',
+            'board_run': {'board_id': 'acme-jira', 'select': {'limit': 1}, 'concurrency': 1}}
+
+    def setUp(self):
+        super().setUp()
+        self._flag(True)
+        p = mock.patch('approval_auth.authority_call', return_value={'actor': 'octo'})
+        self.authority = p.start()
+        self.addCleanup(p.stop)
+
+    def _flag(self, on):
+        p = mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'true' if on else 'false'})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _refused(self, result):
+        status, body = result
+        self.assertEqual((status, body.get('code')), (403, 'human_required'), body)
+
+    def test_a_bearer_cannot_create_a_board_run_trigger(self):
+        self._refused(self._post('/api/webhooks', self.WEBHOOK, headers=self.BEARER))
+        self._refused(self._post('/api/crons', self.CRON, headers=self.BEARER))
+        self.assertIsNone(WM.get_webhook('gh-new'))
+        self.assertIsNone(CM.get_cron('nightly-new'))
+
+    def test_a_human_session_can_create_a_board_run_trigger(self):
+        for path, body in (('/api/webhooks', self.WEBHOOK), ('/api/crons', self.CRON)):
+            status, out = self._post(path, body, headers=self.BROWSER)
+            self.assertEqual(status, 201, out)
+        self.assertEqual(self.authority.call_args.args[0], 'human')
+        self.assertEqual(WM.get_webhook('gh-new')['action'], 'board_run')
+        self.assertEqual(CM.get_cron('nightly-new')['action'], 'board_run')
+
+    def test_a_bearer_cannot_turn_a_build_trigger_into_a_board_run(self):
+        self._webhook('gh-new', action='build', prompt_template='hi', board_run=None, match=None,
+                      item_id_from=None)
+        self._cron('nightly-new', action='build', prompt_template='hi', board_run=None)
+        self._refused(self._post('/api/webhooks', self.WEBHOOK, headers=self.BEARER))
+        self._refused(self._post('/api/crons', self.CRON, headers=self.BEARER))
+        self.assertEqual(WM.get_webhook('gh-new')['action'], 'build')
+        self.assertEqual(CM.get_cron('nightly-new')['action'], 'build')
+
+    def test_a_bearer_cannot_rewrite_a_saved_board_run_trigger(self):
+        self._webhook('gh-new')
+        self._cron('nightly-new')
+        self._refused(self._post('/api/webhooks', {'id': 'gh-new', 'prompt_template': 'x'},
+                                 headers=self.BEARER))
+        self._refused(self._post('/api/crons', {'id': 'nightly-new', 'schedule': '@daily',
+                                                'prompt_template': 'x'}, headers=self.BEARER))
+        self.assertEqual(WM.get_webhook('gh-new')['action'], 'board_run')
+        self.assertEqual(CM.get_cron('nightly-new')['action'], 'board_run')
+
+    def test_a_bearer_cannot_test_fire_a_board_run_trigger(self):
+        self._webhook()
+        cfg = self._cron()
+        token = cfg['fire_token']
+        with mock.patch.object(CM, 'run_now', return_value=(True, 'job')) as run_now:
+            self._refused(self._post('/api/webhooks/gh-ai/test', {'payload': _labeled(), 'event': 'issues'},
+                                     headers=self.BEARER))
+            self._refused(self._post('/api/crons/nightly-ai/run', headers=self.BEARER))
+            self._refused(self._post('/api/crons/nightly-ai/rotate-token', headers=self.BEARER))
+        run_now.assert_not_called()
+        self.assertEqual(RM.list_runs(), [])
+        self.assertEqual(CM.get_cron('nightly-ai', include_secrets=True)['fire_token'], token)
+
+    def test_a_human_session_can_test_fire_a_board_run_trigger(self):
+        self._webhook()
+        self._cron()
+        self._listing(3)
+        status, body = self._post('/api/webhooks/gh-ai/test', {'payload': _labeled(), 'event': 'issues'},
+                                  headers=self.BROWSER)
+        self.assertEqual(status, 202, body)
+        self.assertEqual(RM.get(body['run_id'])['origin'], 'webhook')
+        with mock.patch.object(CM, 'run_now', return_value=(True, 'job')) as run_now:
+            status, body = self._post('/api/crons/nightly-ai/run', headers=self.BROWSER)
+        self.assertEqual(status, 200, body)
+        run_now.assert_called_once_with('nightly-ai')
+
+    def test_real_deliveries_and_scheduled_fires_need_no_session(self):
+        self._webhook()
+        cfg = self._cron()
+        self._listing(3)
+        status, body = self._deliver('gh-ai', _labeled(issue_id=2))
+        self.assertEqual(status, 202, body)
+        self.assertEqual(RM.get(body['run_id'])['origin'], 'webhook')
+        self.authority.assert_not_called()
+        with mock.patch.object(RM, 'list_runs', return_value=[]):
+            self._listing(1)
+            status, body = self._fire_cron(cfg)
+        self.assertEqual(status, 202, body)
+        self.assertEqual(RM.get(body['run_id'])['origin'], 'cron')
+        self.authority.assert_not_called()
+
+    def test_build_triggers_are_not_gated(self):
+        status, body = self._post('/api/webhooks', {'id': 'plain', 'prompt_template': 'hi', 'hmac_secret': SECRET},
+                                  headers=self.BEARER)
+        self.assertEqual(status, 201, body)
+        status, body = self._post('/api/webhooks/plain/test', {'payload': {}}, headers=self.BEARER)
+        self.assertEqual(status, 202, body)
+        status, body = self._post('/api/crons', {'id': 'plain-cron', 'schedule': '@daily', 'prompt_template': 'hi'},
+                                  headers=self.BEARER)
+        self.assertEqual(status, 201, body)
+        self.authority.assert_not_called()
+
+    def test_with_the_flag_off_a_bearer_is_unchanged(self):
+        self._flag(False)
+        for path, data in (('/api/webhooks', self.WEBHOOK), ('/api/crons', self.CRON)):
+            status, body = self._post(path, data, headers=self.BEARER)
+            self.assertEqual(status, 201, body)
+        self._webhook()
+        self._listing(3)
+        status, body = self._post('/api/webhooks/gh-ai/test', {'payload': _labeled(), 'event': 'issues'},
+                                  headers=self.BEARER)
+        self.assertEqual(status, 202, body)
+        self.authority.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

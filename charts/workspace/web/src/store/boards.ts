@@ -100,6 +100,7 @@ export const filteredItems = computed<BoardItem[]>(() => {
 });
 
 let boardsInFlight: Promise<void> | null = null;
+export const boardHandoffEnabled = signal(false);
 
 export async function refreshBoards(): Promise<void> {
   if (boardsInFlight) return boardsInFlight;
@@ -107,6 +108,7 @@ export async function refreshBoards(): Promise<void> {
   boardsInFlight = (async () => {
     try {
       const res = await listBoards();
+      boardHandoffEnabled.value = res.handoff_enabled === true;
       boards.value = res.boards ?? [];
       boardsError.value = null;
       boardsLastFetch.value = Date.now();
@@ -156,7 +158,7 @@ function readLastBoard(): string {
   }
 }
 
-export async function selectBoard(id: string | null): Promise<void> {
+export async function selectBoard(id: string | null, fetchItems = true): Promise<void> {
   // The review queue belongs to one board. Keeping it across a switch showed
   // the previous board's count on the Review badge until something happened to
   // reload it (#704). The route reloads it for the new board.
@@ -173,7 +175,7 @@ export async function selectBoard(id: string | null): Promise<void> {
   } catch {
     /* private mode — the preference just doesn't persist */
   }
-  if (id && !boardItems.value[id]) await loadItems(id);
+  if (fetchItems && id && !boardItems.value[id]) await loadItems(id);
 }
 
 /**
@@ -390,21 +392,29 @@ export async function refreshRuns(boardId: string): Promise<void> {
     const res = await listBoardRuns(boardId);
     boardRuns.value = { ...boardRuns.value, [boardId]: res.runs ?? [] };
     runsError.value = null;
+    lastRunSync.value = Date.now();
   } catch (err) {
     runsError.value = err instanceof Error ? err.message : String(err);
   }
 }
 
+let openRunVersion = 0;
 export async function openRun(boardId: string, runId: string): Promise<void> {
+  const version = ++openRunVersion;
+  const selection = selectedBoardId.value;
   try {
-    activeRun.value = await getBoardRun(boardId, runId);
+    const run = await getBoardRun(boardId, runId);
+    if (version !== openRunVersion || selectedBoardId.value !== selection) return;
+    activeRun.value = run;
     runsError.value = null;
   } catch (err) {
+    if (version !== openRunVersion || selectedBoardId.value !== selection) return;
     runsError.value = err instanceof Error ? err.message : String(err);
   }
 }
 
 export function closeRun(): void {
+  openRunVersion++;
   activeRun.value = null;
 }
 
@@ -474,9 +484,7 @@ export function startRunPolling(boardId: string): void {
   runPollBoard = boardId;
   runPollTimer = setInterval(() => {
     if (!hasLiveRun.value && !activeRun.value) return;
-    void refreshRuns(boardId).then(() => {
-      lastRunSync.value = Date.now();
-    });
+    void refreshRuns(boardId);
     const open = activeRun.value;
     if (open && open.status === 'running') void openRun(boardId, open.id);
     // Reports and decisions reach the Review badge through `boards.review`
@@ -816,9 +824,7 @@ function onDashboardEvent(ev: DashboardEvent): void {
     // riding the debounce that exists to protect the vendor's rate limit.
     const boardId = String(ev.data.board_id ?? '');
     if (boardId && boardId === selectedBoardId.value) {
-      void refreshRuns(boardId).then(() => {
-        lastRunSync.value = Date.now();
-      });
+      void refreshRuns(boardId);
       const open = activeRun.value;
       if (open && open.id === ev.data.id) void openRun(boardId, open.id);
     }

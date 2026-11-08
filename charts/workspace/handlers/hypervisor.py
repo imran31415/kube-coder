@@ -300,13 +300,13 @@ class HypervisorRoutes:
         # 5-stop axis; '' when the assistant has no effort knob (selector hidden).
         effort = handlers.server.ClaudeTaskManager.resolve_effort(
             assistant, data.get('effort') or p_effort)
-        preamble = handlers.server.HYPERVISOR_PREAMBLE
+        preamble = handlers.server.with_board_handoff(handlers.server.HYPERVISOR_PREAMBLE)
         if persona == 'cto':
-            preamble = handlers.server.CTO_PREAMBLE
+            preamble = handlers.server.with_board_handoff(handlers.server.CTO_PREAMBLE)
             brief = handlers.server.ProjectsManager.brief(project_id) if project_id else None
             if brief and brief.get('brief_markdown'):
                 preamble = (
-                    handlers.server.CTO_PREAMBLE
+                    preamble
                     + f"[System: Project brief for `{project_id}` — a "
                     "point-in-time snapshot; call get_project_brief for live "
                     "state.]\n\n" + brief['brief_markdown'] + "\n\n")

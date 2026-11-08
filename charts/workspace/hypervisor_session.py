@@ -62,7 +62,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 # Token accounting (#574) — shared with server.py's Build ingestion so both paths
 # speak one vocabulary (four priceable classes, per-model breakdown, coverage
@@ -1795,6 +1795,14 @@ def _turn_seq(thread_id: str) -> int:
 # notice rides the same "⏹ Stopped by user." marker instead of racing it.
 _STOPPED_WATCHERS: Dict[str, List[Dict[str, Any]]] = {}
 
+# Turns a stop halted (#838). A Board approval the agent prepared in one of
+# them must not arm its completion watcher when it is approved later; one from
+# any other turn still does. Process-local like _TURN_SEQ, and deliberately not
+# in thread.json: the runner rewrites that file without a lock, so a stop that
+# wrote it could put back a stale status, and every write there reorders the
+# chat list unless it passes touch=False.
+_STOPPED_TURNS: Dict[str, Set[int]] = {}
+
 
 def _disarmed_note(watchers: List[Dict[str, Any]]) -> str:
     """The tail naming watchers a stop disarmed (#669).
@@ -2054,6 +2062,7 @@ class HypervisorSession:
         with _RUNLOCK:
             _TURN_SEQ.pop(self.id, None)
             _STOPPED_WATCHERS.pop(self.id, None)
+            _STOPPED_TURNS.pop(self.id, None)
 
     def revive(self) -> bool:
         """Clear ``deleted_at`` so a soft-deleted thread reappears in the
@@ -2120,6 +2129,15 @@ class HypervisorSession:
         with open(tmp, 'w') as f:
             json.dump(meta, f, indent=2)
         os.replace(tmp, self.meta_path)
+
+    def current_turn(self) -> int:
+        """This thread's turn number; `0` if none has run in this process."""
+        return _turn_seq(self.id)
+
+    def turn_was_stopped(self, turn: Optional[int]) -> bool:
+        """Whether a stop halted `turn`. None is work no agent turn owns."""
+        with _RUNLOCK:
+            return turn in _STOPPED_TURNS.get(self.id, ())
 
     def status(self) -> str:
         with _RUNLOCK:
@@ -2439,6 +2457,7 @@ class HypervisorSession:
         # needs a live turn to ride on.
         with _RUNLOCK:
             seq = _TURN_SEQ.get(self.id, 0)
+            _STOPPED_TURNS.setdefault(self.id, set()).add(seq)
         disarmed = WATCHERS.cancel_thread(self.id, turn_seq=seq)
         with _RUNLOCK:
             proc = _PROCS.get(self.id)
@@ -2593,6 +2612,9 @@ class HypervisorSession:
             # servers), so the dashboard MCP's `watch` tool can arm a cross-turn
             # watcher on THIS thread without any explicit id plumbing (#402).
             env['KC_HYPERVISOR_THREAD_ID'] = self.id
+            # A caller-supplied thread ID is not an authenticated runner association.
+            import approval_auth
+            env['KC_RUNNER_CONTEXT'] = approval_auth.issue_context(self.id)
             # A project-bound thread (#465 for CTO, #358 for a plain chat)
             # exports its project so the dashboard MCP's project tools
             # (get_project_brief / update_project) know which project this turn
@@ -2839,7 +2861,7 @@ def reconcile_stale_running_threads() -> List[str]:
 # registry to lose). Thread stop()/delete() cancels its watchers.
 # ───────────────────────────────────────────────────────────────────────────
 WATCH_TICK = float(os.environ.get('KC_HYPERVISOR_WATCH_TICK', '5'))
-WATCH_KINDS = ('task', 'command', 'file', 'port')
+WATCH_KINDS = ('task', 'command', 'file', 'port', 'board_run')
 WATCH_MIN_INTERVAL, WATCH_MAX_INTERVAL, WATCH_DEFAULT_INTERVAL = 5.0, 600.0, 20.0
 WATCH_MIN_TIMEOUT, WATCH_MAX_TIMEOUT, WATCH_DEFAULT_TIMEOUT = 10.0, 86400.0, 3600.0
 # Guard rail: a runaway agent can't accumulate unbounded poll loops per thread.
@@ -2878,6 +2900,7 @@ class WatcherManager:
         # Injected by server.py at startup (this module can't import server).
         # Returns a task's status string, or None when the task doesn't exist.
         self._task_status: Optional[Callable[[str], Optional[str]]] = None
+        self._board_run: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
         # Returns the set/list of loopback dev-server ports currently listening
         # (workspace-internal ports already filtered out). Powers `port`
         # watchers; None when unwired (outside a real pod).
@@ -2893,6 +2916,9 @@ class WatcherManager:
     # ── wiring ─────────────────────────────────────────────────────────────
     def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
         self._task_status = fn
+
+    def set_board_run_provider(self, fn) -> None:
+        self._board_run = fn
 
     def set_ports_provider(self, fn: Callable[[], Any]) -> None:
         """Wire the live-port lister used by `port` watchers. `fn()` returns the
@@ -2955,9 +2981,14 @@ class WatcherManager:
 
     # ── public API (arm / list / cancel) ───────────────────────────────────
     def arm(self, thread_id: str, kind: str, target: str, note: str = '',
-            interval: Any = None, timeout: Any = None) -> Dict[str, Any]:
+            interval: Any = None, timeout: Any = None,
+            turn_seq: Optional[int] = None) -> Dict[str, Any]:
         """Arm a watcher on a thread. Raises ValueError on bad input (the
-        HTTP layer maps that to a 400). Returns the persisted watcher."""
+        HTTP layer maps that to a 400). Returns the persisted watcher.
+
+        `turn_seq` names the owning turn when it is not the one running now:
+        a Board run belongs to the turn that requested it, however much later
+        the user approved it (#838)."""
         kind = (kind or '').strip()
         target = (target or '').strip()
         if kind not in WATCH_KINDS:
@@ -2985,7 +3016,7 @@ class WatcherManager:
             # Which turn armed this (#669). stop() cancels only its own turn's
             # watchers, so a "tell me when CI goes green" armed three turns ago
             # survives an unrelated interrupt.
-            'turn_seq': _turn_seq(thread_id),
+            'turn_seq': _turn_seq(thread_id) if turn_seq is None else turn_seq,
         }
         w['deadline'] = now + w['timeout']
         if kind == 'file':
@@ -3003,6 +3034,10 @@ class WatcherManager:
             w['baseline_ports'] = self._current_ports()
         with self._lock:
             items = self._load(thread_id)
+            if kind == 'board_run':
+                prior = next((x for x in items if x.get('kind') == kind and x.get('target') == target), None)
+                if prior:
+                    return prior
             active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
             if active >= WATCH_MAX_PER_THREAD:
                 raise ValueError(
@@ -3139,6 +3174,16 @@ class WatcherManager:
         per-thread guard in tick() — a transient error skips the pass rather
         than mis-firing."""
         kind, target = w.get('kind'), w.get('target', '')
+        if kind == 'board_run':
+            if self._board_run is None:
+                return False, ''
+            run = self._board_run(target)
+            if run is None:
+                return True, f'Board run {target} is no longer available. Open Board to check.'
+            if run.get('status') == 'running':
+                return False, ''
+            return True, (f'Board run {target} finished with status {run.get("status")}. '
+                          'Check the persisted Board card and review outcomes; completion does not approve tracker changes.')
         if kind == 'task':
             if self._task_status is None:
                 return False, ''  # provider not wired (shouldn't happen in-pod)

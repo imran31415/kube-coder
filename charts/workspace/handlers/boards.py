@@ -46,11 +46,23 @@ import urllib.parse
 
 import handlers
 import safe_http
+import approval_auth
+from approval_auth import HandoffError, digest
+from handlers import board_handoff
 from handlers.routing import RouteTable
 
 
 class BoardRoutes:
     """BrowserHandler methods backing `ROUTES`."""
+
+    def _board_route_path(self):
+        """The path this request was dispatched on. do_GET drops the query and
+        removes /oauth and /browser anywhere in the path; the other verbs strip
+        only those leading prefixes. Gating on anything else lets a request be
+        judged as one route and served as another."""
+        if getattr(self, 'command', 'GET') == 'GET':
+            return self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+        return self._strip_route_prefix(self.path).split('?', 1)[0]
 
     def _board_guard(self):
         """Shared entry gate for every /api/boards route. Returns False (and
@@ -62,6 +74,39 @@ class BoardRoutes:
             self.send_json({'error': 'Board Processor is unavailable on this '
                                      'workspace'}, 503)
             return False
+        # Only the registered run-request routes are exempt: they carry their
+        # own human and runner checks.
+        path = self._board_route_path()
+        method = getattr(self, 'command', 'GET')
+        if approval_auth.enabled() and not board_handoff.ROUTES.match(method, path, path):
+            external = method != 'GET' or path.endswith('/items')
+            if external:
+                try:
+                    worker = approval_auth.worker_context(self.headers)
+                    allowed = worker and worker['board_id'] == getattr(self, '_board_id', None)
+                    allowed = allowed and (path.endswith('/items') or (
+                        path.endswith(('/actions', '/disposition')) and
+                        worker['item_id'] == str(getattr(self, '_board_item_id', ''))))
+                    if allowed:
+                        run = handlers.server.BoardRunsManager.get(worker['run_id'])
+                        row = (run or {}).get('items', {}).get(worker['item_id'], {})
+                        if not run or run.get('mode') != 'propose' or row.get('state') not in ('claimed', 'working'):
+                            raise HandoffError('worker_scope_expired', 'This Board worker is no longer active.', 403)
+                        cfg = handlers.server.BoardsManager.get(worker['board_id'])
+                        if run.get('approved_config_digest') != digest(cfg):
+                            raise HandoffError('scope_changed', 'Board settings changed. Review a new request.', 409)
+                        if path.endswith('/actions'):
+                            staging = handlers.server.BoardReviewManager.staging_run_for(worker['board_id'], worker['item_id'])
+                            if not staging or staging['id'] != worker['run_id']:
+                                raise HandoffError('worker_scope_expired', 'The item is no longer held by this run.', 403)
+                        if run.get('origin_request_id'):
+                            from handlers.board_handoff import manager
+                            approval_auth.verify_grant(manager().get(run['origin_request_id']))
+                    else:
+                        approval_auth.require_human(self)
+                except HandoffError as exc:
+                    self.send_json(exc.body(), exc.status)
+                    return False
         return True
 
     def _board_or_404(self, board_id):
@@ -74,7 +119,8 @@ class BoardRoutes:
     def handle_boards_list(self):
         if not self._board_guard():
             return
-        self.send_json({'boards': handlers.server.BoardsManager.list_boards()})
+        self.send_json({'boards': handlers.server.BoardsManager.list_boards(),
+                        'handoff_enabled': approval_auth.enabled()})
 
     def handle_board_credentials_list(self):
         """Every stored board credential, WITHOUT values. There is deliberately
@@ -704,18 +750,17 @@ class BoardRoutes:
         except (json.JSONDecodeError, ValueError):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
+        if approval_auth.enabled() and (not isinstance(data, dict) or data.get('mode', 'propose') != 'propose'):
+            self.send_json({'error': 'Approval-gated Board runs require Propose mode.', 'code': 'invalid_mode'}, 400)
+            return
         run, err = handlers.server.BoardRunsManager.create(cfg, data if isinstance(data, dict) else {})
         if err:
             # A vendor/credential failure is not the caller's bad request, and
             # 502 vs 400 is the difference between "retry" and "fix your body".
             # A run already in flight is neither: nothing is wrong with the
             # request, it just conflicts with the board's current state (#712).
-            if err.startswith('a run is already in flight'):
-                status = 409
-            else:
-                status = 502 if err.startswith(('refused for safety', 'no stored',
-                                                'the workspace GitHub App')) else 400
-            self.send_json({'error': err}, status)
+            self.send_json({'error': str(err), 'code': getattr(err, 'code', 'run_start_refused'),
+                            'retryable': getattr(err, 'retryable', False)}, getattr(err, 'status', 400))
             return
         self.send_json(run, 201)
 

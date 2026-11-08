@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
+import { currentPath } from '../../store/router';
+import { parseBoardRunPath } from './runLinks';
 import {
   boardsError,
   boardsLive,
@@ -8,6 +10,7 @@ import {
   openReviewBreakdown,
   openReviewCount,
   openReviewFor,
+  openRun,
   refreshBoards,
   refreshReview,
   restoreBoardSelection,
@@ -64,6 +67,14 @@ function readCollapsed(): boolean {
  * breakpoint governs CSS and JS.
  */
 export function BoardRoute() {
+  const path = currentPath.value;
+  useEffect(() => {
+    const link = parseBoardRunPath(path);
+    if (!link) return;
+    void selectBoard(link.boardId, false);
+    boardTab.value = 'runs';
+    void openRun(link.boardId, link.runId);
+  }, [path]);
   const narrow = useMediaQuery('(max-width: 860px)');
   const [railCollapsed, setRailCollapsed] = useState(readCollapsed);
   // In the store, not here: the Runs table opens a Review card, and a trip out

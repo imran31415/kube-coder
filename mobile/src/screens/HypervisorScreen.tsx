@@ -52,6 +52,7 @@ import {
   uploadTaskImage,
 } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
+import { BoardRequestCards } from '../components/BoardRequestCards';
 import { WebView } from '../components/PlatformWebView';
 import { Markdown } from '../components/Markdown';
 import type { FilePreview, HvEvent, HypervisorConfig, HypervisorThread, Project, WorkdirOption } from '../api/types';
@@ -940,6 +941,17 @@ export default function HypervisorScreen() {
                 <Text style={styles.working}>· working…</Text>
               </View>
             </View>
+          )}
+          {/* After the newest message, so a pending approval is on screen for a
+              reader following the bottom. */}
+          {activeId && (
+            <BoardRequestCards
+              key={activeId}
+              threadId={activeId}
+              onChange={() => {
+                if (pinnedRef.current) setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
+              }}
+            />
           )}
         </ScrollView>
 

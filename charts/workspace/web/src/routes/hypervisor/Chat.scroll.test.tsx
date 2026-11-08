@@ -46,7 +46,7 @@ function msg(seq: number, role: HvEvent['role'], text: string): HvEvent {
 function fakeLayout(el: Element, clientHeight = 250) {
   let top = 0;
   let clientH = clientHeight;
-  const scrollHeight = () => el.querySelectorAll('.hv-msg, .hv-turn').length * BLOCK_H;
+  const scrollHeight = () => el.querySelectorAll('.hv-msg, .hv-turn, .hv-board-card').length * BLOCK_H;
   Object.defineProperty(el, 'scrollHeight', { configurable: true, get: scrollHeight });
   Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => clientH });
   Object.defineProperty(el, 'scrollTop', {
@@ -203,6 +203,49 @@ describe('Chat transcript pinning (#530)', () => {
   });
 });
 
+
+describe('Chat transcript — Board approval cards (#838)', () => {
+  const pending = {
+    id: 'brq-' + 'a'.repeat(32), thread_id: 't1', board_id: 'billing', revision: 'r', version: 1,
+    state: 'pending', created_at: 1, expires_at: 900, run_id: null, decision_id: null, error: {},
+    scope: { board_id: 'billing', board_name: 'Billing', repository: 'https://github.com/acme/api', operation: 'start',
+      options: { select: { limit: 3 }, concurrency: 1, workdir: '/home/dev/api', base_ref: '', isolate: true, mode: 'propose' } },
+  };
+  let deliver: (requests: unknown[]) => void;
+
+  beforeEach(() => {
+    const held = new Promise<unknown[]>((resolve) => { deliver = resolve; });
+    globalThis.fetch = vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => (String(url).includes('/board-requests') ? { requests: await held } : {}),
+    })) as unknown as typeof fetch;
+  });
+
+  it('puts a pending card after the newest message and keeps it on screen', async () => {
+    const { container } = render(<Chat />);
+    const layout = fakeLayout(container.querySelector('.hv-transcript') as HTMLElement);
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+    deliver([pending]);
+    await waitFor(() => expect(container.querySelector('.hv-board-card')).toBeTruthy());
+    const flow = container.querySelector('.hv-transcript-flow') as HTMLElement;
+    expect(flow.lastElementChild).toBe(container.querySelector('.hv-board-cards'));
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+  });
+
+  it('does not pull a reader who scrolled up to read history', async () => {
+    const { container } = render(<Chat />);
+    const layout = fakeLayout(container.querySelector('.hv-transcript') as HTMLElement);
+    await waitFor(() => expect(layout.fromBottom()).toBe(0));
+    layout.scrollTo(0);
+    await settle();
+    deliver([pending]);
+    await waitFor(() => expect(container.querySelector('.hv-board-card')).toBeTruthy());
+    await settle();
+    expect((container.querySelector('.hv-transcript') as HTMLElement).scrollTop).toBe(0);
+  });
+});
 
 describe('Chat transcript pinning across a source flip (#644)', () => {
   /** What the server hands back once the turn completes: the same conversation

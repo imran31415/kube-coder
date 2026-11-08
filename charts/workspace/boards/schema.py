@@ -59,7 +59,7 @@ _CRED_PROVIDER_RE = re.compile(r'^@provider-keys/([A-Z][A-Z0-9_]{2,63})$')
 # be permanently unreachable. Extend this in the same commit as any new
 # /api/boards/<word> route — a board created before the route exists keeps
 # working locally and 404s the day the route ships.
-RESERVED_BOARD_IDS = ('credentials', 'draft', 'runs', 'templates',
+RESERVED_BOARD_IDS = ('credentials', 'draft', 'runs', 'templates', 'run-requests',
                       'strategies', 'metrics')
 
 # Item fields whose value is a {normalized, raw} pair.
