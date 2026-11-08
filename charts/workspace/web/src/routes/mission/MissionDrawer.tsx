@@ -188,6 +188,7 @@ export function MissionDrawer({
           )}
 
           <div class="mission-drawer-foot">
+            {card.has_worktree && <Button size="sm" onClick={() => navigate(`/tasks/${card.ref_id}/changes`)}>Review changes</Button>}
             <Button size="sm" onClick={() => navigate(cardHref(card.id))}>
               Open full session
             </Button>

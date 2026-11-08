@@ -3455,7 +3455,8 @@ class ClaudeTaskManager:
             'bash', '-lc', shell_cmd,
         ]
 
-        result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+        result = worktrees.launch_writer(workdir, tmux_cmd, runner=subprocess.run,
+                                        wt_root=WorktreeManager.root(), capture_output=True, text=True)
         if result.returncode != 0:
             return ClaudeTaskManager._fail_launch(
                 task_dir, meta, result.stderr.strip())
@@ -3596,7 +3597,8 @@ class ClaudeTaskManager:
             meta_path = os.path.join(task_dir, 'task.json')
             with open(meta_path, 'w') as f:
                 json.dump(meta, f, indent=2)
-            result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+            result = worktrees.launch_writer(workdir, tmux_cmd, runner=subprocess.run,
+                                             wt_root=WorktreeManager.root(), capture_output=True, text=True)
         finally:
             ClaudeTaskManager._launching.discard(task_id)
         if result.returncode != 0:
@@ -7569,11 +7571,11 @@ class FeedManager:
                     state = FeedManager._load_state()
                     for it in FeedManager._collapse(FeedManager._read_raw()):
                         if it.get('dedupe_key') == dedupe_key \
-                                and it.get('id') not in state['dismissed']:
+                                and (it.get('id') not in state['dismissed'] or source == 'build-publish'):
                             item_id = it['id']
                             # Had the user read this row before it came back?
                             # That is what lets its alert push again (#685).
-                            seen = item_id in state['read']
+                            seen = item_id in state['read'] and source != 'build-publish'
                             break
                 item = {
                     'id': item_id or FeedManager._new_id(),
@@ -7657,6 +7659,11 @@ class FeedManager:
         tid = meta.get('task_id')
         if not tid:
             return None
+        if meta.get('worktree') and _PUBLISHER is not None:
+            try:
+                _PUBLISHER.queue_probe(tid)
+            except Exception:
+                pass
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
         verb = {'completed': 'finished', 'error': 'failed',
                 'killed': 'was stopped',
@@ -15171,6 +15178,19 @@ def _mc_task_card(meta, task_dir, now):
         '_sub_task_ids': meta.get('sub_task_ids', []),
     }
 
+    if meta.get('worktree'):
+        card['has_worktree'] = True
+        try:
+            from build_publish import read as read_publish
+            root = os.environ.get('KC_PUBLISH_DIR') or os.path.join(ClaudeTaskManager.TASKS_DIR, 'publishing')
+            published = read_publish(os.path.join(root, task_id, 'state.json'))
+            card['publication'] = {'stage': (published.get('operation') or {}).get('stage'), 'pr': published.get('pr')}
+            pr = published.get('pr')
+            if pr and pr.get('url'):
+                card['evidence'].append({'label': 'PR #' + str(pr['number']), 'ok': None, 'link': pr['url']})
+        except Exception:
+            card['publication'] = {'stage': 'recovery_required', 'pr': None}
+
     if state == 'waiting':
         # Mirror get_task's pending_prompt so quick-reply buttons render on
         # the board itself (#204/#276). One tmux capture per *waiting* task
@@ -15534,6 +15554,71 @@ def _xvfb_running(display):
         return check.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
+
+
+
+# Build publication (#710): initialized lazily so importing server in a unit
+# test cannot start a worker against the workspace's live state.
+_PUBLISHER = None
+_PUBLISHER_LOCK = threading.Lock()
+
+
+def _publish_idle(meta):
+    from publish_git import PublishError
+    try:
+        r = subprocess.run(['tmux', 'list-sessions', '-F', '#{session_name}'],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise PublishError('liveness_unknown', 'Could not verify whether the Build has stopped.') from e
+    if r.returncode and 'no server running' not in r.stderr and 'no sessions' not in r.stderr and not ('error connecting' in r.stderr and 'No such file or directory' in r.stderr):
+        raise PublishError('liveness_unknown', 'Could not verify whether the Build has stopped.')
+    sessions = set(r.stdout.splitlines())
+    path = os.path.realpath(meta['worktree']['path'])
+    for candidate in ProjectsManager._scan_task_metas():
+        wd = os.path.realpath(candidate.get('workdir') or '/')
+        if wd == path or wd.startswith(path + os.sep):
+            session = candidate.get('tmux_session') or 'kube-coder-' + candidate.get('task_id', '')
+            if session in sessions:
+                raise PublishError('writer_active', 'End the Build session before reviewing changes for publication.')
+
+
+def _publish_event(meta, event, status):
+    titles = {'ready': 'Build changes ready to review', 'published': 'Pull request ready',
+              'failed': 'Build publishing needs attention'}
+    pr = status.get('pr') or {}
+    item = FeedManager.emit('activity', titles[event['event']],
+        body_md=pr.get('url') or ((status.get('operation') or {}).get('error') or {}).get('message', ''),
+        source='build-publish', project_id=meta.get('project_id') or '',
+        links=[{'label': 'Review Build', 'ref': 'task:' + meta['task_id']}],
+        waiting=event['event'] != 'published',
+        dedupe_key='publish:' + meta['task_id'] + ':' + event['key'])
+    if item is None:
+        raise RuntimeError('Feed delivery failed')
+    EventBroker.publish('task.publish', {'task_id': meta['task_id']})
+
+
+def _publish_checks(meta):
+    log = _mc_tail(os.path.join(ClaudeTaskManager.TASKS_DIR, meta['task_id'], 'output.log'))
+    evidence = [e for e in _mc_evidence_from_log(strip_ansi(log)) if e.get('ok') is not None]
+    failed = any(e['ok'] is False for e in evidence)
+    return {'state': 'failed' if failed else 'unknown', 'source': 'build_log',
+            'revision_match': False, 'reported_state': 'failed' if failed else 'passed' if evidence else 'unknown',
+            'details': [e['label'] for e in evidence]}
+
+
+def build_publisher():
+    global _PUBLISHER
+    if _PUBLISHER is None:
+        with _PUBLISHER_LOCK:
+            if _PUBLISHER is None:
+                from build_publish import Publisher
+                from publish_github import GitHub
+                _PUBLISHER = Publisher(
+                    os.environ.get('KC_PUBLISH_DIR') or os.path.join(ClaudeTaskManager.TASKS_DIR, 'publishing'),
+                    ClaudeTaskManager.read_meta, _publish_idle, wt_root=WorktreeManager.root(),
+                    github=GitHub(GitHubManager.AUTH_MODE_FILE, GitHubManager.TOKEN_FILE),
+                    emit=_publish_event, checks=_publish_checks)
+    return _PUBLISHER
 
 
 class BrowserHandler(app_routes.AppRoutes,
@@ -16760,6 +16845,9 @@ class BrowserHandler(app_routes.AppRoutes,
         if self._readonly_block():
             return
         path = self._strip_route_prefix(self.path)
+        # Saving a Build's publishing draft (#710) — handlers/tasks.py.
+        if task_routes.ROUTES.dispatch(self, 'PATCH', path, self.path):
+            return
         if self._dispatch_app_proxy(path, 'PATCH'):
             return
         self.send_response(501)
@@ -17402,6 +17490,8 @@ if __name__ == "__main__":
             print('[hypervisor] cross-turn watcher loop started')
         except Exception as e:
             print(f'[hypervisor] watcher start failed: {e}', file=sys.stderr)
+
+    build_publisher().start()
 
     # Background task reconciler: flips finished tasks running -> completed and
     # fires their completion hooks even when nothing is reading them, so headless

@@ -149,3 +149,8 @@ filing it, and it's what `lint_test.sh` drives.
 Just invoke this once per issue. Each gets its own worktree, branch, port, and
 background task, so agents run truly in parallel without colliding. Use `list`
 to keep track.
+
+
+### Publishing a retained completed Build (#710)
+
+After the agent session has ended, the human can use Changes ? Prepare review ? Push & Open PR on web or phone. This reviews a snapshot and runs a durable server-owned commit/push/PR operation. It discovers existing head/base PRs and uses the configured repository, base and GitHub account. Do not invoke this post-session API from an active agent that holds the worktree: its live-writer gate intentionally refuses that. Existing explicit in-agent `KC_AUTO_PR=1` and shipping instructions keep their current path; the UI discovers their PR afterward.
