@@ -14,6 +14,7 @@ from unittest import mock
 
 from tests.boards_runs_api_test import RM, _Base, server  # also supplies the Windows-only fcntl shim
 import approval_auth
+import hypervisor_session
 from boards.handoff import HandoffError, HandoffManager, TTL, digest, options
 from boards.store import real_flock
 from handlers import board_handoff
@@ -219,6 +220,61 @@ class BrokenBoardsPackage(unittest.TestCase):
                                     timeout=60, env=dict(os.environ, KC_WORKSPACE_HOME=home))
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         self.assertIn('available=False', result.stdout)
+
+
+class CompletionWatcherAfterStop(unittest.TestCase):
+    """execute() arms the completion watcher unless the requesting turn was stopped."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        directory = mock.patch.object(hypervisor_session, 'HYPERVISOR_DIR', tmp.name)
+        directory.start()
+        self.addCleanup(directory.stop)
+        self.session = hypervisor_session.HypervisorSession.create(
+            assistant='shell', workdir=tmp.name, cli_cmd='cat', preamble='', title='x')
+        self.addCleanup(hypervisor_session._TURN_SEQ.pop, self.session.id, None)
+        self.addCleanup(hypervisor_session._STOPPED_TURNS.pop, self.session.id, None)
+        for target, name, value in ((approval_auth, 'verify_grant', mock.Mock()),
+                                    (board_handoff, 'resolve', mock.Mock(return_value={})),
+                                    (server, 'hv_watchers', hypervisor_session.WATCHERS)):
+            patch = mock.patch.object(target, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        board = mock.patch.object(server.BoardsManager, 'get', return_value={'id': 'billing'})
+        board.start()
+        self.addCleanup(board.stop)
+        create = mock.patch.object(server.BoardRunsManager, 'create', return_value=({'id': 'run-1'}, None))
+        create.start()
+        self.addCleanup(create.stop)
+
+    def _turn(self, number):
+        with hypervisor_session._RUNLOCK:
+            hypervisor_session._TURN_SEQ[self.session.id] = number
+
+    def _execute(self, watch_turn):
+        scope = dict(operation='start', board_id='billing', repository='r', options={},
+                     config_digest=digest({'id': 'billing'}), watch_turn=watch_turn)
+        board_handoff.execute(dict(id='brq-1', thread_id=self.session.id, run_id='run-1',
+                                   revision=digest(scope), scope=scope))
+        return [w for w in hypervisor_session.WATCHERS.list(self.session.id) if w['kind'] == 'board_run']
+
+    def test_a_stop_does_not_suppress_an_approval_pending_from_an_earlier_turn(self):
+        self._turn(2)
+        self.session.stop()
+        (watcher,) = self._execute(1)
+        self.assertEqual((watcher['state'], watcher['turn_seq']), ('armed', 1))
+
+    def test_a_request_from_the_stopped_turn_does_not_arm(self):
+        self._turn(2)
+        self.session.stop()
+        self.assertEqual(self._execute(2), [])
+
+    def test_a_request_the_user_prepared_is_not_tied_to_a_turn(self):
+        self._turn(2)
+        self.session.stop()
+        (watcher,) = self._execute(None)
+        self.assertEqual(watcher['state'], 'armed')
 
 
 class ApprovalGateRoutes(_Base):

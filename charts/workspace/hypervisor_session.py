@@ -62,7 +62,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 # Token accounting (#574) — shared with server.py's Build ingestion so both paths
 # speak one vocabulary (four priceable classes, per-model breakdown, coverage
@@ -1794,6 +1794,14 @@ def _turn_seq(thread_id: str) -> int:
 # notice rides the same "⏹ Stopped by user." marker instead of racing it.
 _STOPPED_WATCHERS: Dict[str, List[Dict[str, Any]]] = {}
 
+# Turns a stop halted (#838). A Board approval the agent prepared in one of
+# them must not arm its completion watcher when it is approved later; one from
+# any other turn still does. Process-local like _TURN_SEQ, and deliberately not
+# in thread.json: the runner rewrites that file without a lock, so a stop that
+# wrote it could put back a stale status, and every write there reorders the
+# chat list unless it passes touch=False.
+_STOPPED_TURNS: Dict[str, Set[int]] = {}
+
 
 def _disarmed_note(watchers: List[Dict[str, Any]]) -> str:
     """The tail naming watchers a stop disarmed (#669).
@@ -2053,6 +2061,7 @@ class HypervisorSession:
         with _RUNLOCK:
             _TURN_SEQ.pop(self.id, None)
             _STOPPED_WATCHERS.pop(self.id, None)
+            _STOPPED_TURNS.pop(self.id, None)
 
     def revive(self) -> bool:
         """Clear ``deleted_at`` so a soft-deleted thread reappears in the
@@ -2119,6 +2128,15 @@ class HypervisorSession:
         with open(tmp, 'w') as f:
             json.dump(meta, f, indent=2)
         os.replace(tmp, self.meta_path)
+
+    def current_turn(self) -> int:
+        """This thread's turn number; `0` if none has run in this process."""
+        return _turn_seq(self.id)
+
+    def turn_was_stopped(self, turn: Optional[int]) -> bool:
+        """Whether a stop halted `turn`. None is work no agent turn owns."""
+        with _RUNLOCK:
+            return turn in _STOPPED_TURNS.get(self.id, ())
 
     def status(self) -> str:
         with _RUNLOCK:
@@ -2436,12 +2454,9 @@ class HypervisorSession:
         # ahead of the early returns below, so an idle stop disarms the last
         # turn's watchers exactly as #402 intended; only the announcement
         # needs a live turn to ride on.
-        meta = self.read_meta()
-        if meta:
-            meta['board_watch_epoch'] = meta.get('board_watch_epoch', 0) + 1
-            self._write_meta(meta)
         with _RUNLOCK:
             seq = _TURN_SEQ.get(self.id, 0)
+            _STOPPED_TURNS.setdefault(self.id, set()).add(seq)
         disarmed = WATCHERS.cancel_thread(self.id, turn_seq=seq)
         with _RUNLOCK:
             proc = _PROCS.get(self.id)
@@ -2966,9 +2981,14 @@ class WatcherManager:
 
     # ── public API (arm / list / cancel) ───────────────────────────────────
     def arm(self, thread_id: str, kind: str, target: str, note: str = '',
-            interval: Any = None, timeout: Any = None) -> Dict[str, Any]:
+            interval: Any = None, timeout: Any = None,
+            turn_seq: Optional[int] = None) -> Dict[str, Any]:
         """Arm a watcher on a thread. Raises ValueError on bad input (the
-        HTTP layer maps that to a 400). Returns the persisted watcher."""
+        HTTP layer maps that to a 400). Returns the persisted watcher.
+
+        `turn_seq` names the owning turn when it is not the one running now:
+        a Board run belongs to the turn that requested it, however much later
+        the user approved it (#838)."""
         kind = (kind or '').strip()
         target = (target or '').strip()
         if kind not in WATCH_KINDS:
@@ -2996,7 +3016,7 @@ class WatcherManager:
             # Which turn armed this (#669). stop() cancels only its own turn's
             # watchers, so a "tell me when CI goes green" armed three turns ago
             # survives an unrelated interrupt.
-            'turn_seq': _turn_seq(thread_id),
+            'turn_seq': _turn_seq(thread_id) if turn_seq is None else turn_seq,
         }
         w['deadline'] = now + w['timeout']
         if kind == 'file':
@@ -3064,7 +3084,7 @@ class WatcherManager:
                 for w in items:
                     if w.get('state') not in _WATCH_ACTIVE_STATES:
                         continue
-                    if w.get('kind') != 'board_run' and turn_seq is not None and \
+                    if turn_seq is not None and \
                             int(w.get('turn_seq') or 0) != turn_seq:
                         continue
                     w['state'] = 'cancelled'

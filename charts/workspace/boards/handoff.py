@@ -81,7 +81,7 @@ class HandoffManager:
         except Exception:
             LOG.exception('board request event delivery failed: %s', record['id'])
 
-    def prepare(self, data, *, thread_id, watch_epoch=0):
+    def prepare(self, data, *, thread_id, watch_turn=None):
         if not isinstance(data, dict) or set(data) - {'board_id', 'repository', 'options', 'operation', 'run_id'}:
             raise HandoffError('invalid_request', 'Choose a Board, repository and run options.')
         if not isinstance(thread_id, str) or not thread_id:
@@ -103,7 +103,7 @@ class HandoffManager:
         request_id = 'brq-' + secrets.token_hex(16)
         now = self.clock()
         scope = dict(**target, options=cleaned, operation=operation,
-                     thread_id=thread_id, watch_epoch=watch_epoch,
+                     thread_id=thread_id, watch_turn=watch_turn,
                      target_run_id=data.get('run_id') if operation == 'stop' else None)
         record = dict(id=request_id, thread_id=thread_id, scope=scope,
                       board_id=target['board_id'], revision=digest(scope),

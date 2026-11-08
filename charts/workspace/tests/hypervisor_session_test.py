@@ -1569,6 +1569,45 @@ class CancelThreadScopeTest(unittest.TestCase):
         self.assertEqual(hs.WATCHERS.cancel_thread(self.s.id, turn_seq=1), [])
         self.assertEqual(self._states()[w['id']], 'cancelled')
 
+    def _arm_board_run(self, seq):
+        with hs._RUNLOCK:
+            hs._TURN_SEQ[self.s.id] = seq
+        return hs.WATCHERS.arm(self.s.id, kind='board_run', target=f'run-{seq}')
+
+    def test_a_stop_leaves_an_earlier_turns_board_run_watcher_alone(self):
+        """Board runs follow the #669 rule like every other watcher (#838)."""
+        earlier, current = self._arm_board_run(1), self._arm_board_run(2)
+        self.s.stop()
+        st = self._states()
+        self.assertEqual([st[earlier['id']], st[current['id']]], ['armed', 'cancelled'])
+
+    def test_a_board_run_watcher_can_belong_to_the_turn_that_requested_it(self):
+        with hs._RUNLOCK:
+            hs._TURN_SEQ[self.s.id] = 5
+        w = hs.WATCHERS.arm(self.s.id, kind='board_run', target='run-1', turn_seq=2)
+        self.assertEqual(w['turn_seq'], 2)
+        self.s.stop()
+        self.assertEqual(self._states()[w['id']], 'armed')
+
+    def test_a_stop_marks_only_its_own_turn(self):
+        with hs._RUNLOCK:
+            hs._TURN_SEQ[self.s.id] = 2
+        self.s.stop()
+        self.assertTrue(self.s.turn_was_stopped(2))
+        self.assertFalse(self.s.turn_was_stopped(1))
+        self.assertFalse(self.s.turn_was_stopped(None))
+
+    def test_an_idle_stop_does_not_write_thread_meta(self):
+        """The runner rewrites thread.json unlocked, so a stop that also wrote
+        it could restore a stale status, and would reorder the chat list."""
+        with open(self.s.meta_path) as f:
+            before = f.read()
+        mtime = os.stat(self.s.meta_path).st_mtime_ns
+        self.s.stop()
+        with open(self.s.meta_path) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(os.stat(self.s.meta_path).st_mtime_ns, mtime)
+
     def test_note_is_empty_when_nothing_was_disarmed(self):
         self.assertEqual(hs._disarmed_note([]), '')
 

@@ -96,9 +96,11 @@ def execute(record):
     try:
         session = server.HypervisorSession.get(record['thread_id'])
         meta = session.read_meta() if session else None
+        turn = scope.get('watch_turn')
         if (meta and not meta.get('deleted_at') and server.hv_watchers and
-                meta.get('board_watch_epoch', 0) == scope.get('watch_epoch', 0)):
-            server.hv_watchers.arm(record['thread_id'], 'board_run', run['id'], timeout=86400)
+                not session.turn_was_stopped(turn)):
+            server.hv_watchers.arm(record['thread_id'], 'board_run', run['id'],
+                                   timeout=86400, turn_seq=turn)
     except Exception:
         LOG.exception('board completion watcher unavailable request_id=%s', record['id'])
 
@@ -147,6 +149,8 @@ class BoardHandoffRoutes:
         def prepare():
             data = self.read_json_body(max_bytes=16384)
             thread = approval_auth.runner_thread(self.headers)
+            # Only an agent's request belongs to a turn a Stop can halt.
+            from_agent = bool(thread)
             if not thread:
                 approval_auth.require_human(self)
                 if not isinstance(data, dict):
@@ -158,7 +162,7 @@ class BoardHandoffRoutes:
             if session is None or (session.read_meta() or {}).get('deleted_at'):
                 raise HandoffError('thread_not_found', 'Conversation not found.', 404)
             self.send_json(manager().prepare(data, thread_id=thread,
-                watch_epoch=(session.read_meta() or {}).get('board_watch_epoch', 0)), 201)
+                watch_turn=session.current_turn() if from_agent else None), 201)
         self._handoff(prepare)
 
     def handle_board_request_get(self, request_id):
