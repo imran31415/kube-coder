@@ -27,6 +27,7 @@ import urllib.parse
 
 import handlers
 import instruction_scan
+import task_status
 from handlers.routing import RouteTable
 
 
@@ -186,7 +187,7 @@ class WorkspaceRoutes:
                 running += 1
             elif status in ('completed',):
                 completed += 1
-            elif status in ('error', 'killed', 'terminated'):
+            elif status in task_status.FAILED_STATUSES:
                 errored += 1
         self.send_json({
             'subagents': subagents,

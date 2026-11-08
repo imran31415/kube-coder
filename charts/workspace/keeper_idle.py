@@ -62,6 +62,8 @@ import ipaddress
 import os
 import time
 
+import task_status
+
 #: Ports observed for the connection-backed signals. All four listeners live in
 #: this pod (ttyd and code-server in the `ide` container, sshd in the
 #: `ssh-server` sidecar, the dashboard in server.py itself), and a pod shares
@@ -79,12 +81,12 @@ DEFAULT_IDLE_MINUTES = int(os.environ.get('KC_KEEPER_IDLE_MINUTES', '30'))
 #: `_reconcile_status` treats as not-yet-finished (server.py). `running` is
 #: unambiguous; `waiting-for-input` is qualified by the source — see
 #: `WAITING_STATUS` and `probe_tasks`.
-LIVE_TASK_STATUSES = frozenset({'running', 'waiting-for-input'})
+LIVE_TASK_STATUSES = task_status.LIVE_STATUSES
 
 #: The ambiguous one. It means "this task's screen has not moved for
 #: IDLE_WAITING_SECONDS", which is both "parked on a question" and "finished,
 #: with its interactive CLI still sitting at the prompt".
-WAITING_STATUS = 'waiting-for-input'
+WAITING_STATUS = task_status.WAITING
 
 #: /proc/net/tcp state column for ESTABLISHED.
 _TCP_ESTABLISHED = '01'

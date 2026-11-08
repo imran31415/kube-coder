@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional
 # Dockerfile's `COPY charts/workspace/*.py` puts runtimes.py right beside it.
 import runtimes
 
+# The Build status vocabulary and the task.json lock (a sibling module, like
+# runtimes): this process writes the same files as the dashboard server, so it
+# has to obey the same transition table under the same lock.
+import task_status
+
 # Isolated worktrees (#701): the same implementation the dashboard server uses,
 # shipped beside this file. Guarded so an older image without it still spawns
 # (un-isolated) sub-agents rather than failing to load the whole server.
@@ -168,9 +173,56 @@ def _write_meta(task_dir: str, meta: Dict[str, Any]) -> bool:
         return False
 
 
+def _update_meta(task_dir: str, mutate) -> Optional[Dict[str, Any]]:
+    """Read-modify-write an existing task.json under the task lock. Returns
+    the file as it now stands, None if it is gone or could not be updated."""
+    try:
+        return task_status.atomic_update_meta(task_dir, mutate)
+    except (OSError, ValueError) as e:
+        _log(f'update_meta failed: {e}')
+        return None
+
+
+def _transition(task_dir: str, to: str, fields: Optional[Dict[str, Any]] = None,
+                record=None):
+    """End a sub-agent with status `to`. Returns `(meta, moved)`.
+
+    The orchestrator's half of ClaudeTaskManager._transition: same table, same
+    lock, so a terminal status never changes no matter which process got there
+    first. `meta` is task.json as it now stands (None if it could not be
+    updated) and `moved` says whether THIS call made the change. `record(m)`
+    runs under the lock whether or not the status can move; `fields` are set
+    only when it does.
+    """
+    moved = False
+
+    def mutate(m):
+        nonlocal moved
+        if record is not None:
+            record(m)
+        if not task_status.can_transition(m.get('status'), to):
+            return record is not None  # keep only what `record` wrote
+        m['status'] = to
+        m.update(fields or {})
+        m.pop('waiting_for_input', None)
+        m.pop('last_input_prompt', None)
+        m.pop('waiting_reason', None)
+        moved = True
+
+    return _update_meta(task_dir, mutate), moved
+
+
+def _adopt_meta(meta: Dict[str, Any], fresh: Optional[Dict[str, Any]]) -> None:
+    """Make a caller's in-memory task match what is on disk, including when
+    another writer got there first."""
+    if fresh is not None:
+        meta.clear()
+        meta.update(fresh)
+
+
 def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
     """Settle a dead session's status: completed | error | terminated."""
-    if meta.get('status') not in ('running', 'waiting-for-input'):
+    if meta.get('status') not in task_status.LIVE_STATUSES:
         return
     session = meta.get('tmux_session', '')
     if not session:
@@ -185,9 +237,11 @@ def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
         # 'error' instead of being indistinguishable from a clean finish.
         exit_code = _read_exit_code(task_dir)
         boot, task_boot = _boot_id(), meta.get('boot_id') or ''
+        now = time.time()
+        fields: Dict[str, Any] = {'finished_at': now}
         if exit_code is not None and exit_code != 0:
-            meta['status'] = 'error'
-            meta['error'] = f'agent exited with code {exit_code}'
+            to = 'error'
+            fields['error'] = f'agent exited with code {exit_code}'
         elif exit_code is None and boot and task_boot and task_boot != boot:
             # No exit code AND the boot that launched it is gone: the pod
             # restarted and took the tmux session with it, so this agent never
@@ -197,26 +251,25 @@ def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
             # orchestrator has to be able to tell. The exit-code check comes
             # first deliberately: a wrapper that got far enough to write one
             # DID finish, restart or no restart.
-            meta['status'] = 'terminated'
-            meta['error'] = 'terminated by a pod restart before it finished'
-            meta['terminated_at'] = time.time()
-            meta['termination_reason'] = 'pod_restart'
+            to = 'terminated'
+            fields.update(
+                error='terminated by a pod restart before it finished',
+                terminated_at=now, termination_reason='pod_restart')
         else:
-            meta['status'] = 'completed'
+            to = 'completed'
         if exit_code is not None:
-            meta['exit_code'] = exit_code
-        meta['finished_at'] = time.time()
-        meta.pop('waiting_for_input', None)
-        meta.pop('last_input_prompt', None)
-        meta.pop('waiting_reason', None)
-        _write_meta(task_dir, meta)
+            fields['exit_code'] = exit_code
+        updated, _ = _transition(task_dir, to, fields=fields)
+        _adopt_meta(meta, updated)
         return
     # Alive, but born in an earlier boot (an older image never stamped one):
     # adopt it so the NEXT restart is still detectable. One write per boot.
     boot = _boot_id()
     if boot and (meta.get('boot_id') or '') != boot:
-        meta['boot_id'] = boot
-        _write_meta(task_dir, meta)
+        def adopt(m):
+            m['boot_id'] = boot
+
+        _adopt_meta(meta, _update_meta(task_dir, adopt))
 
 
 def _session_is_alive(session_name: str) -> bool:
@@ -290,15 +343,14 @@ def _count_live_agent_sessions() -> int:
 
 def _append_sub_task_id(parent_task_id: str, child_task_id: str) -> None:
     """Record child lineage on the parent's task.json (best-effort)."""
-    parent_dir = _task_dir(parent_task_id)
-    meta = _read_meta(parent_dir)
-    if meta is None:
-        return
-    subs = meta.get('sub_task_ids') or []
-    if child_task_id not in subs:
+    def append(m):
+        subs = m.get('sub_task_ids') or []
+        if child_task_id in subs:
+            return False
         subs.append(child_task_id)
-        meta['sub_task_ids'] = subs
-        _write_meta(parent_dir, meta)
+        m['sub_task_ids'] = subs
+
+    _update_meta(_task_dir(parent_task_id), append)
 
 
 def _assistant_command(assistant: str, prompt: str = '', headless: bool = True) -> str:
@@ -530,14 +582,14 @@ def _tool_spawn_agent(args: Dict[str, Any]) -> Dict[str, Any]:
         capture_output=True, text=True,
     )
     if tmux_result.returncode != 0:
-        meta['status'] = 'error'
-        meta['error'] = tmux_result.stderr.strip()
+        record = None
         if wt and wt.get('created'):
             # Nothing ran in it: take it back, and say so on the record.
             _rollback_worktree(wt)
-            meta['worktree']['removed_at'] = time.time()
-            meta['worktree']['rollback'] = True
-        _write_meta(task_dir, meta)
+            rollback = {'removed_at': time.time(), 'rollback': True}
+            record = lambda m: m.get('worktree', {}).update(rollback)
+        _transition(task_dir, 'error', record=record,
+                    fields={'error': tmux_result.stderr.strip()})
         return {'isError': True, 'content': [{'type': 'text', 'text': f'tmux failed: {tmux_result.stderr.strip()}'}]}
 
     # Pipe pane output to log file
@@ -745,7 +797,7 @@ def _tool_wait_for_agent(args: Dict[str, Any]) -> Dict[str, Any]:
             return {'isError': True, 'content': [{'type': 'text', 'text': f'Task {task_id} not found'}]}
         _reconcile_status(meta, task_dir)
         status = meta.get('status', 'unknown')
-        if status not in ('running', 'waiting-for-input'):
+        if status not in task_status.LIVE_STATUSES:
             output = _read_output(task_dir, tail=tail)
             return {
                 'content': [{'type': 'text', 'text': json.dumps({
@@ -794,7 +846,7 @@ def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
         entry = {'task_id': tid, 'status': status}
         if meta.get('waiting_reason'):
             entry['waiting_reason'] = meta['waiting_reason']
-        if status not in ('running', 'waiting-for-input'):
+        if status not in task_status.LIVE_STATUSES:
             entry['exit_code'] = meta.get('exit_code')
             if status == 'terminated':
                 entry['termination_reason'] = meta.get('termination_reason')
@@ -803,7 +855,7 @@ def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
 
     while True:
         results = [snapshot(t) for t in task_ids]
-        pending = [r for r in results if r['status'] in ('running', 'waiting-for-input')]
+        pending = [r for r in results if r['status'] in task_status.LIVE_STATUSES]
         if not pending:
             return {'content': [{'type': 'text', 'text': json.dumps({
                 'results': results, 'count': len(results), 'all_complete': True,
@@ -817,7 +869,8 @@ def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _tool_kill_agent(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Kill a spawned agent task."""
+    """Kill a spawned agent task. A finished one keeps the status it finished
+    with, and that status is what comes back."""
     task_id = args.get('task_id', '')
     if not task_id:
         return {'isError': True, 'content': [{'type': 'text', 'text': 'task_id is required'}]}
@@ -826,17 +879,19 @@ def _tool_kill_agent(args: Dict[str, Any]) -> Dict[str, Any]:
     if meta is None:
         return {'isError': True, 'content': [{'type': 'text', 'text': f'Task {task_id} not found'}]}
 
-    session_name = meta.get('tmux_session', f'claude-{task_id}')
+    # Status first, so a reconcile can't mistake the session vanishing for a
+    # finish. The kill is attempted even when the status could not move: a
+    # crash between these two steps leaves a session only a retry can clean up.
+    updated, _ = _transition(task_dir, 'killed',
+                             fields={'killed_at': time.time()})
+    session_name = (updated or meta).get('tmux_session', f'claude-{task_id}')
     subprocess.run(['tmux', 'kill-session', '-t', session_name],
                    capture_output=True, text=True)
-    meta['status'] = 'killed'
-    meta['killed_at'] = time.time()
-    meta.pop('waiting_reason', None)
-    _write_meta(task_dir, meta)
+    status = updated.get('status', 'unknown') if updated else 'killed'
     return {
         'content': [{'type': 'text', 'text': json.dumps({
             'task_id': task_id,
-            'status': 'killed',
+            'status': status,
         })}],
     }
 
@@ -986,7 +1041,9 @@ TOOLS: Dict[str, Any] = {
         'handler': _tool_kill_agent,
         'schema': {
             'name': 'kill_agent',
-            'description': 'Kill a running spawned agent task.',
+            'description': 'Kill a running spawned agent task. Safe on a '
+                           'finished agent: nothing changes and it returns '
+                           'the status the agent finished with.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {

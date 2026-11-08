@@ -73,6 +73,7 @@ import token_usage as tu
 # these calls — same module is both the library and the hook entrypoint, so the
 # guard and the after-the-fact notice cannot drift apart.
 import wait_guard
+import task_status
 
 # Explicit provider failures only. A generic exit, timeout, or failing tool
 # does not establish that this agent needs credentials. Do not probe files:
@@ -2850,8 +2851,7 @@ WATCH_COMMAND_TIMEOUT = 10.0
 # deliberately: interactive (Build-tab) tasks keep their tmux REPL alive after
 # finishing the work, so quiescence → waiting-for-input IS their "done / needs
 # you" signal; only headless tasks ever reach completed.
-WATCH_TASK_FIRE_STATUSES = frozenset(
-    {'completed', 'error', 'killed', 'terminated', 'waiting-for-input'})
+WATCH_TASK_FIRE_STATUSES = task_status.QUIESCENT_STATUSES
 _WATCH_ACTIVE_STATES = ('armed', 'fired', 'timeout')
 
 

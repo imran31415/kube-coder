@@ -62,6 +62,7 @@ import time
 import urllib.parse
 
 import handlers
+import task_status
 from handlers.routing import RouteTable
 
 
@@ -254,7 +255,7 @@ class TaskRoutes:
             except (OSError, json.JSONDecodeError):
                 status = 'unknown'
 
-            if status not in ('running', 'waiting-for-input') and time.time() - last_change > idle_grace:
+            if status not in task_status.LIVE_STATUSES and time.time() - last_change > idle_grace:
                 write_raw(f'event: end\ndata: {status}\n\n'.encode('utf-8'))
                 return
 

@@ -49,6 +49,8 @@ import tempfile
 import threading
 import time
 
+import task_status
+
 try:
     import fcntl
 except ImportError:          # pragma: no cover - a Windows dev box
@@ -1262,7 +1264,7 @@ def remove(path, *, wt_root=None, force=False, is_owner_live=None,
 
 # ── sweep ─────────────────────────────────────────────────────────────────
 
-TERMINAL_STATUSES = frozenset({'completed', 'killed', 'error', 'terminated'})
+TERMINAL_STATUSES = task_status.TERMINAL_STATUSES
 
 
 def _owners(m):

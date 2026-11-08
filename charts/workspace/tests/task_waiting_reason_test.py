@@ -30,6 +30,7 @@ import hypervisor_session  # noqa: E402
 import mcp_agent_orchestrator as orch  # noqa: E402
 import mcp_dashboard  # noqa: E402
 import server  # noqa: E402
+import task_status  # noqa: E402
 from task_state_machine_test import Base  # noqa: E402
 
 CTM = server.ClaudeTaskManager
@@ -312,7 +313,7 @@ class ClientCompatibilityTests(WaitingBase):
             server.PrometheusMetricsCollector.TASK_STATUSES,
             ('running', WAITING, 'completed', 'error', 'killed', 'terminated'))
         self.assertIn(WAITING, hypervisor_session.WATCH_TASK_FIRE_STATUSES)
-        self.assertIn(WAITING, server.BoardRunsManager.TERMINAL_TASK_STATUSES)
+        self.assertIn(WAITING, task_status.QUIESCENT_STATUSES)
 
     def test_every_reason_keeps_the_same_status_and_flag(self):
         for screen, meta in ((QUESTION, {}), (PROSE, {}),

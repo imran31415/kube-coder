@@ -25,6 +25,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import server  # noqa: E402
+import task_status  # noqa: E402
 import worktrees  # noqa: E402
 
 sys.path.insert(0, HERE)
@@ -124,7 +125,7 @@ class TransitionTableTests(Base):
     """Every pair in ALL x ALL, through the one function that writes status."""
 
     def test_table_matches_the_lifecycle(self):
-        seen = {(a, b) for a, table in CTM._TRANSITIONS.items() for b in table}
+        seen = {(a, b) for a, table in task_status.TRANSITIONS.items() for b in table}
         self.assertEqual(seen, ALLOWED)
 
     def test_every_pair(self):
@@ -165,13 +166,13 @@ class TransitionTableTests(Base):
 
     def test_terminal_list_matches_the_worktree_sweep(self):
         # worktrees.py decides what may be removed from its own copy.
-        self.assertEqual(set(CTM._TERMINAL_STATUSES),
+        self.assertEqual(set(task_status.TERMINAL_STATUSES),
                          set(worktrees.TERMINAL_STATUSES))
 
     def test_wire_values_are_exactly_these_strings(self):
-        self.assertEqual(set(CTM._TERMINAL_STATUSES),
+        self.assertEqual(set(task_status.TERMINAL_STATUSES),
                          {'completed', 'error', 'killed', 'terminated'})
-        self.assertEqual(set(CTM._TRANSITIONS), {'running', 'waiting-for-input'})
+        self.assertEqual(set(task_status.TRANSITIONS), {'running', 'waiting-for-input'})
 
 
 class TransitionEffectsTests(Base):

@@ -68,6 +68,9 @@ import page_watch
 # imported unguarded because a server that cannot name its runtimes cannot
 # launch a task at all.
 import runtimes
+# The Build status vocabulary and the task.json lock, shared with every other
+# process that reads or writes a task. A sibling module like runtimes.
+import task_status
 
 # Mobile push notifications (Expo): device-token store + high-signal dispatch,
 # hooked into FeedManager.emit below. Stdlib-only and self-contained, so it
@@ -1480,8 +1483,7 @@ class PrometheusMetricsCollector:
 
     #: Terminal + live statuses ClaudeTaskManager writes. Anything else is
     #: folded into `unknown` so a stray value can't mint a new series.
-    TASK_STATUSES = ('running', 'waiting-for-input', 'completed', 'error',
-                     'killed', 'terminated')
+    TASK_STATUSES = task_status.ALL_STATUSES
     UNKNOWN_STATUS = 'unknown'
 
     #: Where agent spend happened. Summing over this gives the workspace total;
@@ -3719,7 +3721,7 @@ class ClaudeTaskManager:
             except (json.JSONDecodeError, OSError):
                 continue
             # Cheap skip for terminal tasks — avoids the tmux has-session call.
-            if meta.get('status') not in ('running', 'waiting-for-input'):
+            if meta.get('status') not in task_status.LIVE_STATUSES:
                 continue
             try:
                 ClaudeTaskManager._reconcile_status(meta, task_dir)
@@ -3804,7 +3806,7 @@ class ClaudeTaskManager:
                 ClaudeTaskManager._redelivering.discard(task_id)
 
         def record(m):
-            if m.get('status') not in ('running', 'waiting-for-input'):
+            if m.get('status') not in task_status.LIVE_STATUSES:
                 return False
             if delivered:
                 m['prompt_delivered'] = True
@@ -4049,7 +4051,7 @@ class ClaudeTaskManager:
             meta = json.load(f)
 
         # A finished Build takes no more input, even with a session still up.
-        if meta.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+        if meta.get('status') in task_status.TERMINAL_STATUSES:
             return None, 'Session is no longer running'
 
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
@@ -4093,7 +4095,7 @@ class ClaudeTaskManager:
             # The Build ended while the text was being pasted, so nothing is
             # left to read it. Refused rather than recorded: the caller must
             # hear what a session already dead at the top of this call gets.
-            if m.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+            if m.get('status') in task_status.TERMINAL_STATUSES:
                 return False
             m.setdefault('followups', []).append(
                 {'prompt': prompt, 'sent_at': sent_at})
@@ -4101,7 +4103,7 @@ class ClaudeTaskManager:
         updated, _ = ClaudeTaskManager._transition(
             task_dir, 'running', record=record_followup)
         if updated is not None and \
-                updated.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+                updated.get('status') in task_status.TERMINAL_STATUSES:
             return None, 'Session is no longer running'
         return updated, None
 
@@ -4173,42 +4175,14 @@ class ClaudeTaskManager:
         mutate_fn(meta) may modify meta in place. Returning False skips the write
         (used when the mutator decides the update is no longer needed after seeing
         fresh state). Returns the post-mutation meta dict, or None if the task
-        directory is gone.
+        directory is gone. The sub-agent orchestrator takes this same lock.
         """
-        meta_path = os.path.join(task_dir, 'task.json')
-        if not os.path.isfile(meta_path):
-            return None
-        lock_path = os.path.join(task_dir, '.meta.lock')
-        with open(lock_path, 'a') as lockf:
-            fcntl.flock(lockf, fcntl.LOCK_EX)
-            try:
-                with open(meta_path, 'r') as f:
-                    meta = json.load(f)
-                should_write = mutate_fn(meta)
-                if should_write is False:
-                    return meta
-                tmp_path = meta_path + '.tmp'
-                with open(tmp_path, 'w') as f:
-                    json.dump(meta, f, indent=2)
-                os.rename(tmp_path, meta_path)
-                return meta
-            finally:
-                fcntl.flock(lockf, fcntl.LOCK_UN)
+        return task_status.atomic_update_meta(task_dir, mutate_fn)
 
     # ── Build lifecycle ──────────────────────────────────────────────────
-    # Every status change goes through `_transition`, so one table says what
-    # is legal and one place runs what a change implies. The values are wire
-    # format: the dashboard, the mobile app and hook receivers all match on
-    # them.
-
-    _TERMINAL_STATUSES = ('completed', 'error', 'killed', 'terminated')
-
-    #: status -> statuses it may become. A terminal status has no entry, and
-    #: neither does a same-status "move", so neither can ever transition.
-    _TRANSITIONS = {
-        'running': frozenset(('waiting-for-input',) + _TERMINAL_STATUSES),
-        'waiting-for-input': frozenset(('running',) + _TERMINAL_STATUSES),
-    }
+    # Every status change goes through `_transition`, so one table
+    # (task_status.TRANSITIONS) says what is legal and one place runs what a
+    # change implies.
 
     #: Terminal statuses that record their moment under a name of their own,
     #: alongside `finished_at`.
@@ -4244,14 +4218,14 @@ class ClaudeTaskManager:
         """
         cls = ClaudeTaskManager
         at = time.time() if at is None else at
-        terminal = to in cls._TERMINAL_STATUSES
+        terminal = to in task_status.TERMINAL_STATUSES
         moved = fire_hook = False
 
         def mutate(m):
             nonlocal moved, fire_hook
             if record is not None and record(m) is False:
                 return False
-            if to not in cls._TRANSITIONS.get(m.get('status'), ()) or \
+            if not task_status.can_transition(m.get('status'), to) or \
                     (guard is not None and not guard(m)):
                 return record is not None  # keep only what `record` wrote
             m['status'] = to
@@ -4292,7 +4266,7 @@ class ClaudeTaskManager:
         """The consequences of one status change. Each is independent: the
         status is already on disk, so a failure here must not cost the rest."""
         cls = ClaudeTaskManager
-        terminal = to in cls._TERMINAL_STATUSES
+        terminal = to in task_status.TERMINAL_STATUSES
         event = {'task_id': task_id, 'status': to}
         if terminal:
             event['finished_at'] = meta.get('finished_at')
@@ -5434,10 +5408,6 @@ class ClaudeTaskManager:
         u['assistant'] = meta.get('assistant') or ''
         return u
 
-    #: Task statuses that mean the CLI is gone — nothing more will be appended
-    #: to the transcript, so one final scan settles the figure for good.
-    _LIVE_STATUSES = ('running', 'waiting-for-input')
-
     @staticmethod
     def ingest_usage(meta, task_dir, force=False):
         """Fold this Build's transcript usage into task.json, and return it.
@@ -5486,7 +5456,7 @@ class ClaudeTaskManager:
 
             state = meta.get('usage_ingest') if isinstance(
                 meta.get('usage_ingest'), dict) else {}
-            live = meta.get('status') in ClaudeTaskManager._LIVE_STATUSES
+            live = meta.get('status') in task_status.LIVE_STATUSES
             if not live and state.get('final'):
                 # The CLI is gone and the settling scan already ran: the figure
                 # can't change again, so stop re-reading (and re-writing) it.
@@ -5709,7 +5679,7 @@ class ClaudeTaskManager:
         ClaudeTaskManager.ingest_usage(meta, task_dir)
         
         # If task is already finished, no need to check further
-        if current_status not in ('running', 'waiting-for-input'):
+        if current_status not in task_status.LIVE_STATUSES:
             return
         if meta.get('task_id') in ClaudeTaskManager._launching:
             return
@@ -9313,22 +9283,14 @@ class BoardRunsManager:
       and capped at `WATCH_MAX_PER_THREAD = 8`; a 20-item run would blow it.
       Each Build is stamped `board:<board>:run:<run>:item:<item>` and the run
       reads back its own workers.
-    - **`waiting-for-input` counts as terminal**, copying
-      `WATCH_TASK_FIRE_STATUSES`. An interactive Build keeps its REPL alive
-      after finishing the work, so quiescence IS its done signal; waiting for
-      `completed` would leave every item hanging forever.
+    - **`waiting-for-input` ends an item's wait** (the run polls for
+      `task_status.QUIESCENT_STATUSES`, as the Hypervisor's watchers do). An
+      interactive Build keeps its REPL alive after finishing the work, so
+      quiescence IS its done signal; waiting for `completed` would leave every
+      item hanging forever.
     """
 
     POLL_INTERVAL = 4.0
-    # Copied from hypervisor_session.WATCH_TASK_FIRE_STATUSES rather than
-    # imported, because the hypervisor package is optional and a run must not
-    # stop working when it is absent.
-    TERMINAL_TASK_STATUSES = frozenset(
-        {'completed', 'error', 'killed', 'terminated', 'waiting-for-input'})
-    # Items whose Build ended cleanly are recorded as processed; these did not.
-    # `terminated` (#792) belongs here: a Build the pod restart wiped never
-    # reached its work, so the item must not be marked processed.
-    FAILED_TASK_STATUSES = frozenset({'error', 'killed', 'terminated'})
     MAX_RUNS_KEPT = 200
 
     _lock = threading.Lock()
@@ -10076,9 +10038,11 @@ class BoardRunsManager:
                 cls._settle(run_id, row, leases, processed, 'failed',
                             'the build record disappeared')
                 continue
-            if status not in cls.TERMINAL_TASK_STATUSES:
+            if status not in task_status.QUIESCENT_STATUSES:
                 continue
-            if status in cls.FAILED_TASK_STATUSES:
+            # Items whose Build ended cleanly are recorded as processed; these
+            # did not, including a Build the pod restart wiped (#792).
+            if status in task_status.FAILED_STATUSES:
                 cls._settle(run_id, row, leases, processed, 'failed',
                             f'the build ended as {status}')
             elif not row.get('disposition'):
@@ -15130,7 +15094,7 @@ def _mc_task_card(meta, task_dir, now):
         state = 'running'
     elif status == 'waiting-for-input':
         state = 'waiting'
-    elif status in ('completed', 'error', 'killed', 'terminated'):
+    elif status in task_status.TERMINAL_STATUSES:
         if not finished_at or (now - finished_at) > MC_RECENT_SECONDS:
             return None
         state = 'done'
@@ -15373,13 +15337,6 @@ def _mc_primary_arg(tool_input):
     return ''
 
 
-# Raw task status → board state, matching _mc_task_card's mapping so the
-# drawer's lineage chips read the same as the queue's.
-_MC_STATUS_STATE = {'running': 'running', 'waiting-for-input': 'waiting',
-                    'completed': 'done', 'error': 'done', 'killed': 'done',
-                    'terminated': 'done'}
-
-
 def _mc_entry(at, kind, text, detail='', link=None, status='ok'):
     """One normalized timeline entry — the drawer's unit of history."""
     return {'at': at, 'kind': kind, 'text': _mc_clip(text, 140),
@@ -15489,7 +15446,7 @@ def missioncontrol_card_detail(card_id):
             card['children'].append({
                 'id': f'subagent:{child_id}',
                 'title': child.get('name') or child_id,
-                'state': _MC_STATUS_STATE.get(
+                'state': task_status.MISSION_STATE.get(
                     child.get('status'), child.get('status', 'unknown')),
             })
         tail = strip_ansi(_mc_tail(os.path.join(task_dir, 'output.log')))
