@@ -203,7 +203,11 @@ jobs:
 
   web-tests:
     name: Dashboard SPA Tests
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04, where Playwright
+    # refuses to install Chromium's dependencies ("does not support chromium on
+    # ubuntu26.04-x64"). #838 adds a browser acceptance step to this job.
+    # Same pin as the Memory soak job in desktop.yml (#839).
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
