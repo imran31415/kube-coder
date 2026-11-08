@@ -302,6 +302,23 @@ class SharedLockTests(Base):
         self.assertTrue(done.is_set())
         self.assertEqual(self.read()['status'], 'killed')
 
+    def test_the_lineage_append_waits_for_the_servers_lock(self):
+        self.task('parent', status='running', sub_task_ids=[])
+        done = threading.Event()
+        with open(os.path.join(self.dir('parent'), '.meta.lock'), 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+
+            def append():
+                orch._append_sub_task_id('parent', 'child')
+                done.set()
+
+            worker = threading.Thread(target=append)
+            worker.start()
+            self.assertFalse(done.wait(0.2), 'wrote without the task lock')
+            fcntl.flock(held, fcntl.LOCK_UN)
+        worker.join(10)
+        self.assertEqual(self.read('parent')['sub_task_ids'], ['child'])
+
     def test_server_and_orchestrator_writes_lose_nothing(self):
         # Every path that rewrites an existing record has to take the lock,
         # including the lineage append, which never touches status.
