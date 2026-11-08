@@ -6,6 +6,7 @@
  * Timestamps are offsets from load time so the relative labels ("90s ago",
  * "1h ago") read realistically whenever screenshots are regenerated.
  */
+import { isActiveStatus } from '../util/taskStatus';
 import type {
   AppEntry,
   ControllerCapacity,
@@ -196,7 +197,7 @@ export function mockWorktreeView(id: string): TaskWorktreeView | null {
     },
     exists: true,
     branch_exists: true,
-    live: t.status === 'running' || t.status === 'waiting',
+    live: isActiveStatus(t.status),
     status: {
       branch: t.worktree.branch ?? '',
       behind: 0,
@@ -209,7 +210,7 @@ export function mockWorktreeView(id: string): TaskWorktreeView | null {
     },
     status_error: '',
     push_command: `git -C ${t.worktree.path} push -u fork ${t.worktree.branch}`,
-    remove_blocked: t.status === 'running' || t.status === 'waiting' ? 'live' : '',
+    remove_blocked: isActiveStatus(t.status) ? 'live' : '',
   };
 }
 

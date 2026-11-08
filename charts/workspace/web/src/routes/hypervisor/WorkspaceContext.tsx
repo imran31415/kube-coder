@@ -7,6 +7,7 @@ import {
   refreshWorkspaceTasks,
 } from '../../store/hypervisor';
 import type { TaskSummary } from '../../api/tasks';
+import { isAliveStatus } from '../../util/taskStatus';
 
 /**
  * A slim "workspace glance" strip above the transcript: clean chips for the
@@ -15,7 +16,6 @@ import type { TaskSummary } from '../../api/tasks';
  * terminal. Polls independently of the thread so it stays fresh between turns.
  */
 
-const LIVE = new Set(['running', 'waiting-for-input']);
 const MAX_CHIPS = 4;
 
 function shortTitle(t: TaskSummary): string {
@@ -29,7 +29,7 @@ export function WorkspaceContext() {
   // Everything live except this chat's own session — those are the "entities"
   // worth surfacing (builds, sub-agents, terminals).
   const live = workspaceTasks.value.filter(
-    (t) => LIVE.has(t.status) && t.task_id !== activeThreadId.value,
+    (t) => isAliveStatus(t.status) && t.task_id !== activeThreadId.value,
   );
   const running = live.filter((t) => t.status === 'running').length;
   const waiting = live.filter((t) => t.status === 'waiting-for-input').length;
