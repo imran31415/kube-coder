@@ -799,7 +799,6 @@ export default function HypervisorScreen() {
           onScroll={onTranscriptScroll}
           scrollEventThrottle={100}
         >
-          {activeId && <BoardRequestCards key={activeId} threadId={activeId} />}
           {empty ? (
             <View style={styles.welcome}>
               {/* The AI CTO's own opener, for a chat being composed in CTO mode
@@ -928,6 +927,17 @@ export default function HypervisorScreen() {
                 <Text style={styles.working}>· working…</Text>
               </View>
             </View>
+          )}
+          {/* After the newest message, so a pending approval is on screen for a
+              reader following the bottom. */}
+          {activeId && (
+            <BoardRequestCards
+              key={activeId}
+              threadId={activeId}
+              onChange={() => {
+                if (pinnedRef.current) setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
+              }}
+            />
           )}
         </ScrollView>
 

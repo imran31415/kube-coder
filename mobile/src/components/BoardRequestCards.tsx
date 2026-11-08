@@ -20,7 +20,7 @@ function sameRequests(a: BoardHandoffRequest[], b: BoardHandoffRequest[]): boole
  *  changed, and never through a bailing-out updater: React keeps a bailed-out
  *  update (and what its closure captured) queued until the next render, which
  *  is how the chat transcript leaked in #839. */
-export function BoardRequestCards({ threadId }: { threadId: string }) {
+export function BoardRequestCards({ threadId, onChange }: { threadId: string; onChange?: () => void }) {
   const [records, setRecords] = useState<BoardHandoffRequest[]>([]);
   const [error, setError] = useState('');
   const recordsRef = useRef<BoardHandoffRequest[]>([]);
@@ -61,9 +61,13 @@ export function BoardRequestCards({ threadId }: { threadId: string }) {
 
   usePolling(refresh, 15000, ['boards.request']);
 
+  // Cards arrive between transcript updates, so tell the chat to follow them.
+  useEffect(() => { onChange?.(); }, [records, error]);
+
   return <View>
     {error ? <Text accessibilityRole="alert" style={styles.message}>{error}</Text> : null}
-    {records.slice(0, 10).map(record => <View key={record.id} style={styles.card}>
+    {/* Oldest first: the list ends the transcript, newest beside the newest message. */}
+    {records.slice(0, 10).reverse().map(record => <View key={record.id} style={styles.card}>
       <Text style={styles.title}>{record.state === 'pending' ? 'Board run needs your approval' : `Board request: ${record.state}`}</Text>
       <Text style={styles.message}>{record.scope.board_name} · {record.scope.repository.replace('https://', '')}</Text>
       {record.error?.error ? <Text style={styles.message}>{record.error.error}</Text> : null}
