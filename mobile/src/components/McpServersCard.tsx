@@ -6,7 +6,7 @@
  *  config — new sessions pick them up. Mirrors ProviderKeysCard. Remote
  *  (http/sse, #815) entries are listed and toggled here but added from the
  *  web dashboard. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,

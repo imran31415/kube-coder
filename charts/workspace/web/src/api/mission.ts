@@ -1,4 +1,5 @@
 import { apiGet } from './client';
+import type { WaitingReason } from './tasks';
 
 /**
  * Client for the Mission Control queue (issue #425): one normalized feed of
@@ -69,6 +70,8 @@ export interface MissionCard {
   finished_at: number | null;
   waiting_since: number | null;
   waiting_prompt: MissionPrompt | null;
+  /** Set only on waiting Build and sub-agent cards. */
+  waiting_reason?: WaitingReason | null;
   outcome: MissionOutcome | null;
   /** Chips on Done cards (empty for running/waiting cards and chats). */
   evidence: MissionEvidence[];
@@ -79,10 +82,17 @@ export interface MissionCard {
 export interface MissionPulse {
   running: number;
   waiting: number;
+  /** The subset of `waiting` that isn't `idle`. Absent on an older server. */
+  needs_you?: number;
   review: number;
   done_today: number;
   oldest_wait_s: number;
   generated_at: number;
+}
+
+/** How many waiting cards need a person. An older server sends only `waiting`. */
+export function needsYouCount(pulse: MissionPulse): number {
+  return pulse.needs_you ?? pulse.waiting;
 }
 
 export interface MissionQueue {

@@ -29,23 +29,20 @@
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
-import { Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
-import { markFeedRead, registerPushToken, unregisterPushToken } from '../api/client';
+import { registerPushToken, unregisterPushToken } from '../api/client';
 import { isDesktop } from '../desktop/bridge';
-import { getConfig, setPushEnabled, subscribe } from '../store/config';
-import { navigateTo, navigationRef } from '../store/nav';
-import { requestBoardFocus } from '../store/boardFocus';
-import { onceAwake } from '../store/workspaceState';
-import { pushTargetFromData, type PushData } from '../util/push';
-import { isDownError } from '../util/workspaceReach';
+import { getConfig, setPushEnabled } from '../store/config';
+import type { PushData } from '../util/push';
+import { handleNotificationTap } from './tapRouter';
+
+// Where a tap lands lives in ./tapRouter, shared with the web build.
+export { handleNotificationTap, replayParkedNotificationTap } from './tapRouter';
 
 let handlerConfigured = false;
 let responseSub: Notifications.EventSubscription | null = null;
 let lastRegistered = '';
-/** The tap that arrived before the navigator was mounted, waiting for
- *  `replayParkedNotificationTap()`. Latest wins: only one screen can open. */
-let parkedTap: { data: PushData | undefined } | null = null;
 /** Responses already routed this launch — see `responseKey()`. */
 const handledResponses = new Set<string>();
 
@@ -180,99 +177,6 @@ export async function unregisterForPush(): Promise<void> {
     await unregisterPushToken(token);
   } catch {
     // best-effort — we are disconnecting either way
-  }
-}
-
-/** Mark a tapped alert's Feed row read. A tap that cold-starts the app arrives
- *  before the saved connection is hydrated, when a request has no host or token
- *  to use — so wait for hydration instead of sending one that cannot land.
- *  A tap on a sleeping workspace (#728) waits for it to wake: losing the read
- *  would silence every later repeat of this alert. */
-function markTappedRead(feedId: string): void {
-  const send = () => {
-    Promise.resolve()
-      .then(() => markFeedRead(feedId))
-      .catch((e) => {
-        if (isDownError(e)) onceAwake(send);
-      });
-  };
-  if (getConfig().loaded) {
-    send();
-    return;
-  }
-  const unsubscribe = subscribe((c) => {
-    if (!c.loaded) return;
-    unsubscribe();
-    send();
-  });
-}
-
-/** Route a notification tap to the screen its ref points at, reusing the Feed's
- *  mapping. Unknown/empty refs open the Feed so a tap is never a dead end. */
-export function handleNotificationTap(data: PushData | undefined): void {
-  // Reading happens even when navigation can't: the server re-sends a repeat of
-  // this alert only once its row has been read (#685).
-  const feedId = (data?.feedId || '').trim();
-  if (feedId) markTappedRead(feedId);
-  if (!navigationRef.isReady()) {
-    // A cold start (#709): the app is still on its boot screen, so there is no
-    // navigator to send this to yet. Hold it for App's onReady.
-    parkedTap = { data };
-    return;
-  }
-  routeTap(data);
-}
-
-/** Route the tap parked by `handleNotificationTap`, once the navigator is
- *  mounted. App passes this to NavigationContainer's `onReady`. A no-op when
- *  nothing is parked, so calling it twice cannot navigate twice. */
-export function replayParkedNotificationTap(): void {
-  if (!parkedTap || !navigationRef.isReady()) return;
-  const { data } = parkedTap;
-  parkedTap = null;
-  routeTap(data);
-}
-
-function routeTap(data: PushData | undefined): void {
-  const target = pushTargetFromData(data);
-  switch (target.kind) {
-    case 'task':
-      navigationRef.navigate(
-        // @ts-expect-error — nested route params are validated at the navigator
-        'Tasks',
-        { screen: 'TaskDetail', params: { id: target.id }, initial: false },
-      );
-      break;
-    case 'thread':
-      // Opens THAT chat (#683). It used to open the AI CTO screen and drop the
-      // id, because that screen had no way to open a thread by reference.
-      // @ts-expect-error — tab params are validated at the navigator
-      navigationRef.navigate('Hypervisor', { openThreadId: target.id });
-      break;
-    case 'memory':
-      navigateTo('Memory');
-      break;
-    case 'board':
-      // Park the target BEFORE navigating. Board is a tab screen that stays
-      // mounted, so it may never re-mount to read a route param — it reads
-      // the request from the store and clears it once the card is in view.
-      requestBoardFocus(target.boardId, target.itemId);
-      navigateTo('Board');
-      break;
-    case 'scan':
-      // A finished security scan (#726). Nested like Tasks, because Security
-      // is a stack and the notification points at one scan inside it.
-      navigationRef.navigate(
-        // @ts-expect-error — nested route params are validated at the navigator
-        'Security',
-        { screen: 'ScanDetail', params: { id: target.id }, initial: false },
-      );
-      break;
-    case 'external':
-      Linking.openURL(target.url).catch(() => {});
-      break;
-    default:
-      navigateTo('Feed');
   }
 }
 

@@ -1,5 +1,7 @@
 /** Shared API types mirroring server.py's JSON shapes. */
 
+export type WaitingReason = 'question' | 'trust_dialog' | 'undelivered' | 'idle';
+
 export interface TaskSummary {
   id: string;
   prompt: string;
@@ -9,6 +11,8 @@ export interface TaskSummary {
   created_at?: number;
   updated_at?: number;
   waiting_for_input?: boolean;
+  /** Present only while waiting. `idle` means no question was detected, not done. */
+  waiting_reason?: WaitingReason;
   /** Present only for a Build running in an isolated worktree (#701). */
   worktree?: WorktreeBrief;
 }
@@ -368,6 +372,7 @@ export interface MissionCard {
   finished_at: number | null;
   waiting_since: number | null;
   waiting_prompt: MissionWaitingPrompt | null;
+  waiting_reason?: WaitingReason | null;
   outcome: { ok: boolean; detail: string } | null;
   /** Chips on Done cards (empty for running/waiting cards and chats). */
   evidence: MissionEvidence[];
@@ -379,6 +384,7 @@ export interface MissionCard {
 export interface MissionPulse {
   running: number;
   waiting: number;
+  needs_you?: number;
   done_today: number;
   oldest_wait_s: number;
   generated_at: number;

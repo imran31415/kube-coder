@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.28@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 # devlaptop/Dockerfile
 #
 # Multi-stage:
@@ -45,9 +45,9 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # the dashboard SPA build under it at the same time, so instead we ship a SECOND,
 # side-by-side Node purely for `dsh` (installed under /opt/node22 below, never on
 # PATH). Same digest-pinned-official-image supply chain as node-dist above.
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node22-dist
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS node22-dist
 
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea AS runtime
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 # dropped). Pinned for reproducible builds — bump NPM_VERSION + rebuild to
 # update. See github.com/imran31415/kube-coder/issues/69.
 # renovate: datasource=npm depName=npm
-ARG NPM_VERSION=11.19.1
+ARG NPM_VERSION=11.21.2
 # Pin Yarn (classic) explicitly instead of installing floating `latest` — a
 # supply-chain hardening from the July 2026 review (finding 7). npm verifies the
 # package integrity/signature against the registry on install.
@@ -116,7 +116,7 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # Pinned for reproducible builds — Renovate bumps COMPOSE_VERSION weekly
 # (github-releases datasource: docker/compose). To bump manually: edit + rebuild.
 # renovate: datasource=github-releases depName=docker/compose
-ARG COMPOSE_VERSION=v5.5.1
+ARG COMPOSE_VERSION=v5.7.0
 # Checksum-verified against the vendor-published .sha256 before it is made
 # executable (supply-chain hardening, July 2026 review, finding 7).
 RUN ARCH=$(dpkg --print-architecture) \
@@ -134,7 +134,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # release path and verified before install, so a corrupted/tampered binary fails
 # the build (`sha256sum -c` exits non-zero). Bump KUBECTL_VERSION to update.
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-ARG KUBECTL_VERSION=v1.37.0
+ARG KUBECTL_VERSION=v1.37.2
 RUN ARCH=$(dpkg --print-architecture) \
   && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" \
   && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl.sha256" -o kubectl.sha256 \
@@ -150,7 +150,6 @@ RUN ARCH=$(dpkg --print-architecture) \
 # 7.5.16 (MEDIUM) + ws. Note: the deps bundled under lib/vscode/ (undici, ws,
 # tar) track the upstream VS Code build code-server vendors and only move when
 # code-server rebases onto a newer VS Code — so bumping code-server is the lever.
-# renovate: datasource=github-releases depName=coder/code-server
 # SUPPLY-CHAIN (finding 7, resolved): the release ships no SHA256SUMS/.sha256
 # asset, but GitHub's release API exposes a per-asset sha256 `digest` for each
 # .deb. We pin that digest per arch below and `sha256sum -c` the download before
@@ -159,9 +158,12 @@ RUN ARCH=$(dpkg --print-architecture) \
 # the new values from
 #   curl -fsSL https://api.github.com/repos/coder/code-server/releases/tags/v<VER> \
 #     | jq -r '.assets[] | select(.name|endswith(".deb")) | "\(.name) \(.digest)"'
-ARG CODE_SERVER_VERSION=4.137.0
-ARG CODE_SERVER_SHA256_AMD64=f0165952d918092eb321a2d4e75a1e7035807d687b698ccda63aea2bfa1c58bc
-ARG CODE_SERVER_SHA256_ARM64=0d2b58387833f328bec3723f842bf68e59031fc24b1e03a9c6c1659765a420ef
+# Renovate bumps the version, and its postUpgradeTask
+# (scripts/renovate/code-server-sha.mjs) re-pins both digests from the same API.
+# renovate: datasource=github-releases depName=coder/code-server
+ARG CODE_SERVER_VERSION=4.145.0
+ARG CODE_SERVER_SHA256_AMD64=43fa1dc0e7929753bb3442e4ef40d4beb8bb5f8fe63601ede31b305536e6275b
+ARG CODE_SERVER_SHA256_ARM64=43813b81df484b49facf19d99faaa51683a2cdd8c652dc97ebddefa9cbe7fd6a
 RUN ARCH=$(dpkg --print-architecture) \
   && case "$ARCH" in \
        amd64) CS_SHA256="$CODE_SERVER_SHA256_AMD64" ;; \
@@ -177,7 +179,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.310
+ARG CLAUDE_CODE_VERSION=2.1.316
 RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -186,7 +188,7 @@ RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # proxy on a Digital Ocean droplet) via on-disk config written at pod start.
 # https://opencode.ai
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.19.4
+ARG OPENCODE_VERSION=1.19.5
 RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 
 # Codex CLI — OpenAI's terminal-native coding agent. Surfaces in the dashboard
@@ -196,7 +198,7 @@ RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.164.0
+ARG CODEX_VERSION=0.166.0
 RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
@@ -223,6 +225,29 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 #     acp` boots that bundle out of the dsh installation. Installing dsh-acp at
 #     top level would add a second, unused copy.
 #
+#  3. npm OVERRIDES, so NOT `npm install -g`. dsh's own sub-packages pin three
+#     dependencies EXACTLY at versions with open advisories (Trivy, 2026-11-07):
+#       undici 8.11.2                  (dsh-http-proxy, dsh-web-fetch-http)
+#                                      4 high + 4 medium, fixed in 8.12.2
+#       fflate 0.8.2                   (libreoffice-kit, every published
+#                                      version of it) 1 high, fixed in 0.8.3
+#       @modelcontextprotocol/client 2.2.0  (dsh-mcp-client) 1 medium, fixed
+#                                      in 2.3.0 (pulls core 2.3.x with it)
+#     No published dsh moves them: 0.2.2-rc.1 (`latest`/`next`) and
+#     0.2.2-alpha.3 still pin all three, and 0.2.2-rc.1 also needs Node >=24.9,
+#     so a bump would have moved this Node to 24 for zero fixed alerts.
+#     Overrides only apply at a project ROOT, never to `-g`, so /opt/dsh/lib is
+#     installed as a tiny private project whose only dependency is dsh. The
+#     `shallow` install strategy is exactly the global layout (dsh at top
+#     level, its whole tree nested under dsh/node_modules), so every path, the
+#     wrapper's included, is unchanged from the old `-g --prefix /opt/dsh`.
+#     A plain rebuild and this one differ in exactly those four packages
+#     (undici, fflate, MCP client + core); see VERSION PIN below for the
+#     ACP check. When bumping DSH_VERSION, re-read the new version's own pins
+#     (`npm view @deepseek-ai/dsh-http-proxy@<ver> dependencies` etc.) and
+#     DROP every override it no longer needs: an override forces its version
+#     even when dsh has moved past it, so a stale one is a silent downgrade.
+#
 # VERSION PIN — read before bumping. Every published version is a prerelease,
 # and a dist-tag is no guarantee of an ACP server: 0.1.1-rc.2 was once `latest`
 # and has no `acp` profile at all (0.1.2-rc.1 was the first that did). Pin an
@@ -242,6 +267,20 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 # DEEPSEEK_API_KEY only the deepseek-v4-flash default is offered; with a key
 # both runtimes.DSH_MODELS (v4-flash, v4-pro) are.
 #
+# The overrides in (3) were verified the same way on 2026-11-07: this exact
+# install (0.2.1-rc.5 + overrides, /opt/node22 v22.23.4, npm 11.21.2) against
+# the shipping 0.2.1-rc.5, both driven by the real acp_bridge.py with a
+# throwaway DSH_HOME. Identical on every method above (initialize result
+# byte-identical; same model/reasoning_effort options and set_config_option
+# results; real tool-using prompt `end_turn`; close; resume from a fresh
+# process with history kept; no-key `-32603`), plus the two paths the
+# overrides actually touch: an MCP `tools/call` through the curated memory
+# server (MCP client 2.3.1) and a `web_fetch` tool call (undici 8.12.4's own
+# Agent/fetch). Upgrade path: resuming a session that the shipping build
+# created in its ~/.dsh worked, with history kept and profiles byte-identical.
+# Not exercised: dsh-http-proxy's ProxyAgent, which only engages under a proxy
+# policy this workspace does not set.
+#
 # Renovate tracks the marker below, but while the current version is unstable
 # it only proposes newer prereleases of the SAME x.y.z (0.2.1-rc.N) or a stable
 # release. Upstream starts a new x.y.z prerelease line every week or two, so
@@ -249,6 +288,16 @@ RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 # `dsh --profile acp` answering an ACP `initialize` and opening a session.
 # renovate: datasource=npm depName=@deepseek-ai/dsh
 ARG DSH_VERSION=0.2.1-rc.5
+# Exact versions, see (3) above. Each is a stopgap that should disappear with a
+# dsh bump. Renovate tracks them (non-major only) in the same group as dsh, so a
+# newer fix is still proposed, and its PR notes say to drop any override the new
+# dsh no longer needs and to repeat the ACP check.
+# renovate: datasource=npm depName=undici
+ARG DSH_OVERRIDE_UNDICI=8.12.4
+# renovate: datasource=npm depName=fflate
+ARG DSH_OVERRIDE_FFLATE=0.8.3
+# renovate: datasource=npm depName=@modelcontextprotocol/client
+ARG DSH_OVERRIDE_MCP_CLIENT=2.3.1
 COPY --from=node22-dist /usr/local/bin/node /opt/node22/bin/node
 COPY --from=node22-dist /usr/local/lib/node_modules/npm /opt/node22/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
@@ -257,9 +306,12 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /opt/node22/bin/npm \
     # reached it and Trivy saw TWO npm trees with two sets of CVEs. Pin it to
     # the same version as the main one so they cannot drift apart again.
     && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/node22 npm@${NPM_VERSION} \
-    && PATH=/opt/node22/bin:$PATH retry npm install -g --prefix /opt/dsh \
-         @deepseek-ai/dsh@${DSH_VERSION} \
-    && rm -f /opt/dsh/bin/dsh \
+    && mkdir -p /opt/dsh/lib \
+    && printf '{"private":true,"dependencies":{"@deepseek-ai/dsh":"%s"},"overrides":{"undici":"%s","fflate":"%s","@modelcontextprotocol/client":"%s"}}\n' \
+         "${DSH_VERSION}" "${DSH_OVERRIDE_UNDICI}" "${DSH_OVERRIDE_FFLATE}" \
+         "${DSH_OVERRIDE_MCP_CLIENT}" > /opt/dsh/lib/package.json \
+    && PATH=/opt/node22/bin:$PATH retry npm install --prefix /opt/dsh/lib \
+         --install-strategy=shallow --no-package-lock --no-audit --no-fund \
     && printf '%s\n' '#!/bin/sh' \
          'exec /opt/node22/bin/node /opt/dsh/lib/node_modules/@deepseek-ai/dsh/lib/bin.js "$@"' \
          > /usr/local/bin/dsh \
@@ -297,10 +349,9 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # (the pod blocks runtime sudo, so we can't repoint /usr/local/bin at runtime),
 # while the image stays the source of truth: bump ANTE_VERSION + rebuild to
 # update. Pinned to a concrete release manifest (the `stable` channel floats)
-# for reproducible builds. Ante ships no GitHub releases / OCI tag, so Renovate
-# can't auto-track it — this is a documented manual-bump exception (see
-# docs/SUPPLY_CHAIN.md); check https://download.ante.run/channels/stable/manifest.json
-# for the current version.
+# for reproducible builds. Ante ships no GitHub releases / OCI tag, so
+# renovate.json defines `custom.ante` over its stable-channel manifest
+# (https://download.ante.run/channels/stable/manifest.json, field `version`).
 # https://docs.antigma.ai
 # SUPPLY-CHAIN (finding 7, resolved): the previous `curl … install.sh | bash`
 # piped the vendor installer into a root shell. Ante's pinned release manifest
@@ -309,6 +360,7 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # tarball, `sha256sum -c` it (fail-closed on mismatch), then extract the `ante`
 # binary. Nothing is executed before it is verified. The manifest keys linux
 # builds as linux-x86_64 / linux-arm64.
+# renovate: datasource=custom.ante depName=ante versioning=loose
 ARG ANTE_VERSION=v0.preview.60
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
@@ -352,7 +404,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # behaviour) and fall back to glibc, verifying whichever one we actually pulled
 # against its own sidecar.
 # renovate: datasource=github-releases depName=librefang/librefang
-ARG LIBREFANG_VERSION=v2026.7.31
+ARG LIBREFANG_VERSION=v2026.10.16
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) LF_ARCH=x86_64 ;; \
@@ -418,7 +470,7 @@ RUN apt-get update && apt-get install -y wget \
 # controlled with the repo it describes.
 #
 # renovate: datasource=github-releases depName=redhat-et/ripwire
-ARG RIPWIRE_VERSION=v0.4.0
+ARG RIPWIRE_VERSION=v0.6.9
 # Checksum-verified against the vendor-published .sha256, same posture as
 # docker-compose and kubectl above. The published .sha256 names the asset, so
 # only the digest is taken from it and re-paired with the local path.
@@ -493,9 +545,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Firefox pinned to an explicit release (the `firefox-latest` redirect floats).
-# Renovate does not have a Mozilla datasource, so this is a documented
-# manual-bump exception (see docs/SUPPLY_CHAIN.md): current version at
-# https://product-details.mozilla.org/1.0/firefox_versions.json (LATEST_FIREFOX_VERSION).
+# Renovate has no built-in Mozilla datasource, so renovate.json defines
+# `custom.firefox` over https://product-details.mozilla.org/1.0/firefox_versions.json
+# (LATEST_FIREFOX_VERSION).
+# renovate: datasource=custom.firefox depName=firefox versioning=loose
 ARG FIREFOX_VERSION=152.0.6
 RUN wget -O /tmp/firefox.tar.xz "https://download-installer.cdn.mozilla.net/pub/firefox/releases/${FIREFOX_VERSION}/linux-x86_64/en-US/firefox-${FIREFOX_VERSION}.tar.xz" \
     && file /tmp/firefox.tar.xz \

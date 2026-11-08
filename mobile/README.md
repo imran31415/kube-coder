@@ -194,6 +194,12 @@ eas build --profile production --platform all
 eas submit --profile production --platform ios
 ```
 
+Use `make mobile-build-ios` (or `make mobile-build`) for store builds. EAS only
+increments the build number, and Apple refuses uploads to a version that already
+has an approved binary. These targets first check App Store Connect and bump
+`version` in `app.config.ts` if it is closed; plain `eas build` skips that check.
+The check needs the API key in `fastlane/.env` and `make mobile-fastlane-install`.
+
 iOS submission additionally requires an **Apple Developer account** ($99/yr).
 Fill the placeholders in `eas.json` (`appleId`, `ascAppId`, `appleTeamId`) or
 pass them via `eas submit` flags / env. Android submission needs a Play

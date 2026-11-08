@@ -29,7 +29,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v3.21.4
+          version: v3.22.1
 
       - name: Lint base-infrastructure chart
         run: helm lint charts/base-infrastructure/
@@ -90,7 +90,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
-          version: v3.21.4
+          version: v3.22.1
 
       - name: Install helm-unittest plugin
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v0.5.2
@@ -111,7 +111,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.14'
+          python-version: '3.15'
 
       - name: Run server.py tests
         run: make python-tests
@@ -203,7 +203,11 @@ jobs:
 
   web-tests:
     name: Dashboard SPA Tests
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04, where Playwright
+    # refuses to install Chromium's dependencies ("does not support chromium on
+    # ubuntu26.04-x64"). #838 adds a browser acceptance step to this job.
+    # Same pin as the Memory soak job in desktop.yml (#839).
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -235,9 +239,18 @@ jobs:
           mkdir -p tmp-screenshots
           go build -C keeper -o ../tmp-screenshots/kc-board-keeper .
 
+      # System libraries come from apt; retry a mirror flake rather than
+      # fail the acceptance run on it.
       - name: Install acceptance browser
         working-directory: charts/workspace/web
-        run: yarn playwright install --with-deps chromium
+        run: |
+          for i in 1 2 3; do
+            yarn playwright install-deps chromium && break
+            [ "$i" = 3 ] && exit 1
+            echo "::warning::playwright install-deps failed (attempt $i), retrying"
+            sleep $((i * 15))
+          done
+          yarn playwright install chromium
 
       - name: Chat to Board acceptance
         timeout-minutes: 5
@@ -314,10 +327,10 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build Docker image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: devlaptop/Dockerfile
@@ -335,7 +348,7 @@ jobs:
           target: runtime
 
       - name: Build provisioner image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: provisioner/Dockerfile
@@ -381,7 +394,7 @@ jobs:
             echo "provisioner runtime tools OK: helm kubectl git make bash python3(+json/hashlib/hmac)"'
 
       - name: Build keeper image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: keeper/Dockerfile
@@ -413,16 +426,16 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Secret Scanning
-        uses: trufflesecurity/trufflehog@bcfcf73aaf4759d4dadc2783177c245a02792318 # main
+        uses: trufflesecurity/trufflehog@5a3176fcddc07bed6ee62a84adb613091030b243 # main
         with:
           extra_args: --only-verified
 
       - name: Set up Docker
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build Docker image for scanning
         id: scan-image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: devlaptop/Dockerfile
@@ -442,7 +455,7 @@ jobs:
           target: runtime
 
       - name: Docker Image Vulnerability Scanning
-        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
         with:
           image-ref: 'kube-coder-ci:latest'
           format: 'sarif'
@@ -459,7 +472,7 @@ jobs:
           trivyignores: '.trivyignore'
 
       - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         # Upload whenever the SARIF exists, even if an earlier step failed —
         # but skip (don't error) when it's absent, e.g. the image build or
         # Trivy itself failed and produced no report. `always()` alone made
@@ -476,7 +489,7 @@ jobs:
         # Syft then can't resolve `kube-coder-ci:latest`, and its "could not
         # determine source" provider dump (docker/podman/containerd/registry/…)
         # buries the real failure a few steps up.
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         if: (success() || failure()) && steps.scan-image.outcome == 'success'
         with:
           image: kube-coder-ci:latest
@@ -492,7 +505,7 @@ jobs:
         # provisioner images always carried a BuildKit-native SBOM attestation
         # via release.yml; this closes the per-PR artifact gap.) Layers are hot
         # from docker-build's cache-to, so this is seconds.
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         if: success() || failure()
         with:
           context: .
@@ -504,7 +517,7 @@ jobs:
           cache-from: type=gha
 
       - name: Generate SBOM (Syft) — provisioner
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         if: (success() || failure()) && steps.scan-provisioner.outcome == 'success'
         with:
           image: kube-coder-provisioner-ci:latest
@@ -517,7 +530,7 @@ jobs:
         # The keeper (#728) runs beside every workspace with a token that can
         # scale it; same per-PR bill of materials as the provisioner. Layers
         # are hot from docker-build's cache-to.
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         if: success() || failure()
         with:
           context: .
@@ -529,7 +542,7 @@ jobs:
           cache-from: type=gha
 
       - name: Generate SBOM (Syft) — keeper
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         if: (success() || failure()) && steps.scan-keeper.outcome == 'success'
         with:
           image: kube-coder-keeper-ci:latest

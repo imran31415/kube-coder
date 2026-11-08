@@ -6,6 +6,11 @@
 //! It lives in Rust rather than localStorage because the core needs the host
 //! before any webview exists, to hold the event stream and raise notifications
 //! from the tray.
+//!
+//! Keys under `kc.session.` are kept in memory only, never written to the
+//! file: they carry the UI across a webview that was dropped and rebuilt
+//! while the app kept running (the screen it was on, see unload.rs), and a
+//! fresh launch starts without them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,17 +19,25 @@ pub const HOST_KEY: &str = "kc.apiBase";
 const MAX_KEY: usize = 64;
 const MAX_VALUE: usize = 64 * 1024;
 const MAX_KEYS: usize = 256;
+/// In memory only; see the module docs.
+pub const SESSION_PREFIX: &str = "kc.session.";
+const MAX_SESSION_KEYS: usize = 16;
 
 #[derive(Debug, Default)]
 pub struct Settings {
     path: Option<PathBuf>,
     items: BTreeMap<String, String>,
+    session: BTreeMap<String, String>,
 }
 
 pub fn valid_key(key: &str) -> bool {
     key.starts_with("kc.")
         && key.len() <= MAX_KEY
         && key.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+}
+
+fn is_session(key: &str) -> bool {
+    key.starts_with(SESSION_PREFIX)
 }
 
 impl Settings {
@@ -34,12 +47,15 @@ impl Settings {
             .and_then(|b| serde_json::from_slice::<BTreeMap<String, String>>(&b).ok())
             .unwrap_or_default()
             .into_iter()
-            .filter(|(k, _)| valid_key(k))
+            .filter(|(k, _)| valid_key(k) && !is_session(k))
             .collect();
-        Settings { path: Some(path), items }
+        Settings { path: Some(path), items, session: BTreeMap::new() }
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
+        if is_session(key) {
+            return self.session.get(key).map(String::as_str);
+        }
         self.items.get(key).map(String::as_str)
     }
 
@@ -50,6 +66,13 @@ impl Settings {
         if value.len() > MAX_VALUE {
             return Err("value too large".into());
         }
+        if is_session(key) {
+            if !self.session.contains_key(key) && self.session.len() >= MAX_SESSION_KEYS {
+                return Err("too many keys".into());
+            }
+            self.session.insert(key.to_string(), value.to_string());
+            return Ok(());
+        }
         if !self.items.contains_key(key) && self.items.len() >= MAX_KEYS {
             return Err("too many keys".into());
         }
@@ -58,6 +81,10 @@ impl Settings {
     }
 
     pub fn remove(&mut self, key: &str) -> Result<(), String> {
+        if is_session(key) {
+            self.session.remove(key);
+            return Ok(());
+        }
         if self.items.remove(key).is_some() {
             self.save()?;
         }
@@ -104,5 +131,36 @@ mod tests {
         assert_eq!(again.get(HOST_KEY), Some("https://me.example.com"));
         assert_eq!(again.get("kc.pushEnabled"), Some("0"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn session_items_never_reach_the_file() {
+        let dir = std::env::temp_dir().join(format!("kc-settings-session-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        let mut s = Settings::load(path.clone());
+        s.set(HOST_KEY, "https://me.example.com").unwrap();
+        s.set("kc.session.navState", r#"{"index":3}"#).unwrap();
+        assert_eq!(s.get("kc.session.navState"), Some(r#"{"index":3}"#));
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("kc.session"), "{on_disk}");
+        // A relaunch starts without it, even if an old file carried one.
+        std::fs::write(&path, r#"{"kc.apiBase":"https://me.example.com","kc.session.navState":"x"}"#).unwrap();
+        let again = Settings::load(path);
+        assert_eq!(again.get("kc.session.navState"), None);
+        assert_eq!(again.get(HOST_KEY), Some("https://me.example.com"));
+        s.remove("kc.session.navState").unwrap();
+        assert_eq!(s.get("kc.session.navState"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn session_items_are_bounded() {
+        let mut s = Settings::default();
+        for i in 0..MAX_SESSION_KEYS {
+            s.set(&format!("kc.session.k{i}"), "v").unwrap();
+        }
+        assert!(s.set("kc.session.one-more", "v").is_err());
+        assert!(s.set("kc.session.k0", "replaced").is_ok());
+        assert!(s.set("kc.session.big", &"x".repeat(MAX_VALUE + 1)).is_err());
     }
 }

@@ -3,7 +3,7 @@
  *  shows SSH-key / gh-CLI status pills, edits git user.name + user.email, and
  *  generates an ed25519 key whose public half can be copied into GitHub.
  *  Backend: /api/github/status, POST /api/github/config, POST /api/github/ssh/generate. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';

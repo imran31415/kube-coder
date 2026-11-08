@@ -23,6 +23,7 @@
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import {
+  PHONE,
   clickVisible,
   freshPage as newPage,
   launchBrowser,
@@ -30,6 +31,7 @@ import {
   serveDist,
   sleep,
   visibleNth,
+  waitVisible,
 } from './lib/harness.mjs';
 
 const shotsDir = process.env.SHOTS_DIR || null;
@@ -106,10 +108,11 @@ async function assertEscape(page, tag, shotName) {
   // Drawer labels from src/navGroups.ts (#267): Mission Control is now the
   // section header; its screen entry is "Overview", and Hypervisor is "Chat".
   //
-  // Feed, AI CTO and Board were absent from this list — which is precisely why
+  // Feed and Board were absent from this list — which is precisely why
   // nothing here ever noticed that Board was unreachable from a notification
-  // (#692). A dead-end check that skips a screen cannot report on it.
-  for (const item of ['Overview', 'AI CTO', 'Feed', 'Board', 'Chat', 'Walkie-Talkie', 'Builds', 'Triggers', 'Apps', 'Memory', 'Files', 'Skills', 'Docs', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
+  // (#692). A dead-end check that skips a screen cannot report on it. The AI
+  // CTO has no entry of its own since #683 folded it into Chat.
+  for (const item of ['Overview', 'Feed', 'Board', 'Chat', 'Walkie-Talkie', 'Builds', 'Triggers', 'Apps', 'Memory', 'Files', 'Skills', 'Docs', 'Metrics', 'Controller', 'Settings', 'Desktop']) {
     await openDrawerAndGo(page, item);
     await assertEscape(page, `Top-level: ${item}`, `05-top-${item.toLowerCase()}.png`);
   }
@@ -149,6 +152,96 @@ async function assertEscape(page, tag, shotName) {
   await sleep(1000);
   await assertEscape(page, 'DocsArticle via Docs list', '09-docs-article.png');
   await page.close();
+}
+
+// ---------- Path E (#833): screens load the first time they are opened.
+// The home screen fetches no screen chunk; the drawer fetches one on demand;
+// and in the desktop app a deep link to a Board card opens Board, whose chunk
+// was never loaded, on that card — also on top of a screen restored after the
+// webview was dropped. The desktop bridge is a stand-in (an init script)
+// answering the same commands desktop/src-tauri implements.
+{
+  const report = (ok, tag) => {
+    if (!ok) failures++;
+    console.log(`${ok ? 'PASS' : 'FAIL'} ${tag}`);
+  };
+  const track = (page) => {
+    const chunks = [];
+    page.on('request', (r) => {
+      const m = /\/(\w+Screen)-[0-9a-f]+\.js$/.exec(r.url());
+      if (m) chunks.push(m[1]);
+    });
+    return chunks;
+  };
+
+  const page = await browser.newPage(PHONE);
+  const chunks = track(page);
+  await page.goto(`http://127.0.0.1:${port}/`);
+  await sleep(1400);
+  report(chunks.length === 0, `Home screen loads no screen chunk  [${chunks}]`);
+  await openDrawerAndGo(page, 'Feed');
+  report(chunks.join() === 'FeedScreen', `Opening Feed loads its chunk, and only it  [${chunks}]`);
+  await page.close();
+
+  const fakeBridge = (items) => {
+    let targets = [{ url: 'kubecoder://board/kube-coder-gh/I_kwDOA:4102' }];
+    const store = new Map(Object.entries(items));
+    window.__TAURI__ = {
+      core: {
+        invoke: async (cmd, args = {}) => {
+          switch (cmd) {
+            case 'kc_take_targets': {
+              const t = targets;
+              targets = [];
+              return t;
+            }
+            case 'kc_item_get':
+              return store.get(args.key) ?? null;
+            case 'kc_item_set':
+              store.set(args.key, args.value);
+              return null;
+            case 'kc_item_remove':
+              store.delete(args.key);
+              return null;
+            case 'kc_secret_get':
+              return null;
+            case 'kc_live_status':
+              return { mode: 'off', keeper: null, needsYou: 0, feedFetches: 0 };
+            default:
+              return null;
+          }
+        },
+      },
+      event: { listen: async () => () => {} },
+    };
+  };
+  const card = (p) => p.locator('[id="board-item-I_kwDOA:4102"]');
+
+  for (const [tag, items, expectRestored] of [
+    ['Desktop link, cold start', {}, null],
+    [
+      'Desktop link onto a restored screen',
+      { 'kc.session.navState': JSON.stringify({ index: 0, routes: [{ name: 'Feed' }] }) },
+      'FeedScreen',
+    ],
+  ]) {
+    const p = await browser.newPage(PHONE);
+    const got = track(p);
+    await p.addInitScript(fakeBridge, items);
+    await p.goto(`http://127.0.0.1:${port}/`);
+    let onCard = false;
+    try {
+      await waitVisible(card(p), 'the linked card', 8000);
+      onCard = true;
+    } catch {
+      onCard = false;
+    }
+    report(onCard && got.includes('BoardScreen'), `${tag}: opens the Board card from an unloaded chunk  [${got}]`);
+    if (expectRestored) {
+      report(got.includes(expectRestored), `${tag}: restored ${expectRestored} first, link on top  [${got}]`);
+    }
+    await p.close();
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

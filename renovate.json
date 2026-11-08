@@ -14,6 +14,16 @@
   "prConcurrentLimit": 6,
   "prHourlyLimit": 0,
   "dependencyDashboardTitle": "Renovate: weekly dependency dashboard",
+  "customDatasources": {
+    "firefox": {
+      "defaultRegistryUrlTemplate": "https://product-details.mozilla.org/1.0/firefox_versions.json",
+      "transformTemplates": ["{\"releases\": [{\"version\": LATEST_FIREFOX_VERSION}]}"]
+    },
+    "ante": {
+      "defaultRegistryUrlTemplate": "https://download.ante.run/channels/stable/manifest.json",
+      "transformTemplates": ["{\"releases\": [{\"version\": version}]}"]
+    }
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -130,6 +140,52 @@
       "matchManagers": ["npm"],
       "matchDepTypes": ["devDependencies"],
       "groupName": "npm dev dependencies"
+    },
+    {
+      "description": "Expo SDK pins react, react-dom and react-native to exact versions (react-native's renderer is built for one React release). Bumping them alone fails expo-doctor and can crash the app with 'Incompatible React versions', so they move only with an Expo SDK upgrade (`npx expo install --fix`), never as their own PR. See #844.",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["react", "react-dom", "react-native"],
+      "enabled": false
+    },
+    {
+      "description": "code-server tags are v-prefixed but CODE_SERVER_VERSION is bare. Every bump must also re-pin the two .deb SHA-256 ARGs or the image build fails its sha256sum -c, so a postUpgradeTask recomputes them from GitHub's release API. The command only runs once the self-hosted run allows it (RENOVATE_ALLOWED_COMMANDS in .github/workflows/renovate.yml; allowedCommands is global-only, so it cannot live here). Until then the PR notes say to run the script by hand.",
+      "matchDepNames": ["coder/code-server"],
+      "extractVersion": "^v(?<version>.+)$",
+      "postUpgradeTasks": {
+        "commands": ["node scripts/renovate/code-server-sha.mjs"],
+        "fileFilters": ["devlaptop/Dockerfile"],
+        "executionMode": "update"
+      },
+      "prBodyNotes": ["**code-server bump:** the `.deb` SHA-256 pins must move with the version or the image build fails `sha256sum -c`. If this PR did not already update `CODE_SERVER_SHA256_AMD64`/`_ARM64`, run `node scripts/renovate/code-server-sha.mjs` on this branch and push."]
+    },
+    {
+      "description": "dsh and the npm overrides that patch its pinned dependencies (devlaptop/Dockerfile, #851) move together and need the ACP re-check, so they get their own group and a reminder instead of riding along with the weekly CLI bump.",
+      "matchFileNames": ["devlaptop/Dockerfile"],
+      "matchDepNames": ["@deepseek-ai/dsh", "undici", "fflate", "@modelcontextprotocol/client"],
+      "groupName": "dsh and its dependency overrides",
+      "prBodyNotes": ["**dsh bump checklist** (see the comment above `ARG DSH_VERSION` in devlaptop/Dockerfile): drop every `DSH_OVERRIDE_*` the new dsh no longer needs, since a stale override silently pins an older version; then repeat the ACP check (`dsh --profile acp` answering `initialize`, opening a session, and resuming one made by the previous version) before merging."]
+    },
+    {
+      "description": "The dsh overrides only take security fixes within the line dsh was verified against; a major undici/fflate/MCP-client jump needs its own ACP verification, not a routine PR.",
+      "matchFileNames": ["devlaptop/Dockerfile"],
+      "matchDepNames": ["undici", "fflate", "@modelcontextprotocol/client"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "The image's Node versions are deliberate: node-dist is the runtime every CLI uses, and node22-dist is the separate Node only dsh runs on. Keep their digests and minor/patch releases current, but a major (e.g. 22 -> 24) is a runtime change that needs its own verification, not a weekly PR.",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["devlaptop/Dockerfile"],
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "npm in the image runs on the image's Node (node-dist, Node 20), so its majors move with that runtime: npm 12 needs Node >= 22.22 and would break the build. Minor/patch releases (where npm's own security fixes land) stay tracked.",
+      "matchFileNames": ["devlaptop/Dockerfile"],
+      "matchDepNames": ["npm"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
     }
   ],
   "vulnerabilityAlerts": {

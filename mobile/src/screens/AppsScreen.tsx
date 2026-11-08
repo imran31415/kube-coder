@@ -1,5 +1,5 @@
 /** Applications: web apps running in the workspace, embeddable in-app. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
 import {

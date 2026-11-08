@@ -18,7 +18,7 @@
  */
 
 import type { MemoryRecord } from './memory';
-import type { TaskSummary, TaskDetail, WorktreeBrief } from './tasks';
+import type { TaskSummary, WaitingReason, TaskDetail, WorktreeBrief } from './tasks';
 
 /** Generic helpers — call when the server may omit array/string fields. */
 export function safeArray<T>(v: T[] | null | undefined): T[] {
@@ -66,6 +66,13 @@ export function coerceMemoryRecordList(raw: unknown): MemoryRecord[] {
   return arr.map(coerceMemoryRecord);
 }
 
+const WAITING_REASONS: readonly unknown[] =
+  ['question', 'trust_dialog', 'undelivered', 'idle'] satisfies WaitingReason[];
+
+function isWaitingReason(v: unknown): v is WaitingReason {
+  return WAITING_REASONS.includes(v);
+}
+
 export function coerceTaskSummary(raw: unknown): TaskSummary {
   const r = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {};
   return {
@@ -87,6 +94,9 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     // reported yet, which is not the same as "the prompt was lost".
     prompt_delivered: typeof r.prompt_delivered === 'boolean' ? r.prompt_delivered : null,
     stalled_at_trust_dialog: r.stalled_at_trust_dialog === true,
+    // Absent unless waiting; an unknown value is dropped, so it reads as
+    // "needs you" rather than as idle.
+    ...(isWaitingReason(r.waiting_reason) ? { waiting_reason: r.waiting_reason } : {}),
     // Only isolated Builds carry one (#701); absent means "not isolated".
     ...(r.worktree && typeof r.worktree === 'object'
       ? { worktree: coerceWorktreeBrief(r.worktree) }

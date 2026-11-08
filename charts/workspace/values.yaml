@@ -35,7 +35,7 @@ user:
 # Container image configuration
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.76.0
+  tag: devlaptop-v1.78.1
   pullPolicy: Always
   pullSecretName: regcred
 
@@ -641,7 +641,7 @@ strix:
   # therefore empty after every restart — without the pre-pull the first scan
   # sits silent for minutes while a multi-GB image downloads, which reads as a
   # hang and gets killed.
-  image: "ghcr.io/usestrix/strix-sandbox:1.3.0"
+  image: "ghcr.io/usestrix/strix-sandbox:1.3.0@sha256:f6906c3114e504fd1a218fcf028d7a0e46851118403a438b63956de6ea7c4331"
   # The scanner reports anonymous usage to its authors by default. Set false to
   # turn that off for this workspace. Findings and app content are NOT part of
   # it, but the user's own model provider does see the traffic of a scan, which

@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
+.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-ensure-ios-version mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
 
 # =============================================================================
 # Generic per-user helpers
@@ -48,7 +48,7 @@ IMAGE_NAME := devlaptop
 # The release version. Tags the image `make build` / `make push` / `make release`
 # produce ($(IMAGE) below), and the tag `make ship USER=<x>` repins a user onto.
 # Bumped automatically by scripts/release.sh.
-VERSION := v1.76.0
+VERSION := v1.78.1
 PLATFORM := linux/amd64
 # Control-plane namespace: the shared base-infrastructure + workspace-controller
 # releases live here. Per-#103 individual workspaces live in their OWN ws-<user>
@@ -500,10 +500,15 @@ mobile-screenshots: mobile-install ## Capture store-sized screenshots → ios-as
 # Cloud builds via EAS. Requires `eas login` once (or EXPO_TOKEN in CI) and an
 # EAS project (`eas init`, or EAS_PROJECT_ID + EAS_OWNER env vars). iOS is built
 # on EAS macOS workers, so no local Mac is needed to produce the .ipa.
-mobile-build: mobile-typecheck ## EAS production build for iOS + Android
+# Bumps the app version only if App Store Connect has closed it (needs
+# mobile/fastlane/.env and mobile-fastlane-install). Bumps are left uncommitted.
+mobile-ensure-ios-version: ## Bump mobile/app.config.ts if App Store Connect has closed its version
+	cd $(MOBILE_DIR) && set -a && . ./fastlane/.env && set +a && bundle exec ruby scripts/ensure-ios-version.rb
+
+mobile-build: mobile-typecheck mobile-ensure-ios-version ## EAS production build for iOS + Android
 	cd $(MOBILE_DIR) && npx eas-cli build --profile production --platform all
 
-mobile-build-ios: mobile-typecheck ## EAS production build, iOS only (.ipa)
+mobile-build-ios: mobile-typecheck mobile-ensure-ios-version ## EAS production build, iOS only (.ipa)
 	cd $(MOBILE_DIR) && npx eas-cli build --profile production --platform ios
 
 mobile-build-android: mobile-typecheck ## EAS production build, Android only (.aab)

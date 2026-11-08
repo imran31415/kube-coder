@@ -1,5 +1,5 @@
 /** Shared UI primitives, styled with the app theme. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import {
@@ -48,7 +48,15 @@ export function Card({
   );
 }
 
-export function StatusPill({ status }: { status: string }) {
+export function StatusPill({
+  status: rawStatus,
+  waitingReason,
+}: {
+  status: string;
+  waitingReason?: string | null;
+}) {
+  // `idle` is the same server status, drawn as "no question detected".
+  const status = rawStatus === 'waiting' && waitingReason === 'idle' ? 'idle' : rawStatus;
   const c = statusColor(status);
   return (
     <View style={[styles.pill, { backgroundColor: colors.surface2, borderColor: c + '59' }]}>

@@ -16,7 +16,10 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import sys
+import tempfile
+import time
 import unittest
 import urllib.error
 from unittest import mock
@@ -25,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 import gateway as gw  # noqa: E402
+import gateway_review as gr  # noqa: E402
 from adapters import whatsapp as wa  # noqa: E402
 
 
@@ -731,6 +735,509 @@ class ProviderErrorHintTest(unittest.TestCase):
             result = wa._do_send(mock.Mock(), id_key='sid')
         self.assertFalse(result.ok)
         self.assertIn('OSError', result.error)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Board review cards (#709 Part 4) — adapter wire formats
+# ───────────────────────────────────────────────────────────────────────────
+class ReviewButtonWireTest(unittest.TestCase):
+    BUTTONS = [{'id': 'kcr1.a.x', 'title': 'Approve'},
+               {'id': 'kcr1.r.x', 'title': 'Reject'},
+               {'id': 'kcr1.o.x', 'title': 'Open in app'}]
+
+    def test_twilio_tap_carries_ButtonPayload(self):
+        raw = gw.RawRequest(form={'From': 'whatsapp:+1555', 'Body': 'Approve',
+                                  'ButtonText': 'Approve',
+                                  'ButtonPayload': 'kcr1.a.x', 'MessageSid': 'SM1'})
+        inbound = wa.TwilioProvider().parse_inbound(raw)
+        self.assertEqual(inbound.button_payload, 'kcr1.a.x')
+        self.assertEqual(inbound.button_reply, 'Approve')
+
+    def test_meta_interactive_tap_carries_the_button_id(self):
+        body = {'entry': [{'changes': [{'value': {'messages': [{
+            'from': '1555', 'id': 'wamid.1', 'type': 'interactive',
+            'interactive': {'type': 'button_reply', 'button_reply': {
+                'id': 'kcr1.a.x', 'title': 'Approve'}}}]}}]}]}
+        inbound = wa.MetaProvider().parse_inbound(
+            gw.RawRequest(raw_body=json.dumps(body).encode()))
+        self.assertEqual(inbound.button_payload, 'kcr1.a.x')
+        self.assertEqual(inbound.button_reply, 'Approve')   # unchanged for chat
+
+    def test_meta_template_tap_carries_the_payload(self):
+        body = {'entry': [{'changes': [{'value': {'messages': [{
+            'from': '1555', 'id': 'wamid.2', 'type': 'button',
+            'button': {'payload': 'kcr1.r.x', 'text': 'Reject'}}]}}]}]}
+        inbound = wa.MetaProvider().parse_inbound(
+            gw.RawRequest(raw_body=json.dumps(body).encode()))
+        self.assertEqual(inbound.button_payload, 'kcr1.r.x')
+
+    def test_meta_renders_explicit_ids_not_positions(self):
+        msg = gw.OutboundMessage(channel_identity='whatsapp:+1555', text='hi',
+                                 buttons=self.BUTTONS,
+                                 quick_replies=[b['title'] for b in self.BUTTONS])
+        p = wa.MetaProvider().build_payloads(msg, wa.META_CAPS)[-1]
+        ids = [b['reply']['id'] for b in p['interactive']['action']['buttons']]
+        self.assertEqual(ids, ['kcr1.a.x', 'kcr1.r.x', 'kcr1.o.x'])
+
+    def test_twilio_sandbox_falls_back_to_numbered_text(self):
+        msg = gw.OutboundMessage(channel_identity='whatsapp:+1555', text='hi',
+                                 buttons=self.BUTTONS,
+                                 quick_replies=[b['title'] for b in self.BUTTONS])
+        body = wa.TwilioProvider().build_payloads(msg, wa.TWILIO_CAPS)[0]['Body']
+        self.assertIn('1. Approve\n2. Reject\n3. Open in app', body)
+        self.assertNotIn('kcr1', body)
+
+    def test_meta_template_sets_body_params_and_button_payloads(self):
+        msg = gw.OutboundMessage(
+            channel_identity='whatsapp:+1555', template='board_review',
+            buttons=self.BUTTONS,
+            template_args={'provider_name': 'kc_board_review', 'language': 'en_US',
+                           'body_params': ['SUP-46', 'comment', 'Hello']})
+        p = wa.MetaProvider().build_template_payload(msg)
+        t = p['template']
+        self.assertEqual(t['name'], 'kc_board_review')
+        self.assertEqual(t['language'], {'code': 'en_US'})
+        self.assertEqual([x['text'] for x in t['components'][0]['parameters']],
+                         ['SUP-46', 'comment', 'Hello'])
+        self.assertEqual([(c['index'], c['parameters'][0]['payload'])
+                          for c in t['components'][1:]],
+                         [('0', 'kcr1.a.x'), ('1', 'kcr1.r.x'), ('2', 'kcr1.o.x')])
+
+    def test_twilio_content_template_sends_sid_and_variables(self):
+        msg = gw.OutboundMessage(
+            channel_identity='whatsapp:+1555', template='board_review',
+            buttons=self.BUTTONS,
+            template_args={'content_sid': 'HX123', 'body_params': ['SUP-46', 'c', 'Hi']})
+        p = wa.TwilioProvider(from_number='+14155238886').build_payloads(msg, wa.TWILIO_CAPS)
+        self.assertEqual(len(p), 1)
+        self.assertEqual(p[0]['ContentSid'], 'HX123')
+        self.assertNotIn('Body', p[0])
+        self.assertEqual(json.loads(p[0]['ContentVariables']),
+                         {'1': 'SUP-46', '2': 'c', '3': 'Hi', '4': 'kcr1.a.x',
+                          '5': 'kcr1.r.x', '6': 'kcr1.o.x'})
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Board review cards — the notifier, against a real gateway core
+# ───────────────────────────────────────────────────────────────────────────
+PHONE = 'whatsapp:+15550001111'
+
+
+class FakeWhatsApp(gw.EchoAdapter):
+    """EchoAdapter dressed as WhatsApp: a provider name (template selection
+    keys on it) and the inbound button payload. Never touches the network."""
+
+    name = 'whatsapp'
+
+    def __init__(self, provider='meta', proactive=True):
+        super().__init__(proactive=proactive)
+        self.provider = mock.Mock()
+        self.provider.name = provider
+
+    def inbound(self, raw):
+        frm = raw.form.get('from')
+        if not frm:
+            return None
+        return gw.InboundMessage(
+            channel='whatsapp', channel_identity=frm,
+            text=raw.form.get('text', ''), provider_msg_id=raw.form.get('id', ''),
+            button_reply=raw.form.get('button', ''),
+            button_payload=raw.form.get('payload', ''))
+
+
+def staged_record(*actions, item_id='46', content_hash='c' * 64):
+    return {'board_id': 'acme', 'item_id': item_id, 'item_key': f'SUP-{item_id}',
+            'item_title': 'Refund not received', 'content_hash': content_hash,
+            'state': 'pending',
+            'actions': [dict({'id': f'a{i + 1}', 'state': 'pending'}, **a)
+                        for i, a in enumerate(actions)]}
+
+
+def comment(body, **extra):
+    return {'action': 'comment', 'params': dict({'body': body}, **extra)}
+
+
+class ReviewHarness(unittest.TestCase):
+    """A real ConversationGateway + IdentityRegistry on a temp dir, a fake
+    WhatsApp adapter, and a decider that records what it was asked."""
+
+    PROVIDER = 'meta'
+    PROACTIVE = True
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='kc-gw-review-')
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.registry = gw.IdentityRegistry(self.dir)
+        self.templates = gw.TemplateRegistry(self.dir)
+        self.gw = gw.ConversationGateway(registry=self.registry,
+                                         templates=self.templates,
+                                         client_factory=lambda b: None)
+        self.adapter = FakeWhatsApp(self.PROVIDER, self.PROACTIVE)
+        self.records = {}
+        self.decisions = []
+        self.decide_result = ({'replayed': False, 'result': {'ok': True}}, None)
+
+        def decider(decision, board_id, item_id, **kw):
+            self.decisions.append((decision, board_id, item_id, kw))
+            return self.decide_result
+
+        self.notifier = gr.ReviewNotifier(
+            self.gw, adapter_getter=lambda: self.adapter,
+            record_getter=lambda b, i: self.records.get((b, i)),
+            decider=decider, spawn=lambda fn: fn())
+        self.gw.review_handler = self.notifier.handle_inbound
+
+    def pair(self, phone=PHONE):
+        self.registry.bind(phone, 'whatsapp', workspace='w',
+                           workspace_host='ws.example.com', token='tok')
+
+    def open_window(self, phone=PHONE):
+        self.gw._last_inbound[phone] = time.time()
+
+    def card_for(self, record):
+        self.records[('acme', record['item_id'])] = record
+        self.adapter.sent.clear()
+        return self.notifier.deliver('acme', record['item_id'])
+
+    def tap(self, payload='', text='', phone=PHONE, msg_id=None):
+        self._n = getattr(self, '_n', 0) + 1
+        return self.gw.handle_inbound(self.adapter, gw.RawRequest(form={
+            'from': phone, 'payload': payload, 'text': text,
+            'id': msg_id or f'm{self._n}'}))
+
+    def button(self, verb):
+        msg = next(m for m in reversed(self.adapter.sent) if m.buttons)
+        return next(b['id'] for b in msg.buttons
+                    if b['id'].startswith(f'kcr1.{verb}.'))
+
+
+class ReviewCardShapeTest(ReviewHarness):
+    """Short single comment → full text + three buttons; everything else → a
+    one-line summary and Open in app only."""
+
+    def setUp(self):
+        super().setUp()
+        self.pair()
+        self.open_window()
+
+    def test_a_short_comment_shows_the_FULL_text_and_three_buttons(self):
+        body = 'Hi Dana —\nthe refund was issued on the 3rd.'
+        self.assertEqual(self.card_for(staged_record(comment(body))), 1)
+        msg = self.adapter.last()
+        self.assertIn(body, msg.text)
+        self.assertEqual([b['title'] for b in msg.buttons],
+                         ['Approve', 'Reject', 'Open in app'])
+        self.assertTrue(all(b['id'].startswith('kcr1.') for b in msg.buttons))
+
+    def test_public_flag_is_spelled_out(self):
+        self.card_for(staged_record(comment('Hello', public=True)))
+        self.assertIn('the customer will see it', self.adapter.last().text)
+
+    def test_a_LONG_comment_only_offers_open_in_app(self):
+        body = 'x' * (gr.SHORT_BODY_MAX + 1)
+        self.card_for(staged_record(comment(body)))
+        msg = self.adapter.last()
+        self.assertEqual(msg.buttons, [])
+        self.assertNotIn(body, msg.text)
+        self.assertIn('https://ws.example.com/board?board=acme&review=46', msg.text)
+
+    def test_SEVERAL_writes_only_offer_open_in_app(self):
+        self.card_for(staged_record(
+            comment('ok'), {'action': 'set_status', 'params': {'state': 'closed'}}))
+        msg = self.adapter.last()
+        self.assertEqual(msg.buttons, [])
+        self.assertIn('2 proposed writes', msg.text)
+
+    def test_a_status_change_only_offers_open_in_app(self):
+        self.card_for(staged_record({'action': 'set_status',
+                                     'params': {'state': 'closed'}}))
+        self.assertEqual(self.adapter.last().buttons, [])
+
+    def test_a_comment_with_other_params_is_not_short(self):
+        self.card_for(staged_record(comment('ok', assignee='bob')))
+        self.assertEqual(self.adapter.last().buttons, [])
+
+    def test_a_long_card_cannot_be_approved_even_with_a_valid_signature(self):
+        record = staged_record(comment('x' * (gr.SHORT_BODY_MAX + 1)))
+        self.card_for(record)
+        card = next(iter(self.notifier.store._all()))
+        forged = gr.encode_payload(self.notifier.store.key(), 'a', card['nonce'],
+                                   card['content_hash'])
+        self.tap(payload=forged)
+        self.assertEqual(self.decisions, [])
+
+    def test_the_same_proposal_is_sent_once(self):
+        record = staged_record(comment('Hello'))
+        self.assertEqual(self.card_for(record), 1)
+        self.assertEqual(self.card_for(record), 0)
+
+    def test_a_decided_or_empty_record_sends_nothing(self):
+        record = staged_record(comment('Hello'))
+        record['state'] = 'approved'
+        self.assertEqual(self.card_for(record), 0)
+        self.assertEqual(self.card_for(staged_record()), 0)
+
+    def test_only_board_review_feed_items_are_picked_up(self):
+        review = {'waiting': True, 'source': 'board:acme',
+                  'links': [{'ref': 'board:acme:I_kw:46'}]}
+        self.assertEqual(gr.review_ref(review), ('acme', 'I_kw:46'))
+        self.assertIsNone(gr.review_ref(dict(review, waiting=False)))
+        self.assertIsNone(gr.review_ref(dict(review, source='task:t1')))
+        self.assertIsNone(gr.review_ref({'waiting': True, 'source': 'board:acme',
+                                         'links': [{'ref': 'task:t1'}]}))
+        self.assertFalse(self.notifier.on_feed_item({'kind': 'activity'}))
+
+
+class ReviewTapTest(ReviewHarness):
+    def setUp(self):
+        super().setUp()
+        self.pair()
+        self.open_window()
+        self.record = staged_record(comment('Hello Dana'))
+        self.card_for(self.record)
+
+    def test_approve_goes_to_the_decider_with_the_bound_hash_and_digest(self):
+        result = self.tap(payload=self.button('a'))
+        self.assertEqual(result.action, 'review_approve')
+        (decision, board, item, kw), = self.decisions
+        self.assertEqual((decision, board, item), ('approve', 'acme', '46'))
+        self.assertEqual(kw['content_hash'], self.record['content_hash'])
+        self.assertEqual(kw['proposal_digest'],
+                         gr.board_review.proposal_digest(self.record))
+        self.assertTrue(kw['approval_id'].startswith('wa-'))
+        self.assertIn('Approved', self.adapter.last().text)
+
+    def test_a_double_tap_reuses_the_approval_id_so_the_decider_replays(self):
+        self.tap(payload=self.button('a'))
+        self.decide_result = ({'replayed': True, 'result': {'ok': True}}, None)
+        self.tap(payload=self.button('a'))
+        self.assertEqual(self.decisions[0][3]['approval_id'],
+                         self.decisions[1][3]['approval_id'])
+        self.assertIn('already approved', self.adapter.last().text)
+
+    def test_a_retried_DELIVERY_is_dropped_before_the_decider(self):
+        self.tap(payload=self.button('a'), msg_id='wamid.same')
+        self.assertEqual(self.tap(payload=self.button('a'),
+                                  msg_id='wamid.same').action, 'duplicate')
+        self.assertEqual(len(self.decisions), 1)
+
+    def test_reject_uses_its_own_approval_id(self):
+        self.tap(payload=self.button('r'))
+        self.assertEqual(self.decisions[0][0], 'reject')
+        self.assertTrue(self.decisions[0][3]['approval_id'].endswith('-r'))
+        self.assertIn('Rejected', self.adapter.last().text)
+
+    def test_a_changed_ticket_gets_the_clear_refusal(self):
+        from boards.review import ReviewError
+        for code in ('stale', 'hash_mismatch'):
+            self.decide_result = (None, ReviewError(code, 'x'))
+            self.tap(payload=self.button('a'))
+            self.assertIn(gr.CHANGED_TEXT, self.adapter.last().text)
+            self.assertIn('https://ws.example.com/board?', self.adapter.last().text)
+
+    def test_open_in_app_replies_with_the_link_and_decides_nothing(self):
+        self.tap(payload=self.button('o'))
+        self.assertEqual(self.decisions, [])
+        self.assertIn('https://ws.example.com/board?board=acme&review=46',
+                      self.adapter.last().text)
+
+    def _silent(self, payload, phone=PHONE):
+        before = len(self.adapter.sent)
+        result = self.tap(payload=payload, phone=phone)
+        self.assertEqual(self.decisions, [])
+        return result, self.adapter.sent[before:]
+
+    def test_a_tampered_mac_does_nothing(self):
+        good = self.button('a')
+        result, sent = self._silent(good[:-1] + ('0' if good[-1] != '0' else '1'))
+        self.assertEqual(result.action, 'rejected')
+        self.assertEqual(sent, [])
+
+    def test_a_verb_swapped_onto_another_mac_does_nothing(self):
+        approve = self.button('a').split('.')
+        reject = self.button('r').split('.')
+        self._silent('.'.join(approve[:4] + reject[4:]))
+
+    def test_a_signed_payload_with_the_WRONG_hash_does_nothing(self):
+        nonce = self.button('a').split('.')[2]
+        key = self.notifier.store.key()
+        result, sent = self._silent(gr.encode_payload(key, 'a', nonce, 'd' * 64))
+        self.assertEqual(sent, [])
+
+    def test_a_signed_payload_for_an_unknown_card_does_nothing(self):
+        key = self.notifier.store.key()
+        self._silent(gr.encode_payload(key, 'a', 'f' * 24,
+                                       self.record['content_hash']))
+
+    def test_a_payload_signed_with_another_key_does_nothing(self):
+        nonce = self.button('a').split('.')[2]
+        self._silent(gr.encode_payload(b'k' * 32, 'a', nonce,
+                                       self.record['content_hash']))
+
+    def test_an_UNPAIRED_sender_gets_nothing_actioned(self):
+        result, sent = self._silent(self.button('a'), phone='whatsapp:+19998887777')
+        self.assertEqual(result.action, 'not_linked')
+        self.assertTrue(all('kcr1' not in m.text for m in sent))
+
+    def test_another_PAIRED_number_cannot_use_my_card(self):
+        self.pair('whatsapp:+19998887777')
+        result, sent = self._silent(self.button('a'), phone='whatsapp:+19998887777')
+        self.assertEqual(result.action, 'rejected')
+        self.assertEqual(sent, [])
+
+    def test_a_revoked_token_decides_nothing(self):
+        self.gw.token_verifier = lambda t: False
+        result, _sent = self._silent(self.button('a'))
+        self.assertEqual(result.detail, 'token invalid')
+
+    def test_a_decider_that_raises_is_contained(self):
+        def boom(*a, **k):
+            raise RuntimeError('vendor down')
+        self.notifier.decider = boom
+        result = self.tap(payload=self.button('a'))
+        self.assertEqual(result.action, 'error')
+
+
+class ReviewWindowAndTemplateTest(ReviewHarness):
+    """In the 24-h window → a free-form interactive card; outside it → the
+    approved template, or nothing at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.pair()
+
+    def test_inside_the_window_it_is_free_form(self):
+        self.open_window()
+        self.card_for(staged_record(comment('Hello')))
+        self.assertIsNone(self.adapter.last().template)
+
+    def test_outside_the_window_without_an_approved_template_nothing_is_sent(self):
+        # Meta enforces registration: the built-in default is not enough.
+        self.assertEqual(self.card_for(staged_record(comment('Hello'))), 0)
+        self.assertEqual(self.adapter.sent, [])
+
+    def test_outside_the_window_the_registered_template_carries_text_and_buttons(self):
+        self.templates.approve('board_review', provider_name='kc_board_review_v2',
+                               language='en_US')
+        self.assertEqual(self.card_for(staged_record(
+            comment('Line one.\n\nLine   two.'))), 1)
+        msg = self.adapter.last()
+        self.assertEqual(msg.template, 'board_review')
+        self.assertEqual(msg.template_args['provider_name'], 'kc_board_review_v2')
+        self.assertEqual(msg.template_args['language'], 'en_US')
+        # Template params can't hold newlines: flattened, every word kept.
+        self.assertEqual(msg.template_args['body_params'],
+                         ['SUP-46', 'comment', 'Line one. Line two.'])
+        self.assertEqual(len(msg.buttons), 3)
+
+    def test_a_long_proposal_out_of_window_uses_the_link_template(self):
+        self.templates.approve('board_review_link')
+        self.card_for(staged_record(comment('x' * (gr.SHORT_BODY_MAX + 1))))
+        msg = self.adapter.last()
+        self.assertEqual(msg.template, 'board_review_link')
+        self.assertEqual(msg.buttons, [])
+        self.assertIn('https://ws.example.com/board?',
+                      msg.template_args['body_params'][2])
+
+    def test_a_failed_send_records_no_card_so_a_later_emit_retries(self):
+        self.open_window()
+        self.adapter.outbound = lambda m: gw.DeliveryResult(ok=False, error='HTTP 500')
+        record = staged_record(comment('Hello'))
+        self.assertEqual(self.card_for(record), 0)
+        self.adapter.outbound = gw.EchoAdapter.outbound.__get__(self.adapter)
+        self.assertEqual(self.card_for(record), 1)
+
+    def test_a_raising_adapter_never_escapes_the_feed_hook(self):
+        self.open_window()
+        def boom(_m):
+            raise RuntimeError('provider down')
+        self.adapter.outbound = boom
+        self.records[('acme', '46')] = staged_record(comment('Hello'))
+        item = {'waiting': True, 'source': 'board:acme',
+                'links': [{'ref': 'board:acme:46'}]}
+        self.assertTrue(self.notifier.on_feed_item(item))   # queued, no raise
+
+
+class TwilioSandboxReviewTest(ReviewHarness):
+    """The sandbox has no Content templates: in the window the card is
+    numbered text, and a bare digit decides only while that card is still the
+    last thing the gateway sent."""
+
+    PROVIDER = 'twilio'
+    PROACTIVE = False
+
+    def setUp(self):
+        super().setUp()
+        self.pair()
+
+    def test_numbered_reply_1_approves_and_2_rejects(self):
+        self.open_window()
+        self.card_for(staged_record(comment('Hello')))
+        self.assertEqual(self.adapter.last().quick_replies,
+                         ['Approve', 'Reject', 'Open in app'])
+        self.tap(text='1')
+        self.assertEqual(self.decisions[-1][0], 'approve')
+        self.card_for(staged_record(comment('Other'), item_id='47'))
+        self.tap(text='2')
+        self.assertEqual(self.decisions[-1][0], 'reject')
+        self.assertEqual(self.decisions[-1][2], '47')
+
+    def test_a_digit_after_another_message_is_chat_not_a_decision(self):
+        self.open_window()
+        self.card_for(staged_record(comment('Hello')))
+        self.gw._send(self.adapter, PHONE, 'Pick one:\n1. foo\n2. bar')
+        result = self.tap(text='1')
+        self.assertEqual(self.decisions, [])
+        self.assertNotEqual(result.action, 'review_approve')
+
+    def test_outside_the_window_the_sandbox_sends_nothing(self):
+        self.assertEqual(self.card_for(staged_record(comment('Hello'))), 0)
+
+    def test_a_twilio_template_needs_a_content_sid(self):
+        self.templates.approve('board_review')            # default name only
+        self.assertEqual(self.card_for(staged_record(comment('Hello'))), 0)
+        self.templates.approve('board_review', provider_name='HXabc123')
+        self.assertEqual(self.card_for(staged_record(comment('Hello'))), 1)
+        msg = self.adapter.last()
+        self.assertEqual(msg.template_args['content_sid'], 'HXabc123')
+        self.assertEqual(len(msg.buttons), 3)
+
+
+class SealedAddressTest(unittest.TestCase):
+    """The address a review card is sent to is kept sealed, never in the
+    clear, and only ever opens for the record it was sealed into."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix='kc-gw-seal-')
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.reg = gw.IdentityRegistry(self.dir)
+
+    def test_round_trip_and_never_in_the_clear(self):
+        self.reg.bind(PHONE, 'whatsapp', workspace='w', workspace_host='h', token='t')
+        rec = self.reg.lookup(PHONE)
+        self.assertNotIn('15550001111', json.dumps(rec))
+        self.assertEqual(self.reg.open_address(rec), PHONE)
+        self.assertEqual([r['notify_to'] for r in self.reg.notify_targets('whatsapp')],
+                         [PHONE])
+        self.assertNotIn('notify_sealed', json.dumps(self.reg.list_links()))
+
+    def test_a_sealed_address_moved_to_another_record_does_not_open(self):
+        self.reg.bind(PHONE, 'whatsapp', workspace='w', workspace_host='h', token='t')
+        self.reg.bind('whatsapp:+19998887777', 'whatsapp', workspace='w',
+                      workspace_host='h', token='t')
+        mine = self.reg.lookup(PHONE)
+        other = self.reg.lookup('whatsapp:+19998887777')
+        self.assertIsNone(self.reg.open_address(
+            dict(other, notify_sealed=mine['notify_sealed'])))
+
+    def test_an_old_link_is_backfilled_on_its_next_inbound(self):
+        self.reg.bind(PHONE, 'whatsapp', workspace='w', workspace_host='h', token='t')
+        rec = self.reg.lookup(PHONE)
+        rec.pop('notify_sealed')
+        self.reg._atomic_write(self.reg._identity_path(rec['identity_hash']), rec)
+        self.assertEqual(self.reg.notify_targets('whatsapp'), [])
+        self.reg.remember_address(PHONE)
+        self.assertEqual(len(self.reg.notify_targets('whatsapp')), 1)
 
 
 if __name__ == '__main__':

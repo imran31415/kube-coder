@@ -323,6 +323,8 @@ class TwilioProvider(_Provider):
             # A tapped quick-reply arrives as ButtonText (Twilio) — that IS the
             # option text, so it maps straight back to the choice.
             button_reply=f.get('ButtonText', ''),
+            # …and a Content-template button's id as ButtonPayload.
+            button_payload=f.get('ButtonPayload', ''),
         )
 
     def send(self, msg: OutboundMessage, caps: Capabilities) -> DeliveryResult:
@@ -334,10 +336,29 @@ class TwilioProvider(_Provider):
                 break
         return last
 
+    def build_template_params(self, msg: OutboundMessage) -> Dict[str, str]:
+        """A Content-template send: `ContentSid` + `ContentVariables`. The
+        variables are positional ('1', '2', …) — body values first, then one
+        per button id — so the template's quick-reply ids can be `{{n}}`."""
+        args = msg.template_args or {}
+        values = list(args.get('body_params') or []) + \
+            [b.get('id', '') for b in msg.buttons]
+        params = {
+            'To': self._wa_addr(msg.channel_identity),
+            'ContentSid': args.get('content_sid', ''),
+            'ContentVariables': json.dumps(
+                {str(i + 1): str(v) for i, v in enumerate(values)}),
+        }
+        if self.from_number:
+            params['From'] = self._wa_addr(self.from_number)
+        return params
+
     def build_payloads(self, msg: OutboundMessage,
                        caps: Capabilities) -> List[Dict[str, str]]:
         """Twilio Messages form params, one per ≤4096 chunk. Interactive choices
         degrade to a numbered text list (sandbox can't create Content buttons)."""
+        if msg.template and (msg.template_args or {}).get('content_sid'):
+            return [self.build_template_params(msg)]
         to = self._wa_addr(msg.channel_identity)
         body = msg.text or ''
         if msg.quick_replies:
@@ -458,6 +479,7 @@ class MetaProvider(_Provider):
                     continue
                 text = ''
                 button_reply = ''
+                button_payload = ''
                 mtype = m.get('type')
                 if mtype == 'text':
                     text = (m.get('text') or {}).get('body', '')
@@ -465,8 +487,11 @@ class MetaProvider(_Provider):
                     inter = m.get('interactive') or {}
                     br = inter.get('button_reply') or inter.get('list_reply') or {}
                     button_reply = br.get('title') or br.get('id') or ''
+                    button_payload = br.get('id') or ''
                 elif mtype == 'button':
+                    # A template quick-reply: the payload we set at send time.
                     button_reply = (m.get('button') or {}).get('text', '')
+                    button_payload = (m.get('button') or {}).get('payload', '')
                 media: List[MediaItem] = []
                 for mk in ('image', 'document', 'audio', 'video'):
                     if mtype == mk and isinstance(m.get(mk), dict):
@@ -479,7 +504,8 @@ class MetaProvider(_Provider):
                     channel_identity=f'whatsapp:{frm}' if not frm.startswith('whatsapp:') else frm,
                     text=text, media=media,
                     provider_msg_id=m.get('id', ''),
-                    button_reply=button_reply)
+                    button_reply=button_reply,
+                    button_payload=button_payload)
         return None
 
     def build_payloads(self, msg: OutboundMessage,
@@ -491,6 +517,11 @@ class MetaProvider(_Provider):
         chunks = chunk_text(msg.text or '', caps.max_text_len)
         payloads: List[Dict[str, Any]] = []
         spec = render_choice(msg.quick_replies, caps) if msg.quick_replies else None
+        if msg.buttons and len(msg.buttons) <= caps.max_buttons:
+            # Explicit ids win: the tap must come back as the id we chose.
+            spec = InteractiveSpec(kind='buttons', buttons=[
+                {'id': b['id'], 'title': _truncate(b.get('title', ''), BUTTON_TITLE_MAX)}
+                for b in msg.buttons])
         for i, chunk in enumerate(chunks):
             last = i == len(chunks) - 1
             base = {'messaging_product': 'whatsapp', 'to': to}
@@ -531,14 +562,31 @@ class MetaProvider(_Provider):
         return payloads
 
     def build_template_payload(self, msg: OutboundMessage) -> Dict[str, Any]:
-        """Out-of-window template send (the core SELECTED it; we execute)."""
+        """Out-of-window template send (the core SELECTED it; we execute).
+
+        `template_args` may carry `provider_name` (the name registered on the
+        user's Meta app), `language`, and `body_params`; each of `msg.buttons`
+        sets the payload of the quick-reply button at its index, which Meta
+        hands back on the tap."""
         to = msg.channel_identity.replace('whatsapp:', '')
+        args = msg.template_args or {}
+        template: Dict[str, Any] = {
+            'name': args.get('provider_name') or msg.template,
+            'language': {'code': args.get('language') or 'en'},
+        }
+        components: List[Dict[str, Any]] = []
+        if args.get('body_params'):
+            components.append({'type': 'body', 'parameters': [
+                {'type': 'text', 'text': str(v)} for v in args['body_params']]})
+        for i, b in enumerate(msg.buttons):
+            components.append({
+                'type': 'button', 'sub_type': 'quick_reply', 'index': str(i),
+                'parameters': [{'type': 'payload', 'payload': b.get('id', '')}]})
+        if components:
+            template['components'] = components
         return {
             'messaging_product': 'whatsapp', 'to': to, 'type': 'template',
-            'template': {
-                'name': msg.template,
-                'language': {'code': 'en'},
-            },
+            'template': template,
         }
 
     def send(self, msg: OutboundMessage, caps: Capabilities) -> DeliveryResult:

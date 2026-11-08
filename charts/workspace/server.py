@@ -274,6 +274,14 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     _GATEWAY_AVAILABLE = False
     print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
 
+# Board review cards over WhatsApp (#709 Part 4). Its own guard: it also needs
+# the boards package, and losing it must not take the chat gateway down.
+try:
+    import gateway_review
+except Exception as _gwr_import_err:  # pragma: no cover - broken install
+    gateway_review = None  # type: ignore
+    print(f'[gateway] review cards unavailable: {_gwr_import_err}', file=sys.stderr)
+
 # Multi-harness skills subsystem (issue #187) — same colocated-package
 # convention as `memory`. Read-only surface over SKILL.md-style files
 # discovered from every supported agent harness (Claude Code, OpenCode,
@@ -783,6 +791,7 @@ _GATEWAY = None            # type: ignore
 _GATEWAY_ADAPTER = None    # type: ignore
 _GATEWAY_PREVIEW = None     # type: ignore  # Walkie-Talkie preview orchestrator
 _GATEWAY_LOOPBACK = None    # type: ignore  # in-app loopback ChannelAdapter
+_GATEWAY_REVIEW = None      # type: ignore  # Board review cards (#709)
 _GATEWAY_LOCK = threading.Lock()
 
 
@@ -803,7 +812,8 @@ def get_gateway():
     the turn-complete observer exactly once on first construction, and wires the
     Walkie-Talkie preview (its window probe + loopback adapter) into the SAME
     core so the in-app preview behaves identically to real WhatsApp."""
-    global _GATEWAY, _GATEWAY_ADAPTER, _GATEWAY_PREVIEW, _GATEWAY_LOOPBACK
+    global _GATEWAY, _GATEWAY_ADAPTER, _GATEWAY_PREVIEW, _GATEWAY_LOOPBACK, \
+        _GATEWAY_REVIEW
     if not (_GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE):
         return None
     with _GATEWAY_LOCK:
@@ -821,8 +831,55 @@ def get_gateway():
             _GATEWAY_LOOPBACK = LoopbackAdapter(
                 preview.transcript, publish=EventBroker.publish,
                 identity=INTERNAL_IDENTITY)
+            if gateway_review is not None and _BOARDS_AVAILABLE:
+                _GATEWAY_REVIEW = gateway_review.ReviewNotifier(
+                    gw, adapter_getter=lambda: _GATEWAY_ADAPTER,
+                    record_getter=BoardReviewManager.get,
+                    decider=_gateway_review_decide)
+                gw.review_handler = _GATEWAY_REVIEW.handle_inbound
             print('[gateway] conversation gateway ready (whatsapp + loopback preview)')
         return _GATEWAY
+
+
+def _gateway_review_decide(decision, board_id, item_id, *, content_hash,
+                           proposal_digest, approval_id, actor):
+    """A WhatsApp review tap (#709), through the SAME BoardReviewManager calls
+    as `POST /api/boards/<id>/staged/<item>/approve|reject` — so the ticket
+    staleness, card echo and replay guards are the app's own. Returns
+    `(result, ReviewError|None)` like they do."""
+    if READONLY_MODE:
+        return None, boards.review.ReviewError(
+            'readonly', 'this workspace is read-only')
+    cfg = BoardsManager.get(board_id)
+    if cfg is None:
+        return None, boards.review.ReviewError(
+            'not_found', 'this board no longer exists')
+    if decision == 'approve':
+        return BoardReviewManager.approve(
+            cfg, item_id, content_hash=content_hash, approval_id=approval_id,
+            actor=actor, proposal_digest=proposal_digest)
+    return BoardReviewManager.decide(
+        cfg, item_id, state='rejected', approval_id=approval_id,
+        reason='rejected from WhatsApp', actor=actor,
+        proposal_digest=proposal_digest)
+
+
+def _gateway_review_notify(item):
+    """Send a Board review Feed item to the paired WhatsApp number (#709),
+    beside the push. The filter is pure and runs first, so every other emit
+    costs nothing and never builds the gateway; delivery itself runs on a
+    daemon thread. Never raises — the Feed row and the push already happened."""
+    if not GATEWAY_ENABLED or gateway_review is None:
+        return False
+    try:
+        if gateway_review.review_ref(item) is None:
+            return False
+        get_gateway()
+        notifier = _GATEWAY_REVIEW
+        return bool(notifier is not None and notifier.on_feed_item(item))
+    except Exception as e:
+        print(f'[gateway-review] notify failed: {e}', file=sys.stderr)
+        return False
 
 
 def _build_gateway_adapter():
@@ -3130,11 +3187,24 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
-    def _spawn_task(task_id, session_id, prompt, workdir, response_url,
-                    response_secret, source, disable_memory_injection, assistant,
-                    parent_task_id, system_preamble, auto_approve, project_id,
-                    model, effort, board_id, board_item_id, resume_session_id,
-                    worktree=None, board_run_context=None):
+    def _spawn_task(task_id, *args, **kwargs):
+        """Launch a Build with the reconciler held off until tmux has answered.
+
+        See `_launching`: the guard has to outlive every exit from the launch,
+        an exception included, or the task could never be settled.
+        """
+        ClaudeTaskManager._launching.add(task_id)
+        try:
+            return ClaudeTaskManager._launch_task(task_id, *args, **kwargs)
+        finally:
+            ClaudeTaskManager._launching.discard(task_id)
+
+    @staticmethod
+    def _launch_task(task_id, session_id, prompt, workdir, response_url,
+                     response_secret, source, disable_memory_injection, assistant,
+                     parent_task_id, system_preamble, auto_approve, project_id,
+                     model, effort, board_id, board_item_id, resume_session_id,
+                     worktree=None, board_run_context=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         os.makedirs(task_dir, mode=0o700)
 
@@ -3345,8 +3415,10 @@ class ClaudeTaskManager:
                       'post-launch trust-dialog watchdog (#800)',
                       file=sys.stderr)
                 meta['trust_seed_failed'] = True
-                with open(meta_path, 'w') as f:
-                    json.dump(meta, f, indent=2)
+                # Locked, not a rewrite of `meta`: that copy still says
+                # `running`, and a kill can already have landed.
+                ClaudeTaskManager._atomic_update_meta(
+                    task_dir, lambda m: m.__setitem__('trust_seed_failed', True))
 
         cli_cmd = ClaudeTaskManager.assistant_command(
             assistant, auto_approve=auto_approve, model=model, effort=effort,
@@ -3409,11 +3481,8 @@ class ClaudeTaskManager:
 
         result = subprocess.run(tmux_cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            meta['status'] = 'error'
-            meta['error'] = result.stderr.strip()
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
-            return meta
+            return ClaudeTaskManager._fail_launch(
+                task_dir, meta, result.stderr.strip())
 
         # Mirror the tmux pane output to a log file so it survives session/pod restarts.
         # `pipe-pane -o` toggles output piping; the appended `cat >> ...` keeps writing
@@ -3539,10 +3608,6 @@ class ClaudeTaskManager:
             'tmux_session': session_name,
         }
 
-        meta_path = os.path.join(task_dir, 'task.json')
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
-
         shell_cmd = f'cd {_shell_quote(workdir)} && exec bash -l'
         tmux_cmd = [
             'tmux', 'new-session', '-d',
@@ -3550,13 +3615,17 @@ class ClaudeTaskManager:
             '-x', '220', '-y', '50',
             'bash', '-lc', shell_cmd,
         ]
-        result = subprocess.run(tmux_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            meta['status'] = 'error'
-            meta['error'] = result.stderr.strip()
+        ClaudeTaskManager._launching.add(task_id)
+        try:
+            meta_path = os.path.join(task_dir, 'task.json')
             with open(meta_path, 'w') as f:
                 json.dump(meta, f, indent=2)
-            return meta
+            result = subprocess.run(tmux_cmd, capture_output=True, text=True)
+        finally:
+            ClaudeTaskManager._launching.discard(task_id)
+        if result.returncode != 0:
+            return ClaudeTaskManager._fail_launch(
+                task_dir, meta, result.stderr.strip())
 
         output_log = os.path.join(task_dir, 'output.log')
         subprocess.run(
@@ -3632,6 +3701,9 @@ class ClaudeTaskManager:
                     # the assistant isn't instrumented.
                     'usage': ClaudeTaskManager.usage_view(meta),
                 }
+                # Waiting Builds only, so every other row is unchanged.
+                if meta.get('waiting_reason'):
+                    row['waiting_reason'] = meta['waiting_reason']
                 # Isolated Builds only (#701), so every other row is unchanged.
                 # Read from the stored snapshot — a list never runs git.
                 if meta.get('worktree'):
@@ -3778,46 +3850,20 @@ class ClaudeTaskManager:
     def _fail_undelivered(task_id, task_dir, meta, attempts):
         """Mark an unrecoverable Build `error` and free its tmux slot."""
         failed_at = time.time()
-        fire_hook = False
         reason = (f'the initial prompt was never delivered to the agent after '
                   f'{attempts} re-delivery attempt(s)')
 
-        def mutate(m):
-            nonlocal fire_hook
-            # Re-check inside the lock: the Build may have recovered or been
-            # killed while the reaper was deciding.
-            if m.get('status') != 'waiting-for-input' or \
-                    m.get('prompt_delivered') is not False:
-                return False
-            m['status'] = 'error'
-            m['error'] = reason
-            m['finished_at'] = failed_at
-            m['prompt_undelivered_reaped_at'] = failed_at
-            m.pop('waiting_for_input', None)
-            m.pop('last_input_prompt', None)
-            if m.get('response_url') and not m.get('hook_fired_at'):
-                m['hook_fired_at'] = failed_at
-                fire_hook = True
+        def still_undelivered(m):
+            # The Build may have recovered while the reaper was deciding.
+            return (m.get('status') == 'waiting-for-input'
+                    and m.get('prompt_delivered') is False)
 
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-        if updated is None or updated.get('status') != 'error' or \
-                updated.get('prompt_undelivered_reaped_at') != failed_at:
+        _, moved = ClaudeTaskManager._transition(
+            task_dir, 'error', guard=still_undelivered, at=failed_at,
+            fields={'error': reason, 'prompt_undelivered_reaped_at': failed_at},
+            end_session=True)
+        if not moved:
             return False
-        # Status first, kill second: the reconciler skips a terminal task, so
-        # it cannot race the session's disappearance into `completed`.
-        subprocess.run(
-            ['tmux', 'kill-session', '-t',
-             meta.get('tmux_session') or f'kube-coder-{task_id}'],
-            capture_output=True, text=True,
-        )
-        if fire_hook:
-            ClaudeTaskManager._fire_completion_hook(updated)
-        EventBroker.publish('task.status', {
-            'task_id': task_id, 'status': 'error', 'finished_at': failed_at,
-        })
-        FeedManager.emit_task_terminal(updated, 'error')
-        if updated.get('worktree'):
-            WorktreeManager.snapshot_async(task_id)
         print(f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
               file=sys.stderr)
         return True
@@ -3973,6 +4019,7 @@ class ClaudeTaskManager:
             meta['pending_prompt'] = parse_screen_prompt(recent_output)
         except Exception:
             meta['pending_prompt'] = None
+        ClaudeTaskManager._apply_detected_prompt(meta, meta['pending_prompt'])
         return meta
 
     @staticmethod
@@ -4025,6 +4072,10 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
+        # A finished Build takes no more input, even with a session still up.
+        if meta.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+            return None, 'Session is no longer running'
+
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
 
         # Check if tmux session is still alive
@@ -4062,47 +4113,44 @@ class ClaudeTaskManager:
         # don't drop each other's appends to followups[].
         sent_at = time.time()
 
-        def mutate(m):
-            m['status'] = 'running'
-            fps = m.get('followups', [])
-            fps.append({'prompt': prompt, 'sent_at': sent_at})
-            m['followups'] = fps
+        def record_followup(m):
+            # The Build ended while the text was being pasted, so nothing is
+            # left to read it. Refused rather than recorded: the caller must
+            # hear what a session already dead at the top of this call gets.
+            if m.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+                return False
+            m.setdefault('followups', []).append(
+                {'prompt': prompt, 'sent_at': sent_at})
 
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
+        updated, _ = ClaudeTaskManager._transition(
+            task_dir, 'running', record=record_followup)
+        if updated is not None and \
+                updated.get('status') in ClaudeTaskManager._TERMINAL_STATUSES:
+            return None, 'Session is no longer running'
         return updated, None
+
+    @staticmethod
+    def _end_session(meta, task_id):
+        """Kill a Build's tmux session. A session that is already gone is fine."""
+        subprocess.run(
+            ['tmux', 'kill-session', '-t',
+             meta.get('tmux_session') or f'kube-coder-{task_id}'],
+            capture_output=True, text=True,
+        )
 
     @staticmethod
     def delete_task(task_id):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
-        meta_path = os.path.join(task_dir, 'task.json')
-        if not os.path.isfile(meta_path):
+        if not os.path.isfile(os.path.join(task_dir, 'task.json')):
             return None
 
-        with open(meta_path, 'r') as f:
-            meta = json.load(f)
-
-        session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
-
-        # Kill the tmux session if alive
-        subprocess.run(
-            ['tmux', 'kill-session', '-t', session_name],
-            capture_output=True, text=True,
-        )
-
-        killed_at = time.time()
-        fire_hook = False
-
-        def mutate(m):
-            nonlocal fire_hook
-            m['status'] = 'killed'
-            m['killed_at'] = killed_at
-            if m.get('response_url') and not m.get('hook_fired_at'):
-                m['hook_fired_at'] = killed_at
-                fire_hook = True
-
-        updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-        if updated is not None and fire_hook:
-            ClaudeTaskManager._fire_completion_hook(updated)
+        updated, moved = ClaudeTaskManager._transition(
+            task_dir, 'killed', end_session=True)
+        if updated is not None and not moved:
+            # Already finished: nothing about the record changes. The kill is
+            # still attempted, because status is written first and a crash
+            # between the two leaves a session only this retry can clean up.
+            ClaudeTaskManager._end_session(updated, task_id)
         return updated
 
     @staticmethod
@@ -4170,6 +4218,141 @@ class ClaudeTaskManager:
                 return meta
             finally:
                 fcntl.flock(lockf, fcntl.LOCK_UN)
+
+    # ── Build lifecycle ──────────────────────────────────────────────────
+    # Every status change goes through `_transition`, so one table says what
+    # is legal and one place runs what a change implies. The values are wire
+    # format: the dashboard, the mobile app and hook receivers all match on
+    # them.
+
+    _TERMINAL_STATUSES = ('completed', 'error', 'killed', 'terminated')
+
+    #: status -> statuses it may become. A terminal status has no entry, and
+    #: neither does a same-status "move", so neither can ever transition.
+    _TRANSITIONS = {
+        'running': frozenset(('waiting-for-input',) + _TERMINAL_STATUSES),
+        'waiting-for-input': frozenset(('running',) + _TERMINAL_STATUSES),
+    }
+
+    #: Terminal statuses that record their moment under a name of their own,
+    #: alongside `finished_at`.
+    _STATUS_TIMESTAMPS = {'killed': 'killed_at', 'terminated': 'terminated_at'}
+
+    #: Task ids between their first task.json write and tmux answering. There
+    #: is no session to find yet, and without this the reconciler would call
+    #: that absence `completed` -- which no longer can be undone, so the Build
+    #: would stay `completed` while it ran and a failed launch could not record
+    #: its error. In-process on purpose: a restart ends every launch with it.
+    _launching = set()
+
+    @staticmethod
+    def _transition(task_dir, to, *, guard=None, record=None, fields=None,
+                    at=None, end_session=False, screen=''):
+        """Move a Build to status `to`. Returns `(meta, moved)`.
+
+        `meta` is task.json as it now stands (None if the task is gone) and
+        `moved` says whether THIS call made the change, so concurrent callers
+        cannot both run the side effects.
+
+        Under the task lock: `record(m)` runs whether or not the status can
+        move, for fields that travel with this write (returning False abandons
+        the write entirely). The move then needs the table to allow it and
+        `guard(m)`, if given, to return truthy. `fields` are set only when it
+        happens. The completion hook is claimed here too, which is what makes
+        it at-most-once. `waiting_reason` is set on entering waiting, from
+        `screen`, and removed on leaving it.
+
+        Outside the lock, only when moved: the session is ended if
+        `end_session` (after the write, so the reconciler can't mistake the
+        disappearance for a finish), then `_after_transition`.
+        """
+        cls = ClaudeTaskManager
+        at = time.time() if at is None else at
+        terminal = to in cls._TERMINAL_STATUSES
+        moved = fire_hook = False
+
+        def mutate(m):
+            nonlocal moved, fire_hook
+            if record is not None and record(m) is False:
+                return False
+            if to not in cls._TRANSITIONS.get(m.get('status'), ()) or \
+                    (guard is not None and not guard(m)):
+                return record is not None  # keep only what `record` wrote
+            m['status'] = to
+            m.update(fields or {})
+            if to == 'waiting-for-input':
+                m['waiting_for_input'] = True
+                m['waiting_reason'] = cls._waiting_reason(m, screen)
+            else:
+                m.pop('waiting_for_input', None)
+                m.pop('last_input_prompt', None)
+                m.pop('waiting_reason', None)
+            if terminal:
+                m['finished_at'] = at
+                if to in cls._STATUS_TIMESTAMPS:
+                    m[cls._STATUS_TIMESTAMPS[to]] = at
+                if m.get('response_url') and not m.get('hook_fired_at'):
+                    m['hook_fired_at'] = at
+                    fire_hook = True
+            moved = True
+
+        updated = cls._atomic_update_meta(task_dir, mutate)
+        if updated is None or not moved:
+            return updated, False
+        task_id = updated.get('task_id') or os.path.basename(task_dir)
+        if end_session:
+            try:
+                cls._end_session(updated, task_id)
+            except Exception as e:
+                print(f'[task-lifecycle] {task_id}: kill failed: {e}',
+                      file=sys.stderr)
+        cls._after_transition(updated, task_dir, task_id, to, fire_hook,
+                              session_was_gone=not end_session)
+        return updated, True
+
+    @staticmethod
+    def _after_transition(meta, task_dir, task_id, to, fire_hook,
+                          session_was_gone):
+        """The consequences of one status change. Each is independent: the
+        status is already on disk, so a failure here must not cost the rest."""
+        cls = ClaudeTaskManager
+        terminal = to in cls._TERMINAL_STATUSES
+        event = {'task_id': task_id, 'status': to}
+        if terminal:
+            event['finished_at'] = meta.get('finished_at')
+
+        effects = []
+        # Settle spend only once the CLI has really gone. Straight after a kill
+        # it may still be flushing, and this scan is marked final; the next
+        # read of the task does it instead.
+        if terminal and session_was_gone:
+            effects.append(lambda: cls.ingest_usage(meta, task_dir))
+        if fire_hook:
+            effects.append(lambda: cls._fire_completion_hook(meta))
+        effects.append(lambda: EventBroker.publish('task.status', event))
+        if terminal:
+            effects.append(lambda: FeedManager.emit_task_terminal(meta, to))
+        elif to == 'waiting-for-input':
+            effects.append(lambda: FeedManager.emit_task_waiting(meta))
+        # What the Build changed, recorded when it stops or parks (#701), so a
+        # list or a review card can show it without running git.
+        if (terminal or to == 'waiting-for-input') and meta.get('worktree'):
+            effects.append(lambda: WorktreeManager.snapshot_async(task_id))
+        for effect in effects:
+            try:
+                effect()
+            except Exception as e:
+                print(f'[task-lifecycle] {task_id}: side effect of {to} '
+                      f'failed: {type(e).__name__}: {e}', file=sys.stderr)
+
+    @staticmethod
+    def _fail_launch(task_dir, meta, error):
+        """tmux refused the session. Returns the task as it now stands."""
+        updated, _ = ClaudeTaskManager._transition(
+            task_dir, 'error', fields={'error': error})
+        if updated is None:   # the task dir went away under the launch
+            return {**meta, 'status': 'error', 'error': error}
+        return updated
 
     @staticmethod
     def _api_key_to_reject():
@@ -5438,6 +5621,66 @@ class ClaudeTaskManager:
         return (updated or meta).get('usage')
 
     @staticmethod
+    def _waiting_reason(meta, screen):
+        """Why a `waiting-for-input` Build is parked: `trust_dialog`,
+        `undelivered`, `question` or `idle`, in that precedence.
+
+        `idle` means no question was detected, never that the work is done:
+        parse_screen_prompt only knows Claude Code's menus and (y/n) markers,
+        so an agent asking in prose reads as `idle`.
+        """
+        if meta.get('stalled_at_trust_dialog'):
+            return 'trust_dialog'
+        if meta.get('prompt_delivered') is False:
+            return 'undelivered'
+        try:
+            return 'question' if parse_screen_prompt(screen) else 'idle'
+        except Exception as e:
+            print(f'[ClaudeTaskManager] prompt parse failed: {e}',
+                  file=sys.stderr)
+            return 'idle'
+
+    @staticmethod
+    def _refresh_waiting_reason(meta, task_dir, screen):
+        """Keep the stored reason true while the status stays waiting.
+
+        A reason's inputs move without a status change: the delivery thread and
+        the reaper record `prompt_delivered`, the trust stall is noted or
+        retracted, and a Build parked before this field existed has none. The
+        reconciler already holds the screen, so this costs no tmux call and
+        writes only on a change.
+
+        Deliberately publishes no `task.status`: the status did not change,
+        watchers and clients treat that event as a transition, and every list
+        polls anyway.
+        """
+        cls = ClaudeTaskManager
+        if cls._waiting_reason(meta, screen) == meta.get('waiting_reason'):
+            return
+
+        def mutate(m):
+            if m.get('status') != 'waiting-for-input':
+                return False
+            m['waiting_reason'] = cls._waiting_reason(m, screen)
+
+        try:
+            updated = cls._atomic_update_meta(task_dir, mutate)
+        except Exception as e:
+            print(f'[ClaudeTaskManager] waiting_reason update failed: {e}',
+                  file=sys.stderr)
+            return
+        cls._adopt_meta(meta, updated)
+
+    @staticmethod
+    def _apply_detected_prompt(meta, prompt):
+        """A response that found a prompt in its wider capture must not call
+        the Build `idle`: quick-reply buttons under an Idle label would be a
+        false idle on a real question. Response-only, because the stored value
+        comes from the visible screen and the next poll would undo a write."""
+        if prompt and meta.get('waiting_reason') == 'idle':
+            meta['waiting_reason'] = 'question'
+
+    @staticmethod
     def _note_trust_stall(meta, task_dir, screen):
         """Record — or retract — `stalled_at_trust_dialog` for a live task.
 
@@ -5492,6 +5735,8 @@ class ClaudeTaskManager:
         # If task is already finished, no need to check further
         if current_status not in ('running', 'waiting-for-input'):
             return
+        if meta.get('task_id') in ClaudeTaskManager._launching:
+            return
 
         session_name = meta.get('tmux_session', '')
         if not session_name:
@@ -5511,64 +5756,18 @@ class ClaudeTaskManager:
         # behaviour — a false `terminated` would have an orchestrator redo work
         # that had actually been done.
         if check.returncode != 0:
-            finished_at = time.time()
-            fire_hook = False
             boot = ClaudeTaskManager.boot_id()
             task_boot = meta.get('boot_id') or ''
             wiped = bool(boot) and bool(task_boot) and task_boot != boot
-            new_status = 'terminated' if wiped else 'completed'
-
-            def mutate(m):
-                nonlocal fire_hook
-                # Re-check inside the lock; another reconcile may have run already.
-                if m.get('status') not in ('running', 'waiting-for-input'):
-                    return False
-                m['status'] = new_status
-                m['finished_at'] = finished_at
-                if wiped:
-                    # Why it ended, for an orchestrator deciding whether to
-                    # recover. Separate from `finished_at` because a terminated
-                    # task did not finish — this is when we NOTICED, which is
-                    # boot time, not the moment the work stopped.
-                    m['terminated_at'] = finished_at
-                    m['termination_reason'] = 'pod_restart'
-                # Clear waiting state fields
-                m.pop('waiting_for_input', None)
-                m.pop('last_input_prompt', None)
-                # Decide-and-mark-fired atomically. If we mark hook_fired_at here, a
-                # concurrent reconciler reading the same task.json will see it and
-                # skip firing — so we get at-most-once delivery without needing a
-                # second lock acquire.
-                if m.get('response_url') and not m.get('hook_fired_at'):
-                    m['hook_fired_at'] = finished_at
-                    fire_hook = True
-
-            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-            if updated is not None:
-                meta['status'] = updated.get('status', meta.get('status'))
-                meta['finished_at'] = updated.get('finished_at', meta.get('finished_at'))
-                if wiped:
-                    meta['terminated_at'] = updated.get('terminated_at')
-                    meta['termination_reason'] = updated.get('termination_reason')
-                meta.pop('waiting_for_input', None)
-                meta.pop('last_input_prompt', None)
-                # The CLI is gone: settle the token figure now (#574) rather than
-                # waiting for the next poll. Separate locked write, so it can't
-                # disturb the status transition above.
-                ClaudeTaskManager.ingest_usage(meta, task_dir)
-                if fire_hook:
-                    ClaudeTaskManager._fire_completion_hook(updated)
-                EventBroker.publish('task.status', {
-                    'task_id': meta.get('task_id'),
-                    'status': meta.get('status') or new_status,
-                    'finished_at': meta.get('finished_at'),
-                })
-                # Feed (#469): one coalesced activity item per task terminal.
-                FeedManager.emit_task_terminal(meta, meta.get('status') or 'completed')
-                # What the Build changed, recorded once it stops (#701), so a
-                # list or a review card can show it without running git.
-                if meta.get('worktree'):
-                    WorktreeManager.snapshot_async(meta.get('task_id'))
+            # `termination_reason` is why it ended, for an orchestrator
+            # deciding whether to recover. Its `terminated_at` is separate from
+            # `finished_at` in meaning because a terminated task did not finish
+            # -- this is when we NOTICED, which is boot time, not the moment
+            # the work stopped.
+            updated, _ = ClaudeTaskManager._transition(
+                task_dir, 'terminated' if wiped else 'completed',
+                fields={'termination_reason': 'pod_restart'} if wiped else None)
+            ClaudeTaskManager._adopt_meta(meta, updated)
             return
         
         # Session is alive. Adopt it into this boot if it predates us (#792):
@@ -5608,48 +5807,32 @@ class ClaudeTaskManager:
         if digest != meta.get('pane_hash'):
             # Screen changed → activity. Record it, reset the idle clock, and
             # if we had flagged waiting, return to running.
-            def mutate(m):
+            def note_activity(m):
                 m['pane_hash'] = digest
                 m['last_activity_at'] = now
-                if m.get('status') == 'waiting-for-input':
-                    m['status'] = 'running'
-                    m.pop('waiting_for_input', None)
-                    m.pop('last_input_prompt', None)
 
-            updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-            if updated is not None:
-                meta['pane_hash'] = digest
-                meta['last_activity_at'] = now
-                if meta.get('status') == 'waiting-for-input':
-                    meta['status'] = 'running'
-                    meta.pop('waiting_for_input', None)
-                    meta.pop('last_input_prompt', None)
-                    EventBroker.publish('task.status', {
-                        'task_id': meta.get('task_id'), 'status': 'running',
-                    })
+            updated, _ = ClaudeTaskManager._transition(
+                task_dir, 'running', record=note_activity)
+            ClaudeTaskManager._adopt_meta(meta, updated)
             return
 
         # Screen unchanged since the previous capture.
         if current_status == 'running':
             stable_since = meta.get('last_activity_at') or now
             if now - stable_since >= IDLE_WAITING_SECONDS:
-                def mutate(m):
-                    if m.get('status') == 'running':  # re-check inside lock
-                        m['status'] = 'waiting-for-input'
-                        m['waiting_for_input'] = True
+                updated, _ = ClaudeTaskManager._transition(
+                    task_dir, 'waiting-for-input', screen=screen)
+                ClaudeTaskManager._adopt_meta(meta, updated)
+        elif current_status == 'waiting-for-input':
+            ClaudeTaskManager._refresh_waiting_reason(meta, task_dir, screen)
 
-                updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
-                if updated is not None:
-                    meta['status'] = 'waiting-for-input'
-                    meta['waiting_for_input'] = True
-                    EventBroker.publish('task.status', {
-                        'task_id': meta.get('task_id'), 'status': 'waiting-for-input',
-                    })
-                    # Feed (#469): flag it "waiting on you" (coalesced per task).
-                    FeedManager.emit_task_waiting(meta)
-                    # A Board item's Build parks here when it is done (#701).
-                    if meta.get('worktree'):
-                        WorktreeManager.snapshot_async(meta.get('task_id'))
+    @staticmethod
+    def _adopt_meta(meta, fresh):
+        """Make a caller's in-memory task match what is on disk, including
+        when another writer got there first."""
+        if fresh is not None:
+            meta.clear()
+            meta.update(fresh)
 
 
 class WorktreeManager:
@@ -7445,6 +7628,11 @@ class FeedManager:
             sent = push_notify.dispatch(item, seen=seen)
         except Exception:
             sent = False
+        # WhatsApp (#709 Part 4): a Board review also goes to the paired
+        # number, with Approve / Reject when the write is short enough to read
+        # in full. Push stays the main channel; this is self-gating, off-thread
+        # and never raises, so it cannot break the emit or the push above.
+        _gateway_review_notify(item)
         if sent and seen:
             # The phone was just told again, so the row is news again: mark it
             # unread. Otherwise it would stay read forever and every later
@@ -10539,8 +10727,13 @@ class BoardReviewManager:
     # ── approving ──────────────────────────────────────────────────────────
 
     @classmethod
-    def approve(cls, cfg, item_id, *, content_hash, approval_id, actor=''):
+    def approve(cls, cfg, item_id, *, content_hash, approval_id, actor='',
+                proposal_digest=None):
         """Fire the staged writes. Returns `(result, ReviewError|None)`.
+
+        `proposal_digest` is for a card the reviewer cannot refresh (WhatsApp,
+        #709): it is checked in the same lock as the other guards, so an edit
+        landing between the message and the tap is refused, not written.
 
         Three phases so no outbound call happens under the record lock:
 
@@ -10590,6 +10783,11 @@ class BoardReviewManager:
                 return False
             if verdict == 'replay':
                 outcome['replay'] = stored
+                return False
+            try:
+                boards.review.check_proposal(rec, proposal_digest)
+            except boards.review.ReviewError as e:
+                outcome['error'] = e
                 return False
             boards.review.consume(
                 rec, approval_id, state='approved', decided_by=actor,
@@ -10654,7 +10852,8 @@ class BoardReviewManager:
         return {'replayed': False, 'result': final}, None
 
     @classmethod
-    def decide(cls, cfg, item_id, *, state, approval_id, reason='', actor=''):
+    def decide(cls, cfg, item_id, *, state, approval_id, reason='', actor='',
+               proposal_digest=None):
         """`reject` / `send_back` — a decision that writes NOTHING to the board.
 
         No staleness check: refusing to act on a ticket stays correct however
@@ -10698,6 +10897,13 @@ class BoardReviewManager:
                 outcome['error'] = boards.review.ReviewError(
                     'already_decided',
                     f'this item was already {rec.get("state")}')
+                return False
+            # A reject from a card that showed an older proposal must not
+            # discard the newer one nobody has read (#709).
+            try:
+                boards.review.check_proposal(rec, proposal_digest)
+            except boards.review.ReviewError as e:
+                outcome['error'] = e
                 return False
             for staged in rec.get('actions') or []:
                 if staged.get('state') == 'pending':
@@ -15027,6 +15233,7 @@ def _mc_task_card(meta, task_dir, now):
         'finished_at': finished_at,
         'waiting_since': meta.get('last_activity_at') if state == 'waiting' else None,
         'waiting_prompt': None,
+        'waiting_reason': meta.get('waiting_reason') if state == 'waiting' else None,
         'outcome': None,
         'evidence': _mc_evidence_from_log(log_text) if state == 'done' else [],
         'parent_id': (f"build:{meta['parent_task_id']}"
@@ -15048,6 +15255,8 @@ def _mc_task_card(meta, task_dir, now):
             )
             if result.returncode == 0:
                 card['waiting_prompt'] = parse_screen_prompt(result.stdout)
+                ClaudeTaskManager._apply_detected_prompt(
+                    card, card['waiting_prompt'])
                 if card['waiting_prompt'] and not card['headline']:
                     card['headline'] = _mc_clip(
                         card['waiting_prompt'].get('question') or '')
@@ -15114,6 +15323,7 @@ def _mc_thread_card(summary, now):
         'finished_at': None,
         'waiting_since': None,
         'waiting_prompt': None,
+        'waiting_reason': None,
         'outcome': None,
         'evidence': [],  # chips are log-derived; chats have no output.log
         'parent_id': None,
@@ -15176,9 +15386,12 @@ def missioncontrol_queue():
                     'state': child['state'],
                 })
 
-    # Urgency first (waiting → running → done), newest within a group.
+    # Urgency first (waiting → running → done), newest within a group. Waiting
+    # cards with no detected question go after the ones that need the human.
     order = {'waiting': 0, 'running': 1, 'review': 2, 'done': 3}
-    cards.sort(key=lambda c: (order.get(c['state'], 9), -(c['updated_at'] or 0)))
+    cards.sort(key=lambda c: (order.get(c['state'], 9),
+                              c['waiting_reason'] == 'idle',
+                              -(c['updated_at'] or 0)))
 
     waiting = [c for c in cards if c['state'] == 'waiting']
     oldest_wait_s = 0
@@ -15189,6 +15402,9 @@ def missioncontrol_queue():
     pulse = {
         'running': sum(1 for c in cards if c['state'] == 'running'),
         'waiting': len(waiting),
+        # The subset of `waiting` that needs the human. A card with no reason
+        # counts: unknown must never read as "nothing for you here".
+        'needs_you': sum(1 for c in waiting if c['waiting_reason'] != 'idle'),
         'review': sum(1 for c in cards if c['state'] == 'review'),
         # Reviewable cards ARE finished work, so they keep counting toward
         # done_today — promoting a card to Review must not make the day's
@@ -15255,8 +15471,10 @@ def _mc_task_timeline(meta, card, children):
             link=f'subagent:{child_id}'))
     if card['state'] == 'waiting':
         prompt = card.get('waiting_prompt') or {}
+        idle = card.get('waiting_reason') == 'idle'
         entries.append(_mc_entry(
-            card.get('waiting_since'), 'waiting', 'Waiting on your input',
+            card.get('waiting_since'), 'waiting',
+            'Turn ended, no question detected' if idle else 'Waiting on your input',
             detail=prompt.get('question') or '', status='pending'))
     outcome = card.get('outcome')
     if outcome and card.get('finished_at'):

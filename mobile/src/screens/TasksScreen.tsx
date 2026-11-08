@@ -1,5 +1,5 @@
 /** Task list — the home of the app. Polls every few seconds. */
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -204,7 +204,7 @@ export default function TasksScreen() {
                 onPress={() => nav.navigate('TaskDetail', { id: item.id })}
               >
                 <View style={styles.taskTop}>
-                  <StatusPill status={item.status} />
+                  <StatusPill status={item.status} waitingReason={item.waiting_reason} />
                   <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
                 </View>
                 <Text style={styles.prompt} numberOfLines={2}>

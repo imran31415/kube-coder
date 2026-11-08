@@ -8,6 +8,20 @@ import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
  * task is not the boot that found it dead.
  */
 export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'terminated' | 'unknown' | 'waiting-for-input';
+
+/**
+ * Why a `waiting-for-input` task is parked. `idle` means no question was
+ * detected, never that the work is done: detection is a screen heuristic.
+ */
+export type WaitingReason = 'question' | 'trust_dialog' | 'undelivered' | 'idle';
+
+/** Short pill text per reason. Never "done" or "finished" — see WaitingReason. */
+export const WAITING_REASON_LABEL: Record<WaitingReason, string> = {
+  question: 'question',
+  trust_dialog: 'trust dialog',
+  undelivered: 'prompt unsent',
+  idle: 'idle',
+};
 export type TaskKind = 'claude' | 'terminal' | string;
 
 export interface MemoryInjection {
@@ -44,6 +58,8 @@ export interface TaskSummary {
   prompt_delivered?: boolean | null;
   /** Parked on Claude Code's folder-trust dialog rather than idle (#800). */
   stalled_at_trust_dialog?: boolean;
+  /** Present only while `status` is `waiting-for-input`. */
+  waiting_reason?: WaitingReason;
   /** Present only for a Build launched in an isolated worktree (#701). */
   worktree?: WorktreeBrief;
 }
@@ -84,9 +100,20 @@ export function idleSeconds(t: TaskSummary): number | null {
   return Math.max(0, Math.floor(Date.now() / 1000 - t.last_activity_at));
 }
 
-/** True when the task is waiting AND has been idle past the stale threshold. */
+/**
+ * True when a person should look at this waiting task. An unknown reason counts
+ * (older server, or not reconciled yet): only a positive `idle` steps down.
+ */
+export function needsUser(t: Pick<TaskSummary, 'status' | 'waiting_reason'>): boolean {
+  return t.status === 'waiting-for-input' && t.waiting_reason !== 'idle';
+}
+
+/**
+ * True when a task waiting on a person has been idle past the stale threshold.
+ * An `idle` task is excluded: long silence is its normal state, not an alarm.
+ */
 export function isStaleWaiting(t: TaskSummary): boolean {
-  if (t.status !== 'waiting-for-input') return false;
+  if (!needsUser(t)) return false;
   const s = idleSeconds(t);
   return s !== null && s >= STALE_AFTER_SECONDS;
 }
