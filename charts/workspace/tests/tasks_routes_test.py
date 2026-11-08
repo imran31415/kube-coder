@@ -237,6 +237,33 @@ class TaskCaptureArgumentTests(unittest.TestCase):
         h = dispatch_to_mock(tasks.ROUTES, 'DELETE', '/api/worktrees/myrepo/my-slug')
         h.handle_worktrees_remove.assert_called_once_with('myrepo', 'my-slug')
 
+    def test_build_publishing_routes_pass_the_id_and_action_positionally(self):
+        # #710: one handler for the publishing sub-actions, the action as the
+        # second group; the bare /publish goes through a one-argument wrapper.
+        for http_method, path, handler, args in (
+                ('GET', '/api/claude/tasks/t1/publish',
+                 'handle_build_publish_root', ('t1',)),
+                ('POST', '/api/claude/tasks/t1/publish',
+                 'handle_build_publish_root', ('t1',)),
+                ('GET', '/api/claude/tasks/t1/publish/diff',
+                 'handle_build_publish', ('t1', 'diff')),
+                ('POST', '/api/claude/tasks/t1/publish/prepare',
+                 'handle_build_publish', ('t1', 'prepare')),
+                ('POST', '/api/claude/tasks/t1/publish/draft',
+                 'handle_build_publish', ('t1', 'draft')),
+                ('PATCH', '/api/claude/tasks/t1/publish/draft',
+                 'handle_build_publish', ('t1', 'draft')),
+                ('POST', '/api/claude/tasks/t1/publish/pub-0a1b/retry',
+                 'handle_build_publish', ('t1', 'pub-0a1b/retry'))):
+            h = dispatch_to_mock(tasks.ROUTES, http_method, path)
+            getattr(h, handler).assert_called_once_with(*args)
+        for http_method, path in (
+                ('POST', '/api/claude/tasks/t1/publish/diff'),
+                ('GET', '/api/claude/tasks/t1/publish/prepare'),
+                ('POST', '/api/claude/tasks/t1/publish/pub-XYZ/retry'),
+                ('PATCH', '/api/claude/tasks/t1/publish')):
+            self.assertIsNone(tasks.ROUTES.match(http_method, path, path), path)
+
 
 
 class TaskQueryStringTests(unittest.TestCase):

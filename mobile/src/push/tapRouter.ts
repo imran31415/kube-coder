@@ -15,7 +15,7 @@ import { getConfig, subscribe } from '../store/config';
 import { navigateTo, navigationRef } from '../store/nav';
 import { requestBoardFocus } from '../store/boardFocus';
 import { onceAwake } from '../store/workspaceState';
-import { pushTargetFromData, tapRoute, type PushData } from '../util/push';
+import { pushFromOtherWorkspace, pushTapRoute, type PushData } from '../util/push';
 import { isDownError } from '../util/workspaceReach';
 
 /** The tap that arrived before the navigator was mounted, waiting for
@@ -27,8 +27,11 @@ let parkedTap: { data: PushData | undefined } | null = null;
  *  to use — so wait for hydration instead of sending one that cannot land.
  *  A tap on a sleeping workspace (#728) waits for it to wake: losing the read
  *  would silence every later repeat of this alert. */
-function markTappedRead(feedId: string): void {
+function markTappedRead(feedId: string, data: PushData | undefined): void {
   const send = () => {
+    // A Build push from another workspace (#710): its row lives there. Checked
+    // here, after hydration, because a cold-start tap has no host yet.
+    if (pushFromOtherWorkspace(data, getConfig().host)) return;
     Promise.resolve()
       .then(() => markFeedRead(feedId))
       .catch((e) => {
@@ -52,7 +55,7 @@ export function handleNotificationTap(data: PushData | undefined): void {
   // Reading happens even when navigation can't: the server re-sends a repeat of
   // this alert only once its row has been read (#685).
   const feedId = (data?.feedId || '').trim();
-  if (feedId) markTappedRead(feedId);
+  if (feedId) markTappedRead(feedId, data);
   if (!navigationRef.isReady()) {
     // A cold start (#709): the app is still on its boot screen, so there is no
     // navigator to send this to yet. Hold it for App's onReady.
@@ -73,7 +76,7 @@ export function replayParkedNotificationTap(): void {
 }
 
 function routeTap(data: PushData | undefined): void {
-  const route = tapRoute(pushTargetFromData(data));
+  const route = pushTapRoute(data, getConfig().host);
   if (route.kind === 'external') {
     Linking.openURL(route.url).catch(() => {});
     return;

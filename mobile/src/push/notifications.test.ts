@@ -601,3 +601,75 @@ describe('handleNotificationTap — a tap marks the alert read', () => {
     expect(navigate).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Build publishing pushes (#710). A Ready-to-review or publish-result push
+ * opens the Build on its Changes sheet — through the same park/replay and
+ * read path as every other tap — and only in the workspace that sent it.
+ */
+describe('handleNotificationTap — Build publishing pushes (#710)', () => {
+  const host = 'https://ws.example';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    navReady = true;
+    cfg = { host, token: 'api-token', pushEnabled: true, loaded: true };
+  });
+
+  it('opens the Build on its Changes sheet and marks the row read', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ source: 'build-publish', workspaceHost: `${host}/`, ref: 'task:t1', feedId: 'ready-1' });
+    await flush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1', tab: 'changes' },
+      initial: false,
+    });
+    expect(markFeedRead).toHaveBeenCalledWith('ready-1');
+  });
+
+  it('a cold-start tap is parked, then opens Changes once on replay', async () => {
+    navReady = false;
+    cfg = { ...cfg, host: '', token: '', loaded: false };
+    const push = await import('./notifications');
+    push.handleNotificationTap({ source: 'build-publish', workspaceHost: host, ref: 'task:t1', feedId: 'ready-1' });
+    await flush();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(markFeedRead).not.toHaveBeenCalled();
+
+    cfg = { host, token: 'api-token', pushEnabled: true, loaded: true };
+    for (const listener of [...cfgListeners]) listener(cfg);
+    navReady = true;
+    push.replayParkedNotificationTap();
+    push.replayParkedNotificationTap();
+    await flush();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1', tab: 'changes' },
+      initial: false,
+    });
+    expect(markFeedRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('a push from another workspace opens the Feed and leaves its row alone', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ source: 'build-publish', workspaceHost: 'https://old.example', ref: 'task:t1', feedId: 'old-feed' });
+    await flush();
+    expect(markFeedRead).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(navigateTo).toHaveBeenCalledWith('Feed');
+  });
+
+  it('a task push without the publishing source still opens the Build plainly', async () => {
+    const { handleNotificationTap } = await import('./notifications');
+    handleNotificationTap({ ref: 'task:t1', feedId: 'fd_1' });
+    await flush();
+    expect(navigate).toHaveBeenCalledWith('Tasks', {
+      screen: 'TaskDetail',
+      params: { id: 't1' },
+      initial: false,
+    });
+  });
+});

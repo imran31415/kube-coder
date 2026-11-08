@@ -714,6 +714,61 @@ class TaskRoutes:
             return
         self.send_json({'ok': True, 'key': key, 'delivered': True})
 
+    def handle_build_publish_root(self, task_id):
+        """`GET` (status) and `POST` (publish) on the bare `/publish`."""
+        self.handle_build_publish(task_id, '')
+
+    def handle_build_publish(self, task_id, action):
+        """Build publishing (#710): status, reviewed diff, prepare, draft,
+        publish and retry for one Build. `action` is the route's second
+        capture — `diff`, `prepare`, `draft` or `pub-<op>/retry` — or '' for
+        the bare `/publish`."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        from publish_git import PublishError
+        try:
+            manager = handlers.server.build_publisher()
+            if self.command == 'GET':
+                if action == 'diff':
+                    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    result = manager.reviewed_diff(task_id, (qs.get('preparation_id') or [''])[0],
+                                                   (qs.get('file') or [''])[0])
+                else:
+                    result = manager.status(task_id)
+                    if handlers.server.READONLY_MODE:
+                        result['eligibility'] = {'can_prepare': False, 'can_publish': False,
+                            'reason': {'code': 'readonly', 'message': 'Publishing is unavailable in read-only mode.'}}
+                self.send_json(result)
+                return
+            if self._readonly_block():
+                return
+            size = int(self.headers.get('Content-Length', '0'))
+            if size < 0 or size > 32768:
+                self.send_json({'error': 'Publishing request is too large'}, 413)
+                return
+            body = json.loads(self.rfile.read(size) or b'{}')
+            if not isinstance(body, dict):
+                raise ValueError('body')
+            if action == 'prepare':
+                selection = body.get('destination') or {}
+                if not isinstance(selection, dict) or any(not isinstance(v, str) or len(v) > 200 for v in selection.values()):
+                    raise ValueError('destination')
+                result = manager.prepare(task_id, selection)
+            elif action == 'draft':
+                result = manager.draft(task_id, body)
+            elif action.endswith('/retry'):
+                result = manager.retry(task_id, action.split('/')[0])
+            elif not action:
+                result = manager.submit(task_id, body)
+            else:
+                raise PublishError('not_found', 'Unknown publishing action.', 404)
+            self.send_json(result, 200 if action == 'draft' else 202)
+        except PublishError as e:
+            self.send_json({'error': str(e), 'code': e.code}, e.status)
+        except (ValueError, TypeError):
+            self.send_json({'error': 'Invalid publishing request', 'code': 'invalid'}, 400)
+
 
 #: Consulted by do_GET where the first task branch sat (just after the
 #: missioncontrol card route), and by do_POST / do_DELETE at the same place
@@ -740,6 +795,12 @@ ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/worktree/diff$'),
 ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/worktree$'),
            'handle_task_worktree_status', sets='_claude_task_id')
 ROUTES.add('GET', '/api/worktrees', 'handle_worktrees_list')
+# Build publishing (#710). The handler takes the task id and the sub-action
+# positionally; `/publish/diff` reads its parameters from the query string.
+ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish$'),
+           'handle_build_publish_root')
+ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish/(diff)$'),
+           'handle_build_publish')
 ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}$'),
            'handle_claude_get_task', sets='_claude_task_id')
 
@@ -768,6 +829,23 @@ ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/scroll-mode$'),
            'handle_claude_scroll_mode', sets='_claude_task_id')
 ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/key$'),
            'handle_claude_send_key', sets='_claude_task_id')
+# Build publishing (#710): publish, prepare a review, save the draft, retry an
+# operation. PATCH saves the draft too, below.
+ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish$'),
+           'handle_build_publish_root')
+ROUTES.add('POST',
+           re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish/(prepare|draft)$'),
+           'handle_build_publish')
+ROUTES.add('POST',
+           re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish/(pub-[a-f0-9]+/retry)$'),
+           'handle_build_publish')
+
+# --- partial updates -----------------------------------------------------
+# The only PATCH route in any table; do_PATCH consults it ahead of the app
+# proxy.
+ROUTES.add('PATCH',
+           re.compile(rf'^/api/claude/tasks/{_TASK_ID}/publish/(draft)$'),
+           'handle_build_publish')
 
 # --- deletes -------------------------------------------------------------
 # `?force=1` rides the query string, and DELETE routes on the un-stripped path,

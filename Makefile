@@ -583,6 +583,7 @@ python-tests: ## Run server.py unit + integration tests
 	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
 	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
+	  KC_PUBLISH_DIR=$$tmp/publish \
 	  KC_CLAUDE_CONFIG_PATH=$$tmp/claude.json \
 	  python3 -m unittest discover -s tests -p '*_test.py' -v; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc
@@ -592,6 +593,7 @@ python-coverage: ## Run Python tests with coverage report
 	  KC_FEED_DIR=$$tmp/feed KC_PUSH_DIR=$$tmp/push \
 	  KC_PROVIDER_KEYS_FILE=$$tmp/provider-keys.json \
 	  KC_TRIGGER_RUNS_DIR=$$tmp/trigger-runs \
+	  KC_PUBLISH_DIR=$$tmp/publish \
 	  KC_CLAUDE_CONFIG_PATH=$$tmp/claude.json \
 	  coverage run -m unittest discover -s tests -p '*_test.py' -v && coverage report && coverage html; \
 	  rc=$$?; rm -rf "$$tmp"; exit $$rc

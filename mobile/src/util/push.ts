@@ -17,6 +17,8 @@ export interface PushData {
   feedId?: string;
   kind?: string;
   waiting?: boolean;
+  source?: string;
+  workspaceHost?: string;
 }
 
 /** Resolve a push's data payload to a navigation target, reusing the Feed's ref
@@ -43,10 +45,20 @@ export type TapRoute =
       boardFocus?: { boardId: string; itemId: string };
     };
 
-export function tapRoute(target: FeedRefTarget): TapRoute {
+export function tapRoute(
+  target: FeedRefTarget,
+  opts: { openChanges?: boolean } = {},
+): TapRoute {
   switch (target.kind) {
     case 'task':
-      return { kind: 'screen', tab: 'Tasks', screen: 'TaskDetail', params: { id: target.id } };
+      return {
+        kind: 'screen',
+        tab: 'Tasks',
+        screen: 'TaskDetail',
+        // `openChanges`: a Build publishing push (#710) opens the Build's
+        // Changes sheet, where the review and Push & Open PR live.
+        params: opts.openChanges ? { id: target.id, tab: 'changes' } : { id: target.id },
+      };
     case 'thread':
       // Opens THAT chat (#683).
       return { kind: 'screen', tab: 'Hypervisor', params: { openThreadId: target.id } };
@@ -66,4 +78,34 @@ export function tapRoute(target: FeedRefTarget): TapRoute {
     default:
       return { kind: 'screen', tab: 'Feed' };
   }
+}
+
+/** A Build publishing push (#710). */
+export function isPublishPush(data: PushData | null | undefined): boolean {
+  return data?.source === 'build-publish';
+}
+
+const normHost = (h: string | undefined) => (h || '').trim().replace(/\/+$/, '');
+
+/** Whether a push belongs to a workspace other than the one this app is
+ *  connected to now. Only Build publishing pushes (#710) name their sender: a
+ *  Build id means nothing in another workspace, so such a tap must not open
+ *  it, nor mark the row read here, where the row does not exist. One with no
+ *  sender (a phone that registered before #710) counts as foreign too. Every
+ *  other push is taken as this workspace's, as before. */
+export function pushFromOtherWorkspace(
+  data: PushData | null | undefined,
+  connectedHost: string,
+): boolean {
+  if (!isPublishPush(data)) return false;
+  const from = normHost(data?.workspaceHost);
+  return !from || from !== normHost(connectedHost);
+}
+
+/** Where a push tap lands, given the workspace the app is connected to:
+ *  `tapRoute` of its ref, except that a Build publishing push opens the Build
+ *  on its Changes sheet, and one from another workspace opens the Feed. */
+export function pushTapRoute(data: PushData | null | undefined, connectedHost: string): TapRoute {
+  if (pushFromOtherWorkspace(data, connectedHost)) return { kind: 'screen', tab: 'Feed' };
+  return tapRoute(pushTargetFromData(data), { openChanges: isPublishPush(data) });
 }

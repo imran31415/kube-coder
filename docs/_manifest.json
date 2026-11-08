@@ -16,6 +16,7 @@
       "pages": [
         { "id": "tasks-concepts", "title": "Concepts", "file": "in-app/tasks-concepts.md", "summary": "What a task is, lifecycle states, tmux sessions, attaching." },
         { "id": "builds-worktrees", "title": "Isolated worktrees", "file": "in-app/builds-worktrees.md", "summary": "Run a Build on its own branch, folder and port so parallel Builds cannot overwrite each other." },
+        { "id": "build-publishing", "title": "Push & Open PR", "file": "in-app/build-publishing.md", "summary": "Review a completed Build, edit its PR description and publish from your phone, with saved progress and recovery." },
         { "id": "tasks-assistants", "title": "Assistants", "file": "llm-setup.md", "summary": "Claude Code vs OpenRouter vs the open-source GPU harness." },
         { "id": "tasks-api", "title": "HTTP API", "file": "claude-task-api.md", "summary": "Full Claude Task API reference — curl recipes and endpoint matrix." }
       ]
