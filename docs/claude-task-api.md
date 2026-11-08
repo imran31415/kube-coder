@@ -506,9 +506,12 @@ curl -X DELETE https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID \
 {
   "task_id": "1707000000-a1b2c3d4",
   "status": "killed",
-  "killed_at": 1707000200.123
+  "killed_at": 1707000200.123,
+  "finished_at": 1707000200.123
 }
 ```
+
+Deleting a task that has already finished returns it unchanged, with the status it finished in, and still answers 200.
 
 ---
 
