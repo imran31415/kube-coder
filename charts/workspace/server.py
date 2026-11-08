@@ -121,6 +121,7 @@ handlers.bind(sys.modules[__name__])
 # degrades the /board surface rather than taking the whole dashboard down.
 try:
     import boards.engine
+    import boards.handoff
     import boards.limits
     import boards.outcome
     import boards.review

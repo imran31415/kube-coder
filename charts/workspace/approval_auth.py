@@ -4,6 +4,7 @@ Neither the workspace bearer, proxy identity headers nor a local approval file
 can mint a grant. Keeper revalidates the browser's GitHub OAuth session. Basic
 and development auth bypasses deliberately fail closed until configured.
 """
+import hashlib
 import json
 import os
 import secrets
@@ -13,11 +14,28 @@ import urllib.error
 import urllib.request
 import urllib.parse
 
-from boards.handoff import HandoffError, digest
-
 _contexts = {}
 _workers = {}
 _lock = threading.Lock()
+
+
+# Standard library only, and deliberately not in the boards package: server.py
+# imports this module and handlers/boards*.py unconditionally, so a broken
+# boards package has to degrade /board (_BOARDS_AVAILABLE) rather than stop the
+# dashboard from booting.
+class HandoffError(Exception):
+    def __init__(self, code, message, status=400, *, retryable=False):
+        super().__init__(message)
+        self.code, self.status, self.retryable = code, status, retryable
+
+    def body(self, request_id=None):
+        return dict(error=str(self), code=self.code, retryable=self.retryable,
+                    request_id=request_id)
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                                     ensure_ascii=True).encode()).hexdigest()
 
 
 def issue_context(thread_id):

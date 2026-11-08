@@ -1,13 +1,18 @@
 """Request lifecycle and approval boundaries, using real JsonRecord locks on Linux."""
 import copy
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from unittest import mock
 
-from tests.boards_runs_api_test import server  # also supplies the Windows-only fcntl shim
+from tests.boards_runs_api_test import RM, _Base, server  # also supplies the Windows-only fcntl shim
 import approval_auth
 from boards.handoff import HandoffError, HandoffManager, TTL, digest, options
 from boards.store import real_flock
@@ -202,6 +207,87 @@ class AuthPolicy(unittest.TestCase):
         from boards.schema import RESERVED_BOARD_IDS
         self.assertIn('run-requests', RESERVED_BOARD_IDS)
         self.assertIsNotNone(board_handoff.ROUTES.match('POST', '/api/boards/run-requests', ''))
+
+
+class BrokenBoardsPackage(unittest.TestCase):
+    def test_a_broken_boards_module_degrades_instead_of_stopping_the_dashboard(self):
+        workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = ("import sys; sys.path.insert(0, %r); sys.modules['boards.handoff'] = None; "
+                  "import server; print('available=%%s' %% server._BOARDS_AVAILABLE)" % workspace)
+        with tempfile.TemporaryDirectory() as home:
+            result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
+                                    timeout=60, env=dict(os.environ, KC_WORKSPACE_HOME=home))
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn('available=False', result.stdout)
+
+
+class ApprovalGateRoutes(_Base):
+    """The real dispatch, so the gate is judged on the path the route tables see."""
+
+    def setUp(self):
+        super().setUp()
+        for board_id in ('acme-jira', 'run-requests-2'):
+            self._board(board_id)
+        env = mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'true'})
+        env.start()
+        self.addCleanup(env.stop)
+        human = mock.patch.object(approval_auth, 'require_human',
+                                  side_effect=HandoffError('human_required', 'Sign in', 403))
+        self.human = human.start()
+        self.addCleanup(human.stop)
+
+    def assertGated(self, method, path, body=None):
+        self.human.reset_mock()
+        status, payload = self._call(method, path, body)
+        self.assertEqual(status, 403, payload)
+        self.assertEqual(payload.get('code'), 'human_required')
+        self.human.assert_called_once()
+
+    def _call(self, method, path, body=None, headers=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=data, method=method,
+                                         headers={'Content-Type': 'application/json', **(headers or {})})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.status, json.loads(response.read() or b'{}')
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b'{}')
+
+    def test_a_query_string_cannot_name_the_exempt_routes(self):
+        self.assertGated('GET', '/api/boards/acme-jira/items?x=/run-requests')
+        self.assertGated('GET', '/oauth/api/boards/acme-jira/items?x=/run-requests')
+        self.assertGated('GET', '/bearer-api/api/boards/acme-jira/items?x=/run-requests')
+
+    def test_a_path_the_dispatcher_normalizes_to_items_is_gated(self):
+        self.assertGated('GET', '/api/boards/acme-jira/ite/oauthms')
+
+    def test_a_board_id_starting_with_run_requests_is_gated(self):
+        self.assertGated('GET', '/api/boards/run-requests-2/items')
+        self.assertGated('POST', '/api/boards/run-requests-2/runs', {'select': {'limit': 1}})
+        self.assertGated('POST', '/api/boards/run-requests-2/items/1/actions', {})
+        self.assertGated('PUT', '/api/boards/run-requests-2', {'display_name': 'x'})
+        self.assertGated('DELETE', '/api/boards/run-requests-2')
+        self.assertEqual(RM.list_runs('run-requests-2'), [])
+
+    def test_the_real_run_request_routes_still_work(self):
+        request_id = 'brq-' + 'a' * 32
+        record = dict(id=request_id, state='pending', thread_id='thread-1', board_id='acme-jira', run_id=None)
+        manager = mock.Mock()
+        manager.prepare.return_value = manager.get.return_value = manager.decide.return_value = record
+        session = mock.Mock()
+        session.read_meta.return_value = {}
+        session.current_turn.return_value = 4
+        runner = {'X-KC-Runner-Context': approval_auth.issue_context('thread-1')}
+        with mock.patch.object(board_handoff, 'manager', return_value=manager), \
+                mock.patch.object(server.HypervisorSession, 'get', return_value=session):
+            status, body = self._call('POST', '/api/boards/run-requests', {'board_id': 'acme-jira'}, runner)
+            self.assertEqual((status, body['id']), (201, request_id), body)
+            status, body = self._call('GET', f'/oauth/api/boards/run-requests/{request_id}', headers=runner)
+            self.assertEqual((status, body['id']), (200, request_id), body)
+            status, body = self._call('POST', f'/api/boards/run-requests/{request_id}/decision',
+                                      dict(decision='reject'), {'Origin': 'https://workspace'})
+            self.assertEqual((status, body['id']), (200, request_id), body)
+        self.human.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ import urllib.parse
 
 import approval_auth
 import handlers
-from boards.handoff import HandoffError, HandoffManager, digest
+from approval_auth import HandoffError, digest
 from handlers.routing import RouteTable
 
 LOG = logging.getLogger('board.handoff')
@@ -107,6 +107,9 @@ def manager():
     global _manager
     with _lock:
         if _manager is None:
+            # Here, not at module level: only reachable past _board_guard, so
+            # a broken boards package answers 503 instead of failing the boot.
+            from boards.handoff import HandoffManager
             server = handlers.server
             _manager = HandoffManager(os.path.join(server.BoardsManager.boards_dir(), 'requests'),
                 resolve=resolve, execute=execute, get_run=server.BoardRunsManager.get,

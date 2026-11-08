@@ -47,12 +47,22 @@ import urllib.parse
 import handlers
 import safe_http
 import approval_auth
-from boards.handoff import HandoffError, digest
+from approval_auth import HandoffError, digest
+from handlers import board_handoff
 from handlers.routing import RouteTable
 
 
 class BoardRoutes:
     """BrowserHandler methods backing `ROUTES`."""
+
+    def _board_route_path(self):
+        """The path this request was dispatched on. do_GET drops the query and
+        removes /oauth and /browser anywhere in the path; the other verbs strip
+        only those leading prefixes. Gating on anything else lets a request be
+        judged as one route and served as another."""
+        if getattr(self, 'command', 'GET') == 'GET':
+            return self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+        return self._strip_route_prefix(self.path).split('?', 1)[0]
 
     def _board_guard(self):
         """Shared entry gate for every /api/boards route. Returns False (and
@@ -64,13 +74,15 @@ class BoardRoutes:
             self.send_json({'error': 'Board Processor is unavailable on this '
                                      'workspace'}, 503)
             return False
-        if approval_auth.enabled() and '/run-requests' not in self.path:
-            external = (getattr(self, 'command', 'GET') != 'GET' or
-                        urllib.parse.urlsplit(self.path).path.endswith('/items'))
+        # Only the registered run-request routes are exempt: they carry their
+        # own human and runner checks.
+        path = self._board_route_path()
+        method = getattr(self, 'command', 'GET')
+        if approval_auth.enabled() and not board_handoff.ROUTES.match(method, path, path):
+            external = method != 'GET' or path.endswith('/items')
             if external:
                 try:
                     worker = approval_auth.worker_context(self.headers)
-                    path = urllib.parse.urlsplit(self.path).path
                     allowed = worker and worker['board_id'] == getattr(self, '_board_id', None)
                     allowed = allowed and (path.endswith('/items') or (
                         path.endswith(('/actions', '/disposition')) and

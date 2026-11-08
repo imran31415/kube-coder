@@ -4,7 +4,6 @@ An approval request is not a run. In particular, prepare never calls the runner,
 connector, credential provider or worktree manager. The isolated authority owns
 human decisions; workspace JSON is only a recoverable view of those decisions.
 """
-import hashlib
 import json
 import logging
 import os
@@ -12,6 +11,8 @@ import re
 import secrets
 import threading
 import time
+
+from approval_auth import HandoffError, digest
 
 from . import runs
 from .store import JsonRecord
@@ -26,21 +27,6 @@ TTL = 900
 MAX_HISTORY = 100
 MAX_RECORDS = 1000
 RETENTION = 30 * 86400
-
-
-class HandoffError(Exception):
-    def __init__(self, code, message, status=400, *, retryable=False):
-        super().__init__(message)
-        self.code, self.status, self.retryable = code, status, retryable
-
-    def body(self, request_id=None):
-        return dict(error=str(self), code=self.code, retryable=self.retryable,
-                    request_id=request_id)
-
-
-def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                     ensure_ascii=True).encode()).hexdigest()
 
 
 def options(data):
