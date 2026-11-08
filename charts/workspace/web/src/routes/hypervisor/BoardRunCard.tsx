@@ -6,15 +6,22 @@ import { boardRunPath } from '../board/runLinks';
 import { serverMode } from '../../store/server-mode';
 import './boardRunCard.css';
 
-export function BoardRunCards({ threadId }: { threadId: string }) {
+export function BoardRunCards({ threadId, onChange }: { threadId: string; onChange?: () => void }) {
   const store = useMemo(() => createBoardRequestsStore(threadId), [threadId]);
   useEffect(() => store.start(), [store]);
-  if (!store.requests.value.length && !store.error.value) return null;
+  // Oldest first: the list ends the transcript, so the newest request is the
+  // one a reader pinned to the bottom sees, right after the newest message.
+  const shown = store.requests.value.slice(0, 10).reverse();
+  const cards = shown.map(r => `${r.id}:${r.state}`).join();
+  // Cards arrive between transcript updates, so the transcript's own pinning
+  // effects never run for them.
+  useEffect(() => { if (cards) onChange?.(); }, [cards]);
+  if (!shown.length && !store.error.value) return null;
   return <section class="hv-board-cards" aria-label="Board requests">
     {store.error.value && <div class="hv-board-error" role="alert">
       <span>{store.error.value}</span><button onClick={() => void store.refresh()}>Refresh status</button>
     </div>}
-    {store.requests.value.slice(0, 10).map(record => <BoardRunCard key={record.id} record={record} store={store} />)}
+    {shown.map(record => <BoardRunCard key={record.id} record={record} store={store} />)}
   </section>;
 }
 

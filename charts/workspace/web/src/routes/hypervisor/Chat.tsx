@@ -1174,13 +1174,20 @@ export function Chat({
     }
   }
 
+  // Inside the transcript flow, after the newest message, so an approval is on
+  // screen for a reader following the bottom and the flow's resize observer
+  // sees it. An empty thread has no flow, so there it leads the transcript.
+  const boardCards = active && (
+    <BoardRunCards key={active} threadId={active} onChange={() => { if (pinnedRef.current) pinToBottom(); }} />
+  );
+
   return (
     <div class="hv-chat">
       {active && <WorkspaceContext />}
       {active && <ActivityPanel threadId={active} running={working} />}
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
-        {active && <BoardRunCards key={active} threadId={active} />}
+        {empty && boardCards}
         {empty && hideEmptyState ? (
           // Embedding surface (CTO page) supplies its own hero — host it in the
           // centring slot so it sits mid-column, right above the composer. With
@@ -1313,6 +1320,8 @@ export function Chat({
                 </div>
               </div>
             )}
+
+            {boardCards}
           </div>
         )}
       </div>

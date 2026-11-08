@@ -63,15 +63,21 @@ export function createBoardRequestsStore(thread: string) {
       return false;
     } finally { if (!disposed) busy.value = null; }
   }
+  /** Prepares the replacement first: a failed prepare must leave this card usable. */
   async function adjust(record: BoardRequest, limit: number, concurrency: number) {
-    if (!await decide(record, 'reject')) return;
+    if (busy.value) return;
     busy.value = record.id;
+    error.value = null;
     try {
       upsert(await prepareBoardRequest({ thread_id: thread, board_id: record.board_id,
         repository: record.scope.repository, options: { ...record.scope.options,
           select: { ...record.scope.options.select, limit }, concurrency } }));
-    } catch (err) { if (!disposed) error.value = boardRequestError(err); }
-    finally { if (!disposed) busy.value = null; }
+    } catch (err) {
+      if (!disposed) error.value = boardRequestError(err);
+      return;
+    } finally { busy.value = null; }
+    // Unconditional, even after unmount: the old scope must not stay approvable.
+    await decide(record, 'reject');
   }
   function start() {
     void refresh();

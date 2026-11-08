@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/preact';
 import type { BoardRequest } from '../../api/boardRequests';
 import { createBoardRequestsStore } from '../../store/boardRequests';
-import { BoardRunCard } from './BoardRunCard';
+import { BoardRunCard, BoardRunCards } from './BoardRunCard';
 import { boardRunPath, parseBoardRunPath } from '../board/runLinks';
 import { serverMode } from '../../store/server-mode';
 
@@ -64,14 +64,44 @@ describe('Board permission card', () => {
     await store.decide(fixture(),'approve');
     expect(decide.mock.calls[0][2]).toBe(decide.mock.calls[1][2]);
   });
-  it('adjusts by rejecting the original scope and preparing another pending request', async () => {
+  it('adjusts by preparing the new scope, then rejecting the original', async () => {
     decide.mockResolvedValue(fixture({state:'rejected',version:2}));
-    prepare.mockResolvedValue(fixture({id:'brq-'+ 'b'.repeat(32)}));
+    prepare.mockResolvedValue(fixture({id:'brq-'+ 'b'.repeat(32),created_at:2}));
     const store=createBoardRequestsStore('thread-1');
     await store.adjust(fixture(),2,1);
-    expect(decide.mock.calls[0][1]).toBe('reject');
     expect(prepare.mock.calls[0][0]).toMatchObject({thread_id:'thread-1', options:{select:{limit:2}}});
+    expect(decide.mock.calls[0][1]).toBe('reject');
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(decide.mock.invocationCallOrder[0]);
     expect(store.requests.value[0].state).toBe('pending');
+    expect(store.busy.value).toBeNull();
+  });
+  it('leaves the original card usable when preparing the adjustment fails', async () => {
+    prepare.mockRejectedValue(new Error('connection lost'));
+    list.mockResolvedValueOnce({requests:[fixture()]});
+    const store=createBoardRequestsStore('thread-1');
+    await store.refresh();
+    await store.adjust(fixture(),2,1);
+    expect(decide).not.toHaveBeenCalled();
+    expect(store.requests.value.map(r=>r.state)).toEqual(['pending']);
+    expect(store.error.value).toMatch(/Refresh status/);
+    expect(store.busy.value).toBeNull();
+  });
+  it('still shows the failure when the replacement is ready but the old request cannot be rejected', async () => {
+    prepare.mockResolvedValue(fixture({id:'brq-'+ 'b'.repeat(32),created_at:2}));
+    decide.mockRejectedValue(new Error('connection lost'));
+    list.mockResolvedValueOnce({requests:[fixture()]});
+    const store=createBoardRequestsStore('thread-1');
+    await store.refresh();
+    await store.adjust(fixture(),2,1);
+    expect(store.requests.value.map(r=>r.id)).toEqual(['brq-'+'b'.repeat(32),'brq-'+'a'.repeat(32)]);
+    expect(store.error.value).toMatch(/Refresh status/);
+  });
+  it('lists the newest request last, next to the newest message', async () => {
+    list.mockResolvedValue({requests:[fixture({id:'brq-'+'b'.repeat(32),created_at:2,state:'rejected',version:2}),fixture()]});
+    render(<BoardRunCards threadId="thread-1" />);
+    await screen.findByRole('button',{name:'Approve & run'});
+    const headings=screen.getAllByRole('heading').map(h=>h.textContent);
+    expect(headings).toEqual(['Board run — approval needed','Board request cancelled']);
   });
   it('does not turn a completed run with failed items into successful work', () => {
     const record=fixture({state:'started',version:3,run_id:'run-1-abc',review_needed:1,

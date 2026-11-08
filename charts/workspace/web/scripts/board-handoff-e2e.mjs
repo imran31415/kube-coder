@@ -62,6 +62,10 @@ try {
   await page.getByRole('button', { name: 'Approve & run', exact: true }).waitFor();
   const first = (await records()).requests[0];
   assert.equal(first.state, 'pending');
+  assert.equal(await page.getByRole('button', { name: 'Approve & run', exact: true }).evaluate(el => {
+    const box = el.getBoundingClientRect();
+    return box.top >= 0 && box.bottom <= innerHeight;
+  }), true, 'a pending card must be visible without scrolling');
   assert.equal((await stats()).workers, 0);
   assert.equal((await stats()).vendor_reads, 0);
   await page.screenshot({ path: path.join(output, 'approval-desktop.png') });
