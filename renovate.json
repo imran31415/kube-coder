@@ -45,7 +45,8 @@
       "matchStrings": [
         "kanikoImage: (?<depName>gcr\\.io/kaniko-project/executor):(?<currentValue>[^\\s@\"]+)(@(?<currentDigest>sha256:[a-f0-9]+))?"
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "autoReplaceStringTemplate": "kanikoImage: {{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}}"
     },
     {
       "customType": "regex",
