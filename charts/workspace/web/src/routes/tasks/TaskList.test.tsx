@@ -9,8 +9,9 @@ import {
   tasksError,
   selectTask,
   stopTaskPolling,
+  taskCounts,
 } from '../../store/tasks';
-import type { TaskSummary } from '../../api/tasks';
+import type { TaskSummary, WaitingReason } from '../../api/tasks';
 
 const sample: TaskSummary[] = [
   {
@@ -97,6 +98,101 @@ describe('TaskList', () => {
     tasks.value = [{ ...sample[0], status: 'waiting-for-input', prompt_delivered: true }];
     render(<TaskList />);
     expect(screen.queryByText('trust dialog')).toBeNull();
+  });
+
+  describe('waiting_reason', () => {
+    const waiting = (id: string, waiting_reason?: WaitingReason, idleFor = 60) => ({
+      ...sample[0], task_id: id, name: id, status: 'waiting-for-input' as const,
+      last_activity_at: Math.floor(Date.now() / 1000) - idleFor,
+      memory_injected: [],
+      ...(waiting_reason ? { waiting_reason } : {}),
+    });
+    const row = (id: string) =>
+      document.querySelector(`[data-task-id="${id}"] .tl-row`) as HTMLElement;
+
+    it('steps an idle row down from the waiting treatment', () => {
+      tasks.value = [waiting('parked', 'idle')];
+      render(<TaskList />);
+      const r = within(row('parked'));
+      expect(r.getByText('idle')).toBeInTheDocument();
+      expect(r.queryByText('waiting')).toBeNull();
+      expect(r.getByText('Turn ended')).toBeInTheDocument();
+      expect(row('parked').className).not.toContain('tl-row-waiting');
+      expect(row('parked').querySelector('.tl-waiting-indicator')).toBeNull();
+    });
+
+    it('never words idle as done or finished', () => {
+      tasks.value = [waiting('parked', 'idle')];
+      render(<TaskList />);
+      expect(row('parked').textContent).not.toMatch(/\b(done|finished)\b/i);
+      expect(row('parked').textContent).toContain('no question detected');
+    });
+
+    it('keeps a question in the waiting treatment and names it', () => {
+      tasks.value = [waiting('asks', 'question')];
+      render(<TaskList />);
+      const r = within(row('asks'));
+      expect(r.getByText('waiting')).toBeInTheDocument();
+      expect(r.getByText('question')).toBeInTheDocument();
+      expect(r.getByText('Question waiting')).toBeInTheDocument();
+      expect(row('asks').className).toContain('tl-row-waiting');
+    });
+
+    it.each([
+      ['trust_dialog', 'Folder-trust dialog'],
+      ['undelivered', 'Prompt not delivered'],
+    ] as const)('heads a %s row with what is wrong', (reason, heading) => {
+      tasks.value = [waiting('stuck', reason)];
+      render(<TaskList />);
+      expect(within(row('stuck')).getByText(heading)).toBeInTheDocument();
+      expect(row('stuck').className).toContain('tl-row-waiting');
+    });
+
+    it('treats a waiting row with no reason as needing you, as it always has', () => {
+      tasks.value = [waiting('legacy')];
+      render(<TaskList />);
+      expect(within(row('legacy')).getByText('Waiting for input')).toBeInTheDocument();
+      expect(row('legacy').className).toContain('tl-row-waiting');
+      expect(screen.getByText('1 needs you')).toBeInTheDocument();
+    });
+
+    it('does not escalate a long-idle row to stale', () => {
+      tasks.value = [waiting('old-idle', 'idle', 4 * 3600)];
+      render(<TaskList />);
+      expect(within(row('old-idle')).queryByText('stale')).toBeNull();
+      expect(within(row('old-idle')).queryByText('Needs attention')).toBeNull();
+    });
+
+    it('still escalates a long-unanswered question to stale', () => {
+      tasks.value = [waiting('old-q', 'question', 4 * 3600)];
+      render(<TaskList />);
+      expect(within(row('old-q')).getByText('stale')).toBeInTheDocument();
+      expect(within(row('old-q')).getByText('Needs attention')).toBeInTheDocument();
+    });
+
+    it('counts only the first group as needing you', () => {
+      tasks.value = [
+        waiting('a', 'question'), waiting('b', 'trust_dialog'),
+        waiting('c', 'undelivered'), waiting('d', 'idle'), waiting('e', 'idle'),
+      ];
+      render(<TaskList />);
+      expect(screen.getByText('3 need you')).toBeInTheDocument();
+      expect(screen.getByText('2 idle')).toBeInTheDocument();
+    });
+
+    it('keeps every waiting task in the Running filter and count', () => {
+      tasks.value = [waiting('a', 'question'), waiting('b', 'idle')];
+      taskStatusFilter.value = 'running';
+      render(<TaskList />);
+      expect(taskCounts.value.running).toBe(2);
+      expect(row('a')).toBeTruthy();
+      expect(row('b')).toBeTruthy();
+    });
+
+    it('shows no summary when nothing is waiting', () => {
+      render(<TaskList />);
+      expect(screen.queryByText(/need(s)? you/)).toBeNull();
+    });
   });
 
   it('renders one row per task with status pills', () => {

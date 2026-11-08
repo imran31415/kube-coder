@@ -208,6 +208,7 @@ def _reconcile_status(meta: Dict[str, Any], task_dir: str) -> None:
         meta['finished_at'] = time.time()
         meta.pop('waiting_for_input', None)
         meta.pop('last_input_prompt', None)
+        meta.pop('waiting_reason', None)
         _write_meta(task_dir, meta)
         return
     # Alive, but born in an earlier boot (an older image never stamped one):
@@ -650,6 +651,10 @@ def _tool_get_agent_status(args: Dict[str, Any]) -> Dict[str, Any]:
             # Set only on 'terminated' (#792), so a recovering orchestrator
             # does not have to infer the cause from the status alone.
             'termination_reason': meta.get('termination_reason'),
+            # Set only on 'waiting-for-input': question | trust_dialog |
+            # undelivered | idle. `idle` means no question was detected, not
+            # that the agent is done.
+            'waiting_reason': meta.get('waiting_reason'),
             'prompt': (meta.get('prompt', '') or '')[:200],
         })}],
     }
@@ -684,6 +689,7 @@ def _tool_list_subagents(args: Dict[str, Any]) -> Dict[str, Any]:
             'assistant': meta.get('assistant', 'claude'),
             'created_at': meta.get('created_at'),
             'finished_at': meta.get('finished_at'),
+            'waiting_reason': meta.get('waiting_reason'),
             'prompt': (meta.get('prompt', '') or '')[:200],
         })
 
@@ -786,6 +792,8 @@ def _tool_wait_for_agents(args: Dict[str, Any]) -> Dict[str, Any]:
         _reconcile_status(meta, task_dir)
         status = meta.get('status', 'unknown')
         entry = {'task_id': tid, 'status': status}
+        if meta.get('waiting_reason'):
+            entry['waiting_reason'] = meta['waiting_reason']
         if status not in ('running', 'waiting-for-input'):
             entry['exit_code'] = meta.get('exit_code')
             if status == 'terminated':
@@ -823,6 +831,7 @@ def _tool_kill_agent(args: Dict[str, Any]) -> Dict[str, Any]:
                    capture_output=True, text=True)
     meta['status'] = 'killed'
     meta['killed_at'] = time.time()
+    meta.pop('waiting_reason', None)
     _write_meta(task_dir, meta)
     return {
         'content': [{'type': 'text', 'text': json.dumps({
@@ -886,7 +895,11 @@ TOOLS: Dict[str, Any] = {
         'handler': _tool_get_agent_status,
         'schema': {
             'name': 'get_agent_status',
-            'description': 'Get the current status of a spawned agent task: '
+            'description': 'Get the current status of a spawned agent task. '
+                           'While waiting-for-input it also has waiting_reason '
+                           '(question, trust_dialog, undelivered, or idle, '
+                           'which means no question was detected, not done). '
+                           'Statuses: '
                            'running, waiting-for-input, completed, error, '
                            'killed, or terminated — the last meaning a pod '
                            'restart wiped its session before it finished, so '

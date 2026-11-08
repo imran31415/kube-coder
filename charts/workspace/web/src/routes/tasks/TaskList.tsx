@@ -21,8 +21,8 @@ import { Pill } from '../../components/primitives/Pill';
 import { Icon } from '../../components/Icon';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { EmptyState } from '../../components/primitives/EmptyState';
-import type { TaskStatus, TaskSummary } from '../../api/tasks';
-import { isStaleWaiting, idleLabel } from '../../api/tasks';
+import type { TaskStatus, TaskSummary, WaitingReason } from '../../api/tasks';
+import { isStaleWaiting, idleLabel, needsUser } from '../../api/tasks';
 import { SessionPreview } from './SessionPreview';
 import { diffStatLabel } from '../../util/worktree';
 import './tasks.css';
@@ -51,6 +51,64 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   unknown: 'unknown',
   'waiting-for-input': 'waiting',
 };
+
+const WAITING_HEADING: Record<WaitingReason, string> = {
+  question: 'Question waiting',
+  trust_dialog: 'Folder-trust dialog',
+  undelivered: 'Prompt not delivered',
+  idle: 'Turn ended',
+};
+
+/** Heading for a waiting row's strip. Stale outranks the reason, as before. */
+function waitingHeading(t: TaskSummary): string {
+  if (isStaleWaiting(t)) return 'Needs attention';
+  return t.waiting_reason ? WAITING_HEADING[t.waiting_reason] : 'Waiting for input';
+}
+
+const isIdle = (t: TaskSummary) => t.status === 'waiting-for-input' && !needsUser(t);
+
+/** The status pill, plus a named pill when the agent is blocked on a question. */
+function StatusPills({ task: t }: { task: TaskSummary }) {
+  if (isIdle(t)) {
+    return <Pill tone="neutral" mono title="The turn ended and no question was detected.">idle</Pill>;
+  }
+  return (
+    <>
+      <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+      {t.waiting_reason === 'question' && (
+        <Pill tone="warn" mono title="The agent is blocked on a prompt. Open the task to answer it.">question</Pill>
+      )}
+    </>
+  );
+}
+
+/** A waiting row's strip: why it is parked and for how long. */
+function WaitingStrip({ task: t }: { task: TaskSummary }) {
+  return (
+    <div class={`tl-row-prompt ${isStaleWaiting(t) ? 'tl-row-prompt-stale' : ''} ${isIdle(t) ? 'tl-row-prompt-idle' : ''}`}>
+      <span class="tl-row-prompt-label">{waitingHeading(t)}</span>
+      <span class="tl-row-prompt-text">
+        {isIdle(t) && 'no question detected · '}idle {idleLabel(t)}
+      </span>
+    </div>
+  );
+}
+
+/** How many waiting tasks need a person, against how many merely went quiet. */
+function WaitingSummary({ needsYou, idle }: { needsYou: number; idle: number }) {
+  if (needsYou + idle === 0) return null;
+  return (
+    <div class="tl-waiting-summary muted" role="status">
+      <span class={needsYou > 0 ? 'tl-waiting-summary-needs' : ''}>
+        {needsYou} need{needsYou === 1 ? 's' : ''} you
+      </span>
+      {' · '}
+      <span title="The turn ended and no question was detected. The agent may still have asked something in plain text.">
+        {idle} idle
+      </span>
+    </div>
+  );
+}
 
 function timeAgo(ts: number | null): string {
   if (!ts) return '—';
@@ -134,6 +192,7 @@ export function TaskList() {
           aria-label="Filter tasks by text"
         />
       </div>
+      <WaitingSummary needsYou={counts.needsYou} idle={counts.idle} />
       {autoRelaxed && (
         <div class="tl-relaxed muted" role="status">
           No running tasks — showing all {pastCount} past task{pastCount === 1 ? '' : 's'}.
@@ -169,13 +228,13 @@ export function TaskList() {
           {list.map((t) => (
             <li key={t.task_id} data-task-id={t.task_id}>
               <button
-                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${t.status === 'waiting-for-input' ? 'tl-row-waiting' : ''} ${isStaleWaiting(t) ? 'tl-row-stale' : ''}`}
+                class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${needsUser(t) ? 'tl-row-waiting' : ''} ${isStaleWaiting(t) ? 'tl-row-stale' : ''}`}
                 onClick={() => onRowClick(t)}
                 aria-current={activeId === t.task_id ? 'true' : undefined}
               >
                 <div class="tl-row-head">
                   <div class="tl-row-status-container">
-                    <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+                    <StatusPills task={t} />
                     {isStaleWaiting(t) && (
                       <Pill tone="danger" mono>stale</Pill>
                     )}
@@ -200,7 +259,7 @@ export function TaskList() {
                     {t.parent_task_id && (
                       <Pill tone="neutral" mono>sub-agent</Pill>
                     )}
-                    {t.status === 'waiting-for-input' && (
+                    {needsUser(t) && (
                       <span class="tl-waiting-indicator" title="Task is waiting for user input">
                         ⏳
                       </span>
@@ -212,14 +271,7 @@ export function TaskList() {
                   </span>
                 </div>
                 {t.name && t.prompt && <div class="tl-row-sub muted">{t.prompt}</div>}
-                {t.status === 'waiting-for-input' && (
-                  <div class={`tl-row-prompt ${isStaleWaiting(t) ? 'tl-row-prompt-stale' : ''}`}>
-                    <span class="tl-row-prompt-label">
-                      {isStaleWaiting(t) ? 'Needs attention' : 'Waiting for input'}
-                    </span>
-                    <span class="tl-row-prompt-text">idle {idleLabel(t)}</span>
-                  </div>
-                )}
+                {t.status === 'waiting-for-input' && <WaitingStrip task={t} />}
                 <div class="tl-row-meta muted">
                   <span class="mono">{t.task_id.slice(0, 18)}</span>
                   {t.parent_task_id && (

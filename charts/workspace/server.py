@@ -3677,6 +3677,9 @@ class ClaudeTaskManager:
                     # the assistant isn't instrumented.
                     'usage': ClaudeTaskManager.usage_view(meta),
                 }
+                # Waiting Builds only, so every other row is unchanged.
+                if meta.get('waiting_reason'):
+                    row['waiting_reason'] = meta['waiting_reason']
                 # Isolated Builds only (#701), so every other row is unchanged.
                 # Read from the stored snapshot — a list never runs git.
                 if meta.get('worktree'):
@@ -3992,6 +3995,7 @@ class ClaudeTaskManager:
             meta['pending_prompt'] = parse_screen_prompt(recent_output)
         except Exception:
             meta['pending_prompt'] = None
+        ClaudeTaskManager._apply_detected_prompt(meta, meta['pending_prompt'])
         return meta
 
     @staticmethod
@@ -4219,7 +4223,7 @@ class ClaudeTaskManager:
 
     @staticmethod
     def _transition(task_dir, to, *, guard=None, record=None, fields=None,
-                    at=None, end_session=False):
+                    at=None, end_session=False, screen=''):
         """Move a Build to status `to`. Returns `(meta, moved)`.
 
         `meta` is task.json as it now stands (None if the task is gone) and
@@ -4231,7 +4235,8 @@ class ClaudeTaskManager:
         the write entirely). The move then needs the table to allow it and
         `guard(m)`, if given, to return truthy. `fields` are set only when it
         happens. The completion hook is claimed here too, which is what makes
-        it at-most-once.
+        it at-most-once. `waiting_reason` is set on entering waiting, from
+        `screen`, and removed on leaving it.
 
         Outside the lock, only when moved: the session is ended if
         `end_session` (after the write, so the reconciler can't mistake the
@@ -4253,9 +4258,11 @@ class ClaudeTaskManager:
             m.update(fields or {})
             if to == 'waiting-for-input':
                 m['waiting_for_input'] = True
+                m['waiting_reason'] = cls._waiting_reason(m, screen)
             else:
                 m.pop('waiting_for_input', None)
                 m.pop('last_input_prompt', None)
+                m.pop('waiting_reason', None)
             if terminal:
                 m['finished_at'] = at
                 if to in cls._STATUS_TIMESTAMPS:
@@ -5590,6 +5597,66 @@ class ClaudeTaskManager:
         return (updated or meta).get('usage')
 
     @staticmethod
+    def _waiting_reason(meta, screen):
+        """Why a `waiting-for-input` Build is parked: `trust_dialog`,
+        `undelivered`, `question` or `idle`, in that precedence.
+
+        `idle` means no question was detected, never that the work is done:
+        parse_screen_prompt only knows Claude Code's menus and (y/n) markers,
+        so an agent asking in prose reads as `idle`.
+        """
+        if meta.get('stalled_at_trust_dialog'):
+            return 'trust_dialog'
+        if meta.get('prompt_delivered') is False:
+            return 'undelivered'
+        try:
+            return 'question' if parse_screen_prompt(screen) else 'idle'
+        except Exception as e:
+            print(f'[ClaudeTaskManager] prompt parse failed: {e}',
+                  file=sys.stderr)
+            return 'idle'
+
+    @staticmethod
+    def _refresh_waiting_reason(meta, task_dir, screen):
+        """Keep the stored reason true while the status stays waiting.
+
+        A reason's inputs move without a status change: the delivery thread and
+        the reaper record `prompt_delivered`, the trust stall is noted or
+        retracted, and a Build parked before this field existed has none. The
+        reconciler already holds the screen, so this costs no tmux call and
+        writes only on a change.
+
+        Deliberately publishes no `task.status`: the status did not change,
+        watchers and clients treat that event as a transition, and every list
+        polls anyway.
+        """
+        cls = ClaudeTaskManager
+        if cls._waiting_reason(meta, screen) == meta.get('waiting_reason'):
+            return
+
+        def mutate(m):
+            if m.get('status') != 'waiting-for-input':
+                return False
+            m['waiting_reason'] = cls._waiting_reason(m, screen)
+
+        try:
+            updated = cls._atomic_update_meta(task_dir, mutate)
+        except Exception as e:
+            print(f'[ClaudeTaskManager] waiting_reason update failed: {e}',
+                  file=sys.stderr)
+            return
+        cls._adopt_meta(meta, updated)
+
+    @staticmethod
+    def _apply_detected_prompt(meta, prompt):
+        """A response that found a prompt in its wider capture must not call
+        the Build `idle`: quick-reply buttons under an Idle label would be a
+        false idle on a real question. Response-only, because the stored value
+        comes from the visible screen and the next poll would undo a write."""
+        if prompt and meta.get('waiting_reason') == 'idle':
+            meta['waiting_reason'] = 'question'
+
+    @staticmethod
     def _note_trust_stall(meta, task_dir, screen):
         """Record — or retract — `stalled_at_trust_dialog` for a live task.
 
@@ -5730,8 +5797,10 @@ class ClaudeTaskManager:
             stable_since = meta.get('last_activity_at') or now
             if now - stable_since >= IDLE_WAITING_SECONDS:
                 updated, _ = ClaudeTaskManager._transition(
-                    task_dir, 'waiting-for-input')
+                    task_dir, 'waiting-for-input', screen=screen)
                 ClaudeTaskManager._adopt_meta(meta, updated)
+        elif current_status == 'waiting-for-input':
+            ClaudeTaskManager._refresh_waiting_reason(meta, task_dir, screen)
 
     @staticmethod
     def _adopt_meta(meta, fresh):
@@ -15093,6 +15162,7 @@ def _mc_task_card(meta, task_dir, now):
         'finished_at': finished_at,
         'waiting_since': meta.get('last_activity_at') if state == 'waiting' else None,
         'waiting_prompt': None,
+        'waiting_reason': meta.get('waiting_reason') if state == 'waiting' else None,
         'outcome': None,
         'evidence': _mc_evidence_from_log(log_text) if state == 'done' else [],
         'parent_id': (f"build:{meta['parent_task_id']}"
@@ -15114,6 +15184,8 @@ def _mc_task_card(meta, task_dir, now):
             )
             if result.returncode == 0:
                 card['waiting_prompt'] = parse_screen_prompt(result.stdout)
+                ClaudeTaskManager._apply_detected_prompt(
+                    card, card['waiting_prompt'])
                 if card['waiting_prompt'] and not card['headline']:
                     card['headline'] = _mc_clip(
                         card['waiting_prompt'].get('question') or '')
@@ -15180,6 +15252,7 @@ def _mc_thread_card(summary, now):
         'finished_at': None,
         'waiting_since': None,
         'waiting_prompt': None,
+        'waiting_reason': None,
         'outcome': None,
         'evidence': [],  # chips are log-derived; chats have no output.log
         'parent_id': None,
@@ -15242,9 +15315,12 @@ def missioncontrol_queue():
                     'state': child['state'],
                 })
 
-    # Urgency first (waiting → running → done), newest within a group.
+    # Urgency first (waiting → running → done), newest within a group. Waiting
+    # cards with no detected question go after the ones that need the human.
     order = {'waiting': 0, 'running': 1, 'review': 2, 'done': 3}
-    cards.sort(key=lambda c: (order.get(c['state'], 9), -(c['updated_at'] or 0)))
+    cards.sort(key=lambda c: (order.get(c['state'], 9),
+                              c['waiting_reason'] == 'idle',
+                              -(c['updated_at'] or 0)))
 
     waiting = [c for c in cards if c['state'] == 'waiting']
     oldest_wait_s = 0
@@ -15255,6 +15331,9 @@ def missioncontrol_queue():
     pulse = {
         'running': sum(1 for c in cards if c['state'] == 'running'),
         'waiting': len(waiting),
+        # The subset of `waiting` that needs the human. A card with no reason
+        # counts: unknown must never read as "nothing for you here".
+        'needs_you': sum(1 for c in waiting if c['waiting_reason'] != 'idle'),
         'review': sum(1 for c in cards if c['state'] == 'review'),
         # Reviewable cards ARE finished work, so they keep counting toward
         # done_today — promoting a card to Review must not make the day's
@@ -15321,8 +15400,10 @@ def _mc_task_timeline(meta, card, children):
             link=f'subagent:{child_id}'))
     if card['state'] == 'waiting':
         prompt = card.get('waiting_prompt') or {}
+        idle = card.get('waiting_reason') == 'idle'
         entries.append(_mc_entry(
-            card.get('waiting_since'), 'waiting', 'Waiting on your input',
+            card.get('waiting_since'), 'waiting',
+            'Turn ended, no question detected' if idle else 'Waiting on your input',
             detail=prompt.get('question') or '', status='pending'))
     outcome = card.get('outcome')
     if outcome and card.get('finished_at'):

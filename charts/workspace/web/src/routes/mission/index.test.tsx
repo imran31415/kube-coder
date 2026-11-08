@@ -123,6 +123,56 @@ describe('MissionRoute', () => {
     expect(screen.getByText('14m')).toBeInTheDocument();
   });
 
+  describe('waiting_reason', () => {
+    const asks = card({ id: 'build:a', ref_id: 'a', state: 'waiting', title: 'Asks', waiting_reason: 'question' });
+    const parked = card({ id: 'build:p', ref_id: 'p', state: 'waiting', title: 'Parked', waiting_reason: 'idle' });
+    const parkedPulse: MissionPulse = { ...samplePulse, waiting: 2, needs_you: 1 };
+
+    function show(cards: MissionCard[], pulse: MissionPulse) {
+      missionCards.value = cards;
+      missionPulse.value = pulse;
+      globalThis.fetch = vi.fn(async () => ({
+        ok: true, status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ cards, pulse }),
+      })) as unknown as typeof fetch;
+      render(<MissionRoute />);
+    }
+
+    it('places idle cards under their own divider, after the ones that need you', () => {
+      show([parked, asks], parkedPulse);
+      const col = screen.getByRole('region', { name: 'Waiting on you' });
+      const text = col.textContent ?? '';
+      expect(text.indexOf('Asks')).toBeLessThan(text.indexOf('no question detected'));
+      expect(text.indexOf('no question detected')).toBeLessThan(text.indexOf('Parked'));
+    });
+
+    it('keeps idle cards in the waiting column count', () => {
+      show([parked, asks], parkedPulse);
+      const col = screen.getByRole('region', { name: 'Waiting on you' });
+      expect(col.querySelector('.mission-col-h .mission-col-count')?.textContent).toBe('2');
+    });
+
+    it('draws no divider when nothing is idle', () => {
+      show([asks], { ...samplePulse, needs_you: 1 });
+      expect(screen.queryByText(/no question detected/)).toBeNull();
+    });
+
+    it('counts only the cards that need you as waiting on you', () => {
+      show([parked, asks], parkedPulse);
+      const pulse = document.querySelector('.mission-pulse') as HTMLElement;
+      expect(pulse.textContent).toContain('1 waiting on you');
+      expect(pulse.textContent).toContain('1 idle');
+    });
+
+    it('falls back to the full waiting count against an older server', () => {
+      show([asks], { ...samplePulse, waiting: 3 });
+      const pulse = document.querySelector('.mission-pulse') as HTMLElement;
+      expect(pulse.textContent).toContain('3 waiting on you');
+      expect(pulse.textContent).not.toContain('idle');
+    });
+  });
+
   it('kind chips filter the board client-side', async () => {
     render(<MissionRoute />);
     screen.getByRole('button', { name: 'Chats' }).click();

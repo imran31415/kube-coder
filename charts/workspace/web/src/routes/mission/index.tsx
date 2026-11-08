@@ -10,7 +10,7 @@ import {
   stopMissionPolling,
   type MissionKindFilter,
 } from '../../store/mission';
-import type { MissionState } from '../../api/mission';
+import { needsYouCount, type MissionState } from '../../api/mission';
 import { GuidePanel } from '../../components/GuidePanel';
 import { Icon } from '../../components/Icon';
 import { Input } from '../../components/primitives/Input';
@@ -120,9 +120,12 @@ export function MissionRoute() {
       {pulse && (
         <div class="mission-pulse">
           <span><b>{pulse.running}</b> running</span>
-          <span class={pulse.waiting > 0 ? 'mission-pulse-warn' : ''}>
-            <b>{pulse.waiting}</b> waiting on you
+          <span class={needsYouCount(pulse) > 0 ? 'mission-pulse-warn' : ''}>
+            <b>{needsYouCount(pulse)}</b> waiting on you
           </span>
+          {pulse.waiting > needsYouCount(pulse) && (
+            <span><b>{pulse.waiting - needsYouCount(pulse)}</b> idle</span>
+          )}
           {pulse.review > 0 && (
             <span><b>{pulse.review}</b> to review</span>
           )}
@@ -149,6 +152,8 @@ export function MissionRoute() {
         <div class="mission-board">
           {COLUMNS.map((col) => {
             const colCards = cards.filter((c) => c.state === col.state);
+            const urgent = colCards.filter((c) => c.waiting_reason !== 'idle');
+            const idle = colCards.filter((c) => c.waiting_reason === 'idle');
             return (
               <section class="mission-col" key={col.state} aria-label={col.label}>
                 <div class="mission-col-h">
@@ -156,7 +161,15 @@ export function MissionRoute() {
                   {col.label} <span class="mission-col-count">{colCards.length}</span>
                 </div>
                 <div class="mission-col-cards">
-                  {colCards.map((c) => (
+                  {urgent.map((c) => (
+                    <MissionCard key={c.id} card={c} onSelect={setSelectedId} />
+                  ))}
+                  {idle.length > 0 && (
+                    <div class="mission-col-sub" title="No question was detected. The agent may still have asked something in plain text.">
+                      Idle · no question detected <span class="mission-col-count">{idle.length}</span>
+                    </div>
+                  )}
+                  {idle.map((c) => (
                     <MissionCard key={c.id} card={c} onSelect={setSelectedId} />
                   ))}
                   {colCards.length === 0 && <div class="mission-col-empty muted">Empty</div>}

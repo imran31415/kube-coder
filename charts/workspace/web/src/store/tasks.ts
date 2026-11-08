@@ -11,6 +11,7 @@ import {
   killTask as apiKillTask,
   renameTask as apiRenameTask,
   sendMessage as apiSendMessage,
+  needsUser,
   type TaskSummary,
   type TaskDetail,
   type CreateTaskInput,
@@ -62,8 +63,10 @@ export const taskStatusFilterEffective = computed<TaskStatusFilter>(() => {
 });
 
 export const taskCounts = computed(() => {
-  const counts = { all: tasks.value.length, running: 0, completed: 0, error: 0 };
+  const counts = { all: tasks.value.length, running: 0, completed: 0, error: 0, needsYou: 0, idle: 0 };
   for (const t of tasks.value) {
+    if (needsUser(t)) counts.needsYou++;
+    else if (t.status === 'waiting-for-input') counts.idle++;
     if (t.status === 'running' || t.status === 'waiting-for-input') counts.running++;
     else if (t.status === 'completed') counts.completed++;
     // A restart-wiped task (#792) counts with the failures, never with the

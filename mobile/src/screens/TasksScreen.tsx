@@ -204,7 +204,7 @@ export default function TasksScreen() {
                 onPress={() => nav.navigate('TaskDetail', { id: item.id })}
               >
                 <View style={styles.taskTop}>
-                  <StatusPill status={item.status} />
+                  <StatusPill status={item.status} waitingReason={item.waiting_reason} />
                   <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
                 </View>
                 <Text style={styles.prompt} numberOfLines={2}>
