@@ -631,8 +631,14 @@ BOARD_HANDOFF_PREAMBLE = (
     "The dashboard tracks progress; do not poll in shell or keep the agent running to await approval. "
     "Use request_board_stop for a stop request. Tracker writes require separate human review.\n"
 )
-HYPERVISOR_PREAMBLE += BOARD_HANDOFF_PREAMBLE
-CTO_PREAMBLE += BOARD_HANDOFF_PREAMBLE
+
+
+def with_board_handoff(preamble):
+    """`preamble` plus the handoff rules when Board approval is on. Read when a
+    thread is created, not at import: the rules name tools mcp_dashboard hides
+    while the flag is off, and off has to mean this text is absent."""
+    return preamble + BOARD_HANDOFF_PREAMBLE if approval_auth.enabled() else preamble
+
 
 BOARD_PREAMBLE = (
     _BOARD_PREAMBLE_HEAD +
@@ -789,7 +795,7 @@ def _gateway_client_factory(binding):
     cli_cmd = ClaudeTaskManager.assistant_command(assistant, auto_approve=True)
     return LocalHypervisorClient(
         HypervisorSession, assistant=assistant, workdir=HYPERVISOR_WORKDIR,
-        cli_cmd=cli_cmd, preamble=HYPERVISOR_PREAMBLE)
+        cli_cmd=cli_cmd, preamble=with_board_handoff(HYPERVISOR_PREAMBLE))
 
 
 def get_gateway():

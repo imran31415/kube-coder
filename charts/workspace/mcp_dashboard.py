@@ -1353,11 +1353,24 @@ TOOLS: Dict[str, Any] = {
 }
 
 
+#: Only registered while Board approval is on: same test as
+#: approval_auth.enabled(), which this standalone process cannot import.
+_BOARD_HANDOFF_TOOLS = ('request_board_run', 'get_board_run', 'request_board_stop')
+
+
+def _registered_tools() -> Dict[str, Any]:
+    """TOOLS minus what this workspace's flags do not expose at all."""
+    if os.environ.get('KC_BOARD_HANDOFF_ENABLED', '').lower() == 'true':
+        return TOOLS
+    return {n: t for n, t in TOOLS.items() if n not in _BOARD_HANDOFF_TOOLS}
+
+
 def _enabled_tools() -> Dict[str, Any]:
     """Filter out write + destructive tools when the workspace is read-only."""
+    tools = _registered_tools()
     if _readonly():
-        return {n: t for n, t in TOOLS.items() if t['kind'] == 'read'}
-    return TOOLS
+        return {n: t for n, t in tools.items() if t['kind'] == 'read'}
+    return tools
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -1430,7 +1443,7 @@ def _handle_call_tool(id_val, params):
     tool = tools.get(name)
     if tool is None:
         # Named tool exists but is gated off by READONLY_MODE.
-        if name in TOOLS:
+        if name in _registered_tools():
             _send({'jsonrpc': '2.0', 'id': id_val,
                    'result': _err(
                        f'Tool "{name}" is disabled: this workspace is read-only.')})

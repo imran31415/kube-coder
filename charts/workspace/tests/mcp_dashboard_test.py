@@ -19,6 +19,39 @@ sys.path.insert(0, os.path.dirname(HERE))
 import mcp_dashboard as m  # noqa: E402
 
 
+class BoardHandoffToolsTest(unittest.TestCase):
+    NAMES = {'request_board_run', 'get_board_run', 'request_board_stop'}
+
+    def _listed(self):
+        sent = []
+        with mock.patch.object(m, '_send', sent.append):
+            m._handle_list_tools(1, {})
+        return {t['name'] for t in sent[0]['result']['tools']}
+
+    def test_absent_while_the_flag_is_off(self):
+        for value in ({}, {'KC_BOARD_HANDOFF_ENABLED': 'false'}):
+            env = {k: v for k, v in os.environ.items() if k != 'KC_BOARD_HANDOFF_ENABLED'}
+            with self.subTest(value=value), mock.patch.dict(os.environ, {**env, **value}, clear=True):
+                self.assertFalse(self.NAMES & self._listed())
+                sent = []
+                with mock.patch.object(m, '_send', sent.append):
+                    m._handle_call_tool(1, {'name': 'request_board_run', 'arguments': {}})
+                self.assertEqual(sent[0]['error']['code'], -32601)
+
+    def test_present_while_the_flag_is_on(self):
+        with mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'true'}), \
+                mock.patch.object(m, '_readonly', return_value=False):
+            self.assertEqual(self.NAMES, self.NAMES & self._listed())
+
+    def test_read_only_still_says_read_only_for_a_registered_write_tool(self):
+        with mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'true'}), \
+                mock.patch.object(m, '_readonly', return_value=True):
+            sent = []
+            with mock.patch.object(m, '_send', sent.append):
+                m._handle_call_tool(1, {'name': 'request_board_run', 'arguments': {}})
+        self.assertIn('read-only', sent[0]['result']['content'][0]['text'])
+
+
 class RenderToolsTest(unittest.TestCase):
     def test_tools_registered_as_read(self):
         for name in ('show_app_preview', 'show_media', 'show_file'):

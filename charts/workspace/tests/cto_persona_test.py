@@ -178,6 +178,22 @@ class CreateThreadPersonaTest(unittest.TestCase):
         self.assertEqual(cap['project_id'], '')
         self.assertEqual(cap['preamble'], server.HYPERVISOR_PREAMBLE)
 
+    def test_board_handoff_rules_follow_the_flag(self):
+        with mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'false'}):
+            plain, _ = self._run({'message': 'hi'})
+            cto, _ = self._run({'message': 'hi', 'persona': 'cto'})
+        self.assertNotIn('request_board_run', plain['preamble'])
+        self.assertNotIn('request_board_run', cto['preamble'])
+        self.assertEqual(plain['preamble'], server.HYPERVISOR_PREAMBLE)
+        with mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': 'true'}):
+            plain, _ = self._run({'message': 'hi'})
+            cto, _ = self._run({'message': 'hi', 'persona': 'cto', 'project_id': 'kc'},
+                               brief={'brief_markdown': '# BRIEF-MARKER'},
+                               project={'workdirs': ['/home/dev/kc']})
+        self.assertIn('request_board_run', plain['preamble'])
+        self.assertIn('request_board_run', cto['preamble'])
+        self.assertIn('BRIEF-MARKER', cto['preamble'])
+
     def test_unknown_persona_falls_back_to_default(self):
         cap, _ = self._run({'message': 'hi', 'persona': 'wizard',
                             'project_id': 'kc'})
