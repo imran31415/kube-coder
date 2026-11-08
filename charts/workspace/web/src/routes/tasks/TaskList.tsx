@@ -65,6 +65,51 @@ function waitingHeading(t: TaskSummary): string {
   return t.waiting_reason ? WAITING_HEADING[t.waiting_reason] : 'Waiting for input';
 }
 
+const isIdle = (t: TaskSummary) => t.status === 'waiting-for-input' && !needsUser(t);
+
+/** The status pill, plus a named pill when the agent is blocked on a question. */
+function StatusPills({ task: t }: { task: TaskSummary }) {
+  if (isIdle(t)) {
+    return <Pill tone="neutral" mono title="The turn ended and no question was detected.">idle</Pill>;
+  }
+  return (
+    <>
+      <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
+      {t.waiting_reason === 'question' && (
+        <Pill tone="warn" mono title="The agent is blocked on a prompt. Open the task to answer it.">question</Pill>
+      )}
+    </>
+  );
+}
+
+/** A waiting row's strip: why it is parked and for how long. */
+function WaitingStrip({ task: t }: { task: TaskSummary }) {
+  return (
+    <div class={`tl-row-prompt ${isStaleWaiting(t) ? 'tl-row-prompt-stale' : ''} ${isIdle(t) ? 'tl-row-prompt-idle' : ''}`}>
+      <span class="tl-row-prompt-label">{waitingHeading(t)}</span>
+      <span class="tl-row-prompt-text">
+        {isIdle(t) && 'no question detected · '}idle {idleLabel(t)}
+      </span>
+    </div>
+  );
+}
+
+/** How many waiting tasks need a person, against how many merely went quiet. */
+function WaitingSummary({ needsYou, idle }: { needsYou: number; idle: number }) {
+  if (needsYou + idle === 0) return null;
+  return (
+    <div class="tl-waiting-summary muted" role="status">
+      <span class={needsYou > 0 ? 'tl-waiting-summary-needs' : ''}>
+        {needsYou} need{needsYou === 1 ? 's' : ''} you
+      </span>
+      {' · '}
+      <span title="The turn ended and no question was detected. The agent may still have asked something in plain text.">
+        {idle} idle
+      </span>
+    </div>
+  );
+}
+
 function timeAgo(ts: number | null): string {
   if (!ts) return '—';
   const sec = Math.floor(Date.now() / 1000 - ts);
@@ -147,17 +192,7 @@ export function TaskList() {
           aria-label="Filter tasks by text"
         />
       </div>
-      {counts.needsYou + counts.idle > 0 && (
-        <div class="tl-waiting-summary muted" role="status">
-          <span class={counts.needsYou > 0 ? 'tl-waiting-summary-needs' : ''}>
-            {counts.needsYou} need{counts.needsYou === 1 ? 's' : ''} you
-          </span>
-          {' · '}
-          <span title="The turn ended and no question was detected. The agent may still have asked something in plain text.">
-            {counts.idle} idle
-          </span>
-        </div>
-      )}
+      <WaitingSummary needsYou={counts.needsYou} idle={counts.idle} />
       {autoRelaxed && (
         <div class="tl-relaxed muted" role="status">
           No running tasks — showing all {pastCount} past task{pastCount === 1 ? '' : 's'}.
@@ -190,9 +225,7 @@ export function TaskList() {
         )
       ) : (
         <ul class="tl-list" role="list" ref={listRef}>
-          {list.map((t) => {
-            const idle = t.status === 'waiting-for-input' && !needsUser(t);
-            return (
+          {list.map((t) => (
             <li key={t.task_id} data-task-id={t.task_id}>
               <button
                 class={`tl-row ${activeId === t.task_id ? 'tl-row-active' : ''} ${needsUser(t) ? 'tl-row-waiting' : ''} ${isStaleWaiting(t) ? 'tl-row-stale' : ''}`}
@@ -201,14 +234,7 @@ export function TaskList() {
               >
                 <div class="tl-row-head">
                   <div class="tl-row-status-container">
-                    {idle ? (
-                      <Pill tone="neutral" mono title="The turn ended and no question was detected.">idle</Pill>
-                    ) : (
-                      <Pill tone={STATUS_TONE[t.status]} mono>{STATUS_LABEL[t.status]}</Pill>
-                    )}
-                    {t.waiting_reason === 'question' && (
-                      <Pill tone="warn" mono title="The agent is blocked on a prompt. Open the task to answer it.">question</Pill>
-                    )}
+                    <StatusPills task={t} />
                     {isStaleWaiting(t) && (
                       <Pill tone="danger" mono>stale</Pill>
                     )}
@@ -245,14 +271,7 @@ export function TaskList() {
                   </span>
                 </div>
                 {t.name && t.prompt && <div class="tl-row-sub muted">{t.prompt}</div>}
-                {t.status === 'waiting-for-input' && (
-                  <div class={`tl-row-prompt ${isStaleWaiting(t) ? 'tl-row-prompt-stale' : ''} ${idle ? 'tl-row-prompt-idle' : ''}`}>
-                    <span class="tl-row-prompt-label">{waitingHeading(t)}</span>
-                    <span class="tl-row-prompt-text">
-                      {idle && 'no question detected · '}idle {idleLabel(t)}
-                    </span>
-                  </div>
-                )}
+                {t.status === 'waiting-for-input' && <WaitingStrip task={t} />}
                 <div class="tl-row-meta muted">
                   <span class="mono">{t.task_id.slice(0, 18)}</span>
                   {t.parent_task_id && (
@@ -280,8 +299,7 @@ export function TaskList() {
                 <SessionPreview taskId={t.task_id} alive={isAliveStatus(t.status)} />
               </button>
             </li>
-            );
-          })}
+          ))}
         </ul>
       )}
 

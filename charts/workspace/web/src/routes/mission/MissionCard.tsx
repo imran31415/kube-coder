@@ -41,6 +41,20 @@ function timeLabel(card: Card): string {
   return at ? `${rel(now - at)} ago` : '';
 }
 
+/** Why a waiting card is parked. Renders nothing without a reason. */
+function ReasonChip({ reason }: { reason: Card['waiting_reason'] }) {
+  if (!reason) return null;
+  const idle = reason === 'idle';
+  return (
+    <span
+      class={`mission-reason ${idle ? '' : 'mission-reason-needs'}`}
+      title={idle ? 'The turn ended and no question was detected.' : undefined}
+    >
+      {WAITING_REASON_LABEL[reason]}
+    </span>
+  );
+}
+
 /** Route for a card (or a lineage reference by namespaced id).
  *
  *  A CTO chat used to route to the /cto page rather than to the thread (#467),
@@ -163,14 +177,7 @@ export function MissionCard({
             {card.model}
           </span>
         )}
-        {card.waiting_reason && (
-          <span
-            class={`mission-reason ${idle ? '' : 'mission-reason-needs'}`}
-            title={idle ? 'The turn ended and no question was detected.' : undefined}
-          >
-            {WAITING_REASON_LABEL[card.waiting_reason]}
-          </span>
-        )}
+        <ReasonChip reason={card.waiting_reason} />
         <span class={`mission-time ${needsYou ? 'mission-time-warn' : ''}`}>
           {timeLabel(card)}
         </span>
