@@ -9253,6 +9253,13 @@ class BoardRunsManager:
     def create(cls, cfg, data, *, origin='manual', resume=None,
                allow_concurrent=False, trigger=None, reserved_run_id=None,
                origin_request_id=None, origin_thread_id=None):
+        # The approval flow's startup guard, so it stands down with the flag.
+        # A send-back is the deliberate exemption from one-run-per-board (see
+        # _create), so another run starting must not refuse it either.
+        if allow_concurrent or not approval_auth.enabled():
+            return cls._create(cfg, data, origin=origin, resume=resume, trigger=trigger,
+                allow_concurrent=allow_concurrent, reserved_run_id=reserved_run_id,
+                origin_request_id=origin_request_id, origin_thread_id=origin_thread_id)
         # Reserve under a short file lock; never hold it during vendor IO.
         reservation = boards.store.JsonRecord(os.path.join(
             BoardsManager.boards_dir(), '.run-start-reservations'))

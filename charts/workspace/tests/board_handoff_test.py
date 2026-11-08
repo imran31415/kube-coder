@@ -16,7 +16,7 @@ from tests.boards_runs_api_test import RM, _Base, server  # also supplies the Wi
 import approval_auth
 import hypervisor_session
 from boards.handoff import HandoffError, HandoffManager, TTL, digest, options
-from boards.store import real_flock
+from boards.store import JsonRecord, real_flock
 from handlers import board_handoff
 
 
@@ -173,6 +173,35 @@ class Requests(unittest.TestCase):
         self.settle(record)
         self.assertEqual(len(self.executed), 1)
 
+    def test_an_unreadable_record_does_not_block_new_requests(self):
+        broken = self.prepare()
+        with open(self.manager._record(broken['id']).path, 'w') as file:
+            file.write('{bad json')
+        self.assertEqual(self.prepare()['state'], 'pending')
+
+    def test_a_record_deleted_by_a_concurrent_prune_is_skipped(self):
+        record = self.prepare()
+        real_get = self.manager.get
+        def vanished(request_id):
+            self.manager._record(request_id).delete()
+            return real_get(request_id)
+        with mock.patch.object(self.manager, 'get', vanished):
+            self.manager.prune()
+        self.assertFalse(self.manager._record(record['id']).exists())
+
+    def test_expiring_a_record_a_concurrent_prune_just_deleted_is_not_found(self):
+        record = self.prepare()
+        self.now += TTL + 1
+        store = self.manager._record(record['id'])
+        real_update = store.update
+        def deleted_first(mutate):
+            store.delete()
+            return real_update(mutate)
+        with mock.patch.object(self.manager, '_record', return_value=store), \
+                mock.patch.object(store, 'update', deleted_first), self.assertRaises(HandoffError) as caught:
+            self.manager.get(record['id'])
+        self.assertEqual(caught.exception.status, 404)
+
     def test_strict_option_types_and_scope(self):
         for change in ({'concurrency': True}, {'select': {'limit': True}}, {'mode': 'autonomous'},
                        {'select': {'ignore_processed': True}}, {'isolate': False}, {'unknown': 1}):
@@ -275,6 +304,42 @@ class CompletionWatcherAfterStop(unittest.TestCase):
         self.session.stop()
         (watcher,) = self._execute(None)
         self.assertEqual(watcher['state'], 'armed')
+
+
+class StartReservation(_Base):
+    """The per-Board startup reservation applies only to approval-gated starts."""
+
+    def setUp(self):
+        super().setUp()
+        self.board = self._board('acme-jira')
+        JsonRecord(os.path.join(server.BoardsManager.boards_dir(), '.run-start-reservations')).write(
+            {'acme-jira': 'another-start'})
+        create = mock.patch.object(RM, '_create', return_value=({'id': 'run-1'}, None))
+        self.create = create.start()
+        self.addCleanup(create.stop)
+
+    def _flag(self, value):
+        env = mock.patch.dict(os.environ, {'KC_BOARD_HANDOFF_ENABLED': value})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_an_overlapping_start_is_busy_with_the_flag_on(self):
+        self._flag('true')
+        run, error = RM.create(self.board, {})
+        self.assertIsNone(run)
+        self.assertEqual(error.code, 'board_busy')
+        self.create.assert_not_called()
+
+    def test_a_send_back_is_exempt_with_the_flag_on(self):
+        self._flag('true')
+        run, error = RM.create(self.board, {}, origin='send_back', allow_concurrent=True)
+        self.assertEqual((run, error), ({'id': 'run-1'}, None))
+        self.assertTrue(self.create.call_args.kwargs['allow_concurrent'])
+
+    def test_no_reservation_with_the_flag_off(self):
+        self._flag('false')
+        run, error = RM.create(self.board, {})
+        self.assertEqual((run, error), ({'id': 'run-1'}, None))
 
 
 class ApprovalGateRoutes(_Base):

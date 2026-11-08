@@ -127,6 +127,8 @@ class HandoffManager:
             record, changed = store.update(expire)
             if changed:
                 self._emit(record)
+            elif not record:    # deleted by a concurrent prune after the read above
+                raise HandoffError('not_found', 'Board request not found.', 404)
         if record.get('run_id'):
             run = self.get_run(record['run_id'])
             record['run'] = runs.summary(run) if run else None
@@ -251,7 +253,10 @@ class HandoffManager:
             return
         retained = 0
         for name in names:
-            record = self.get(name[:-5])
+            try:
+                record = self.get(name[:-5])
+            except HandoffError:
+                continue
             run = record.get('run')
             if (record['state'] not in ('pending', 'starting') and
                     (not run or run.get('status') != 'running') and
