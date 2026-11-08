@@ -93,6 +93,11 @@
   ],
   "packageRules": [
     {
+      "description": "browser-dockerfile/Dockerfile is deprecated and kept for reference only. Its base image is in a private registry Renovate has no credentials for, so looking it up only produced a `No docker auth found` warning on the dependency dashboard every run.",
+      "matchDepNames": ["registry.digitalocean.com/resourceloop/coder"],
+      "enabled": false
+    },
+    {
       "description": "Group the devlaptop + provisioner image CLI/tool bumps into one weekly PR.",
       "matchFileNames": ["devlaptop/Dockerfile", "provisioner/Dockerfile"],
       "groupName": "devlaptop CLI tools"
