@@ -19,6 +19,7 @@ import {
 import { pushToast } from './ui';
 import { ApiError } from '../api/client';
 import { rememberLastSession } from './lastSession';
+import { isAliveStatus, isFailedStatus } from '../util/taskStatus';
 
 export const tasks = signal<TaskSummary[]>([]);
 export const tasksLoading = signal(false);
@@ -39,13 +40,13 @@ export const filteredTasks = computed(() => {
   const needle = taskFilter.value.trim().toLowerCase();
   // Auto-relax: if user picked 'running' but there are none, fall back to 'all'
   // so the list isn't empty just because every task happens to be finished.
-  const runningCount = tasks.value.filter((t) => t.status === 'running' || t.status === 'waiting-for-input').length;
+  const runningCount = tasks.value.filter((t) => isAliveStatus(t.status)).length;
   const effectiveStatus =
     taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
 
   let list = tasks.value;
   if (effectiveStatus === 'running') {
-    list = list.filter((t) => t.status === 'running' || t.status === 'waiting-for-input');
+    list = list.filter((t) => isAliveStatus(t.status));
   }
   if (needle) {
     list = list.filter((t) => {
@@ -58,7 +59,7 @@ export const filteredTasks = computed(() => {
 
 /** True when the 'running' filter is currently being applied (after auto-relax). */
 export const taskStatusFilterEffective = computed<TaskStatusFilter>(() => {
-  const runningCount = tasks.value.filter((t) => t.status === 'running' || t.status === 'waiting-for-input').length;
+  const runningCount = tasks.value.filter((t) => isAliveStatus(t.status)).length;
   return taskStatusFilter.value === 'running' && runningCount === 0 ? 'all' : taskStatusFilter.value;
 });
 
@@ -67,11 +68,11 @@ export const taskCounts = computed(() => {
   for (const t of tasks.value) {
     if (needsUser(t)) counts.needsYou++;
     else if (t.status === 'waiting-for-input') counts.idle++;
-    if (t.status === 'running' || t.status === 'waiting-for-input') counts.running++;
+    if (isAliveStatus(t.status)) counts.running++;
     else if (t.status === 'completed') counts.completed++;
     // A restart-wiped task (#792) counts with the failures, never with the
     // completions — the whole point of the status is that it is not a result.
-    else if (t.status === 'error' || t.status === 'killed' || t.status === 'terminated') counts.error++;
+    else if (isFailedStatus(t.status)) counts.error++;
   }
   return counts;
 });

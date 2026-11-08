@@ -25,12 +25,8 @@ import type { TaskStatus, TaskSummary, WaitingReason } from '../../api/tasks';
 import { isStaleWaiting, idleLabel, needsUser } from '../../api/tasks';
 import { SessionPreview } from './SessionPreview';
 import { diffStatLabel } from '../../util/worktree';
+import { isAliveStatus } from '../../util/taskStatus';
 import './tasks.css';
-
-/** Alive = tmux session still exists, so a live tail is meaningful. */
-function isAliveStatus(s: TaskStatus): boolean {
-  return s === 'running' || s === 'waiting-for-input';
-}
 
 const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' | 'accent'> = {
   running: 'accent',

@@ -19,6 +19,7 @@
 import { invoke, isDesktop } from '../desktop/bridge';
 import { getConfig } from '../store/config';
 import { reportAwake, reportDown } from '../store/workspaceState';
+import { normStatus } from '../util/taskStatus';
 import { validateHost } from '../util/urlPolicy';
 import { classifyDown, SLEEPING, UNREACHABLE } from '../util/workspaceReach';
 import {
@@ -250,12 +251,6 @@ export async function ping(): Promise<boolean> {
 // Status is also normalized to the app's canonical set: the server emits
 // `waiting-for-input` / `completed`, but the status pill + the "active"
 // (can-send-a-message) checks expect `waiting` / `done`.
-function normStatus(s: string | undefined): string {
-  if (s === 'waiting-for-input' || s === 'waiting_for_input' || s === 'waiting_input') return 'waiting';
-  if (s === 'completed') return 'done';
-  return s ?? '';
-}
-
 function withId<T extends { id?: string; task_id?: string; status?: string }>(
   t: T,
 ): T & { id: string; status: string } {

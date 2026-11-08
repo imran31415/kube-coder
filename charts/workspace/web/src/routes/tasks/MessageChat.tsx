@@ -9,6 +9,7 @@ import { serverMode } from '../../store/server-mode';
 import { TerminalPane } from './TerminalPane';
 import { getSessionSignals, type DraftAttachment } from './sessionSignals';
 import { imagesFromClipboard, isImageFile, uploadTaskImage } from './imageAttach';
+import { isAliveStatus } from '../../util/taskStatus';
 
 export interface MessageChatProps {
   taskId: string;
@@ -61,7 +62,7 @@ export function readPendingPrompt(p: unknown): PendingPrompt | null {
 export function MessageChat({ taskId, status }: MessageChatProps) {
   // Treat "waiting-for-input" as alive too — the task is paused on a prompt and
   // sending a follow-up is exactly how the user unblocks it.
-  const isRunning = status === 'running' || status === 'waiting-for-input';
+  const isRunning = isAliveStatus(status);
 
   // Draft state (text + attachment chips) lives in the per-task session-signal
   // store, NOT component state: TaskDetail unmounts this component on every

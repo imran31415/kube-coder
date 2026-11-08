@@ -15,6 +15,7 @@ import {
   killTask,
 } from '../../store/tasks';
 import type { TaskSummary } from '../../api/tasks';
+import { isAliveStatus } from '../../util/taskStatus';
 import { navigate } from '../../store/router';
 import { listApps, proxyUrl, type AppEntry } from '../../api/apps';
 import { Pill } from '../../components/primitives/Pill';
@@ -72,7 +73,7 @@ async function refreshApps(): Promise<void> {
 function RunningTasksBlock() {
   const [killId, setKillId] = useState<string | null>(null);
   const live: TaskSummary[] = tasks.value.filter(
-    (t) => t.status === 'running' || t.status === 'waiting-for-input',
+    (t) => isAliveStatus(t.status),
   );
 
   function open(id: string) {

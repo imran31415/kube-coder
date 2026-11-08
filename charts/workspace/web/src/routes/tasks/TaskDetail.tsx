@@ -30,6 +30,7 @@ import { EmptyState } from '../../components/primitives/EmptyState';
 import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import type { TaskStatus } from '../../api/tasks';
+import { isAliveStatus } from '../../util/taskStatus';
 
 // STATUS_TONE / STATUS_PILL_LABEL / STATUS_HELP previously drove the
 // task header's status pill. The header was retired when the bars were
@@ -58,16 +59,6 @@ const TAB_HELP: Record<DetailTab, string> = {
   info: 'Metadata, prompt, timestamps, and injected memory.',
   subagents: 'Sub-tasks spawned by Claude\'s Agent / Task tool.',
 };
-
-/**
- * A task is "alive" — meaning its tmux session still exists and the user
- * can interact with it — when it's either actively running OR paused
- * waiting for human input. Both states need the Terminal/Preview/Message
- * tabs (the user typically wants to respond to the prompt).
- */
-function isAliveStatus(s: TaskStatus | undefined): boolean {
-  return s === 'running' || s === 'waiting-for-input';
-}
 
 /** `/tasks/<id>/changes` opens straight onto the Changes tab — the link the
  *  Board review card follows (#701). */

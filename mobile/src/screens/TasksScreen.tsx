@@ -13,6 +13,7 @@ import type { TasksNav } from '../navigation';
 import type { TaskSummary } from '../api/types';
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { relativeTime } from '../util/format';
+import { isActiveStatus } from '../util/taskStatus';
 import { usePolling } from '../util/usePolling';
 
 function hostLabel(): string {
@@ -26,7 +27,7 @@ function hostLabel(): string {
 }
 
 /** Active = needs attention now; everything else is history. */
-const isActive = (t: TaskSummary) => t.status === 'running' || t.status === 'waiting';
+const isActive = (t: TaskSummary) => isActiveStatus(t.status);
 
 type Segment = 'active' | 'done';
 
@@ -196,7 +197,7 @@ export default function TasksScreen() {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
           }
           renderItem={({ item }) => {
-            const active = item.status === 'running' || item.status === 'waiting';
+            const active = isActive(item);
             return (
               <Card
                 style={styles.taskCard}

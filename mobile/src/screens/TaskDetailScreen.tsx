@@ -35,6 +35,7 @@ import type { TasksStackParams } from '../navigation';
 import { colors, font, gradients, radius, space, statusColor } from '../theme';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
+import { isActiveStatus } from '../util/taskStatus';
 import { usePolling } from '../util/usePolling';
 import { formatDiffStat, worktreeRemoved } from '../util/worktree';
 
@@ -176,7 +177,7 @@ export default function TaskDetailScreen() {
 
   usePolling(load, 3000);
 
-  const active = task?.status === 'running' || task?.status === 'waiting';
+  const active = isActiveStatus(task?.status);
 
   function toggleKeys() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
