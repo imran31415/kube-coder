@@ -5,6 +5,7 @@ import { PopoverMenu, PopoverItem, PopoverSection, PopoverDivider } from '../../
 import { previewFullscreen } from '../../store/ui';
 import { getSessionSignals } from './sessionSignals';
 import { readClipboard, uploadTaskImage } from './imageAttach';
+import { pushUploadError } from '../../store/uploadErrors';
 import {
   openTerminalInNewTab,
   toggleScrollMode,
@@ -225,7 +226,7 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       for (const img of images) paths.push(await uploadTaskImage(taskId, img));
       await pasteToSession(taskId, paths.join('\n'));
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Image upload failed', { kind: 'danger' });
+      pushUploadError(err, 'Image upload failed');
     }
   }
   async function onCopyLink() {

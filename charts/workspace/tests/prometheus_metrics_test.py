@@ -165,6 +165,10 @@ class _FakeBoards:
         }
 
 
+UPLOAD_USAGE = {'used_bytes': 1536, 'quota_bytes': 4096,
+                'available_bytes': 2560, 'percent': 37.5}
+
+
 @contextlib.contextmanager
 def stubbed(metas=None, hypervisor=_FakeHypervisor, memory=_FakeMemory,
             worker=_FakeWorker, boards=_FakeBoards):
@@ -177,6 +181,9 @@ def stubbed(metas=None, hypervisor=_FakeHypervisor, memory=_FakeMemory,
         stack.enter_context(mock.patch.object(server, 'HypervisorSession', hypervisor))
         stack.enter_context(mock.patch.object(server, 'MemoryManager', memory))
         stack.enter_context(mock.patch.object(server, 'EmbeddingWorker', worker))
+        stack.enter_context(mock.patch.object(
+            server.MetricsCollector, 'get_upload_usage',
+            staticmethod(lambda: dict(UPLOAD_USAGE))))
         stack.enter_context(mock.patch.object(
             server.BoardMetricsManager, 'board_ids',
             classmethod(lambda c: boards.board_ids())))
@@ -307,7 +314,7 @@ class JsonMetricsShapeTests(unittest.TestCase):
 
     def test_top_level_sections_are_unchanged(self):
         self.assertEqual(set(self._metrics()),
-                         {'cpu', 'memory', 'disk', 'alerts', 'timestamp', 'product'})
+                         {'cpu', 'memory', 'disk', 'uploads', 'alerts', 'timestamp', 'product'})
 
     def test_product_sections_are_unchanged(self):
         self.assertEqual(set(self._metrics()['product']),
@@ -714,7 +721,8 @@ class MetricTypeTests(unittest.TestCase):
                     'tasks', 'hook_dead_letters', 'memory_embeddings_pending',
                     'memory_embeddings_worker_up', 'metrics_collector_up',
                     'board_dispositions', 'board_decisions',
-                    'board_approval_rate', 'board_review_open')
+                    'board_approval_rate', 'board_review_open',
+                    'upload_storage_used_bytes', 'upload_storage_quota_bytes')
 
     #: Incremented in memory as the event happens, so monotonic for the life of
     #: the process. A restart resets it, which Prometheus models correctly.
@@ -784,6 +792,12 @@ class SectionIsolationTests(unittest.TestCase):
         p = _parsed(memory=None, worker=None)
         self.assertEqual(p.value(PREFIX + 'metrics_collector_up',
                                  section='memory'), 0)
+
+    def test_upload_usage_is_exported(self):
+        p = _parsed()
+        self.assertEqual(p.value(PREFIX + 'upload_storage_used_bytes'), 1536)
+        self.assertEqual(p.value(PREFIX + 'upload_storage_quota_bytes'), 4096)
+        self.assertEqual(p.value(PREFIX + 'metrics_collector_up', section='uploads'), 1)
 
     def test_every_section_is_reported(self):
         p = _parsed()

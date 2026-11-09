@@ -45,6 +45,7 @@ import { proxyUrl } from '../../api/apps';
 import { navigate, routeHref } from '../../store/router';
 import { PROVIDER_KEYS_PATH } from '../../util/assistantReady';
 import { withOauthPrefix } from '../../api/client';
+import { isStorageRefusal } from '../../store/uploadErrors';
 import { previewFile, fileRawUrl, fileViewUrl, downloadFile, type FilePreview } from '../../api/files';
 import {
   isImageFile,
@@ -743,11 +744,16 @@ export function Chat({
         .then((path) =>
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
         )
-        .catch(() => {
+        .catch((err: unknown) => {
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x)));
           // Say so out loud — an error chip alone is easy to miss, and a photo
           // that silently never reaches the agent is the bug this guards (#755).
-          setAttachError(`${name} failed to upload — remove it and try again.`);
+          // A storage refusal (#556) won't be cured by retrying, so say why.
+          setAttachError(
+            isStorageRefusal(err)
+              ? `${name} was not uploaded. ${err.message}`
+              : `${name} failed to upload — remove it and try again.`,
+          );
         });
     }
   }

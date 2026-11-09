@@ -1,5 +1,6 @@
 import { prepareTerminal, terminalUrl, setScrollMode as setScrollModeApi } from '../../api/tasks';
 import { uploadFile } from '../../api/files';
+import { pushUploadError } from '../../store/uploadErrors';
 import { sendFollowup } from '../../store/tasks';
 import { pushToast } from '../../store/ui';
 import { getSessionSignals } from './sessionSignals';
@@ -69,6 +70,6 @@ export async function uploadFileToTask(taskId: string, file: File) {
       pushToast('Upload OK, but could not notify the session — paste the path manually.', { kind: 'warn' });
     }
   } catch (err) {
-    pushToast(err instanceof Error ? err.message : 'Upload failed', { kind: 'danger' });
+    pushUploadError(err, 'Upload failed');
   }
 }

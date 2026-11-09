@@ -3,6 +3,14 @@
 .files-upload .btn { cursor: pointer; }
 .files-upload-prog { font-size: var(--text-sm); white-space: nowrap; }
 
+.files-upload-usage {
+  padding: 0 0 var(--size-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.files-upload-usage-warn { color: var(--warn); }
+.files-upload-usage-danger { color: var(--danger); }
+
 .files-crumbs {
   display: flex; flex-wrap: wrap; gap: 4px;
   padding: var(--size-2) 0;

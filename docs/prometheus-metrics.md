@@ -84,6 +84,8 @@ ledgers were pruned under-reports rather than going negative.
 | `kubecoder_hook_dead_letters` | gauge | — | Tasks whose completion hook exhausted its retries. |
 | `kubecoder_memory_embeddings_pending` | gauge | — | Memories written but not yet vectorised. |
 | `kubecoder_memory_embeddings_worker_up` | gauge | — | 1 when the embedding worker thread is alive. |
+| `kubecoder_upload_storage_used_bytes` | gauge | — | Bytes held by the managed upload directories (`uploads/` and task attachments). |
+| `kubecoder_upload_storage_quota_bytes` | gauge | — | The `files.uploadQuota` cap. `0` means no limit. |
 | `kubecoder_metrics_collector_up` | gauge | `section` | 1 when that section of the exposition was collected successfully. |
 
 Label vocabularies:
@@ -158,7 +160,8 @@ number of tasks.
 One `os.listdir` plus one small `json.load` per task, one metadata read per
 Hypervisor thread, and one indexed `COUNT(*)` on the embedding queue — the same
 work the JSON `/metrics` already does on every dashboard poll, with the task
-walk shared between the token and task sections rather than run twice.
+walk shared between the token and task sections rather than run twice. The same
+goes for the walk of the managed upload directories.
 
 Deliberately **not** exposed: CPU utilisation (sampling it means differencing
 `/proc/stat` across a 500 ms sleep, which is not acceptable inside a scrape),

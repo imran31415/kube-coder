@@ -145,6 +145,9 @@ export interface Metrics {
   memory_total_mb: number;
   disk_used_gb: number;
   disk_total_gb: number;
+  /** Managed upload storage (#556). 0 quota: no limit, or an older pod. */
+  uploads_used_bytes: number;
+  uploads_quota_bytes: number;
 }
 
 export interface Health {

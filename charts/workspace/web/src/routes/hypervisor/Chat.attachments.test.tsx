@@ -10,6 +10,7 @@ vi.mock('../tasks/imageAttach', async (importOriginal) => ({
 }));
 
 import { Chat } from './Chat';
+import { ApiError } from '../../api/client';
 import {
   events,
   activeThreadId,
@@ -163,6 +164,17 @@ describe('Chat — Send racing an attachment upload (#755)', () => {
     expect(sentTexts()).toEqual([]);
     expect(composer().value).toBe('hello');
     expect(container.textContent).toContain('remove it to send');
+  });
+
+  it("shows the server's reason when storage is full (#556)", async () => {
+    uploadImpl = () =>
+      Promise.reject(new ApiError('Upload storage is full: raise files.uploadQuota.', 507, null));
+    const { container } = render(<Chat />);
+
+    attachPhoto(container);
+    await waitFor(() => expect(container.textContent).toContain('files.uploadQuota'));
+    // Retrying can't help, so the generic retry advice must not replace it.
+    expect(container.textContent).not.toContain('failed to upload');
   });
 
   it('still sends immediately when the upload already finished', async () => {
