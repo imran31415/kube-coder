@@ -37,6 +37,7 @@ export interface ParseOptions {
 }
 
 const FENCE = /^\s*```/;
+const INDENTED_CODE = /^(?: {4}|\t)/;
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const RULE = /^\s*(?:[-*_])\s*(?:[-*_]\s*){2,}$/; // ---, ***, ___ (with optional spaces)
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])(\s+)(.*)$/;
@@ -268,6 +269,19 @@ export function parseBlocks(src: string, opts: ParseOptions = { breaks: true }):
     if (parsed) {
       blocks.push(parsed.block);
       i = parsed.next;
+      continue;
+    }
+
+    // Indented code. Only reachable at a block boundary: a paragraph's loop
+    // below keeps its own indented continuation lines as text, as marked does.
+    if (INDENTED_CODE.test(line)) {
+      const body: string[] = [];
+      while (i < lines.length && (INDENTED_CODE.test(lines[i]) || !lines[i].trim())) {
+        body.push(lines[i].replace(INDENTED_CODE, ''));
+        i++;
+      }
+      while (!body[body.length - 1].trim()) body.pop(); // the first line is never blank
+      blocks.push({ kind: 'code', text: body.join('\n') });
       continue;
     }
 

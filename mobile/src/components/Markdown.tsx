@@ -14,8 +14,9 @@ import { parseBlocks, tableColumnWidths, type MdBlock } from '../util/markdownBl
 
 // Inline token patterns, in priority order. Code is first so formatting markers
 // inside `code` stay literal.
-const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link' }[] = [
+const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image' }[] = [
   { re: /`([^`]+)`/, kind: 'code' },
+  { re: /!\[([^\]]*)\]\(([^)\s]+)\)/, kind: 'image' },
   { re: /\*\*([^]+?)\*\*/, kind: 'bold' },
   { re: /__([^]+?)__/, kind: 'bold' },
   { re: /~~([^]+?)~~/, kind: 'strike' },
@@ -23,6 +24,21 @@ const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link'
   { re: /(?<![\w_])_(?!\s)([^_\n]+?)_(?![\w_])/, kind: 'italic' },
   { re: /\[([^\]]+)\]\(([^)\s]+)\)/, kind: 'link' },
 ];
+
+function opener(url: string) {
+  return () => void Linking.openURL(url).catch(() => {});
+}
+
+/** A caption, not the picture: the docs' images are repo-relative paths nothing
+ *  serves, and the desktop CSP blocks remote images anyway. */
+function ImageCaption({ alt, url }: { alt: string; url: string }) {
+  const remote = /^https?:\/\//i.test(url);
+  return (
+    <Text style={remote ? styles.link : styles.imageCaption} onPress={remote ? opener(url) : undefined}>
+      {`Image: ${alt || url}`}
+    </Text>
+  );
+}
 
 /** Parse inline markdown (bold/italic/code/strike/links) into styled Text nodes. */
 function parseInline(text: string, keyBase: string): ReactNode[] {
@@ -72,10 +88,11 @@ function parseInline(text: string, keyBase: string): ReactNode[] {
           {parseInline(best.a, key)}
         </Text>,
       );
+    } else if (best.kind === 'image') {
+      nodes.push(<ImageCaption key={key} alt={best.a} url={best.b || ''} />);
     } else if (best.kind === 'link') {
-      const url = best.b || '';
       nodes.push(
-        <Text key={key} style={styles.link} onPress={() => void Linking.openURL(url).catch(() => {})}>
+        <Text key={key} style={styles.link} onPress={opener(best.b || '')}>
           {parseInline(best.a, key)}
         </Text>,
       );
@@ -253,6 +270,7 @@ const styles = StyleSheet.create({
   italic: { fontStyle: 'italic' },
   strike: { textDecorationLine: 'line-through' },
   link: { color: colors.info, textDecorationLine: 'underline' },
+  imageCaption: { color: colors.textMuted, fontStyle: 'italic' },
   codeInline: {
     fontFamily: font.mono,
     fontSize: font.size.sm,

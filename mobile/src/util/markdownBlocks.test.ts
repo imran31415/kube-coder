@@ -162,6 +162,18 @@ describe('unchanged chat blocks', () => {
     ]);
   });
 
+  it('parses an indented block as code, across blank lines and without trailing ones', () => {
+    expect(parseBlocks('Runs:\n\n    GET /a\n\n    GET /b\n\nDone', docs)).toEqual([
+      para('Runs:'),
+      { kind: 'code', text: 'GET /a\n\nGET /b' },
+      para('Done'),
+    ]);
+  });
+
+  it('keeps an indented line that continues a paragraph as text', () => {
+    expect(parseBlocks('one\n    two', docs)).toEqual([para('one two')]);
+  });
+
   it('does not treat a pipe table inside a fence as a table', () => {
     expect(parseBlocks('```\n| a |\n|---|\n```')).toEqual([{ kind: 'code', text: '| a |\n|---|' }]);
   });
