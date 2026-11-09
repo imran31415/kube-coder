@@ -154,6 +154,19 @@
       "enabled": false
     },
     {
+      "description": "These native modules are versioned by the Expo SDK too: expo-doctor fails if one moves on its own, so they move with an SDK upgrade (`npx expo install --fix`), not as their own PRs. Same reason as the rule above.",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["react-native-safe-area-context", "react-native-screens", "react-native-webview", "@react-native-async-storage/async-storage"],
+      "enabled": false
+    },
+    {
+      "description": "An Expo SDK major is a coordinated upgrade (`npx expo install expo@^N --fix` moves the native modules and React with it), not a dependency bump Renovate can do alone. SDK patch releases stay tracked, because expo-doctor fails CI when they are missed (#849).",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["expo", "expo-*", "@expo/*"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
       "description": "code-server tags are v-prefixed but CODE_SERVER_VERSION is bare. Every bump must also re-pin the two .deb SHA-256 ARGs or the image build fails its sha256sum -c, so a postUpgradeTask recomputes them from GitHub's release API. The command only runs once the self-hosted run allows it (RENOVATE_ALLOWED_COMMANDS in .github/workflows/renovate.yml; allowedCommands is global-only, so it cannot live here). Until then the PR notes say to run the script by hand.",
       "matchDepNames": ["coder/code-server"],
       "extractVersion": "^v(?<version>.+)$",
