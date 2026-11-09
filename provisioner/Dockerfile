@@ -36,6 +36,8 @@
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Ride out Ubuntu mirror blips, as devlaptop/Dockerfile does (#868).
+RUN echo 'Acquire::Retries "8";' > /etc/apt/apt.conf.d/80-retries
 
 # Base OS packages: apt GPG-verifies every one. `apt-get upgrade` picks up base
 # CVE fixes on rebuild (mirrors devlaptop). git+make+bash+coreutils are what
