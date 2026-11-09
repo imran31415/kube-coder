@@ -166,9 +166,9 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Renovate bumps the version, and its postUpgradeTask
 # (scripts/renovate/code-server-sha.mjs) re-pins both digests from the same API.
 # renovate: datasource=github-releases depName=coder/code-server
-ARG CODE_SERVER_VERSION=4.145.0
-ARG CODE_SERVER_SHA256_AMD64=43fa1dc0e7929753bb3442e4ef40d4beb8bb5f8fe63601ede31b305536e6275b
-ARG CODE_SERVER_SHA256_ARM64=43813b81df484b49facf19d99faaa51683a2cdd8c652dc97ebddefa9cbe7fd6a
+ARG CODE_SERVER_VERSION=4.145.2
+ARG CODE_SERVER_SHA256_AMD64=7eddbdeaab34380bde3ac3bbadce58fe2f5722c4877f331ea593ae797c2517e1
+ARG CODE_SERVER_SHA256_ARM64=0fa9af7f602536b1e320a17d32bb1a85e4a924fdc09283898f1bea73d2a5c1e7
 RUN ARCH=$(dpkg --print-architecture) \
   && case "$ARCH" in \
        amd64) CS_SHA256="$CODE_SERVER_SHA256_AMD64" ;; \
@@ -184,7 +184,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 # Version is pinned for reproducible builds. To bump: update CLAUDE_CODE_VERSION,
 # rebuild the image (`make push`), and roll out the new image tag via Helm.
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CLAUDE_CODE_VERSION=2.1.319
 RUN retry npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # OpenCode CLI — alternative AI coding assistant. Selected per-workspace via
@@ -203,7 +203,7 @@ RUN retry npm install -g opencode-ai@${OPENCODE_VERSION}
 # persists on the PVC (same pattern as ~/.claude). npm-global install, so no
 # PVC-binary symlink is needed (unlike agy/ante). https://github.com/openai/codex
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.166.0
+ARG CODEX_VERSION=0.167.0
 RUN retry npm install -g @openai/codex@${CODEX_VERSION}
 
 # DeepSeek Harness (`dsh`) — DeepSeek's own open-source agent harness, MIT and
@@ -366,7 +366,7 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /opt
 # binary. Nothing is executed before it is verified. The manifest keys linux
 # builds as linux-x86_64 / linux-arm64.
 # renovate: datasource=custom.ante depName=ante versioning=loose
-ARG ANTE_VERSION=v0.preview.60
+ARG ANTE_VERSION=v0.3.3
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) ANTE_PLAT=linux-x86_64 ;; \
@@ -475,7 +475,7 @@ RUN apt-get update && apt-get install -y wget \
 # controlled with the repo it describes.
 #
 # renovate: datasource=github-releases depName=redhat-et/ripwire
-ARG RIPWIRE_VERSION=v0.6.9
+ARG RIPWIRE_VERSION=v0.6.10
 # Checksum-verified against the vendor-published .sha256, same posture as
 # docker-compose and kubectl above. The published .sha256 names the asset, so
 # only the digest is taken from it and re-paired with the local path.
