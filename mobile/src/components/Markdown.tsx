@@ -1,132 +1,22 @@
 /**
  * Markdown — a small, dependency-free markdown renderer for the Hypervisor chat
- * on mobile. The dashboard SPA pipes assistant prose through `marked` + DOMPurify
- * (see charts/workspace/web/src/routes/hypervisor/transcript.ts renderMarkdown);
- * React Native has no HTML, so we parse the same GFM-ish subset the agent
- * actually emits — headings, **bold**, *italic*, `code`, fenced code blocks,
- * bullet / numbered lists, blockquotes, links, and horizontal rules — into
- * native <Text>/<View> nodes so it looks native instead of showing raw `#`, `*`
+ * and the Docs screen (which is also what the desktop app shows). The dashboard
+ * SPA pipes these through `marked` + DOMPurify; React Native has no HTML, so
+ * util/markdownBlocks.ts parses the source and this renders the blocks as native
+ * <Text>/<View> nodes, so it looks native instead of showing raw `#`, `*`, `|`
  * and backtick characters.
- *
- * This is intentionally a pragmatic parser, not a spec-complete one: it covers
- * what a coding agent produces in chat, matching the web tab's `breaks: true`
- * (a single newline inside a paragraph is a line break).
  */
 import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { colors, font, radius, space } from '../theme';
-
-/** One block-level element parsed from the source. */
-type MdBlock =
-  | { kind: 'heading'; level: number; text: string }
-  | { kind: 'code'; text: string }
-  | { kind: 'list'; ordered: boolean; items: string[] }
-  | { kind: 'quote'; text: string }
-  | { kind: 'rule' }
-  | { kind: 'para'; text: string };
-
-const FENCE = /^\s*```/;
-const HEADING = /^(#{1,6})\s+(.*)$/;
-const RULE = /^\s*(?:[-*_])\s*(?:[-*_]\s*){2,}$/; // ---, ***, ___ (with optional spaces)
-const BULLET = /^\s*[-*+]\s+(.*)$/;
-const ORDERED = /^\s*\d+[.)]\s+(.*)$/;
-const QUOTE = /^\s*>\s?(.*)$/;
-
-/** Fold raw markdown source into block-level elements. */
-function parseBlocks(src: string): MdBlock[] {
-  const lines = src.replace(/\r\n?/g, '\n').split('\n');
-  const blocks: MdBlock[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Blank line — separates blocks.
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-
-    // Fenced code block: everything up to the closing fence, verbatim.
-    if (FENCE.test(line)) {
-      const body: string[] = [];
-      i++;
-      while (i < lines.length && !FENCE.test(lines[i])) {
-        body.push(lines[i]);
-        i++;
-      }
-      i++; // consume closing fence (or run off the end on an unterminated block)
-      blocks.push({ kind: 'code', text: body.join('\n') });
-      continue;
-    }
-
-    const heading = line.match(HEADING);
-    if (heading) {
-      blocks.push({ kind: 'heading', level: heading[1].length, text: heading[2].trim() });
-      i++;
-      continue;
-    }
-
-    if (RULE.test(line)) {
-      blocks.push({ kind: 'rule' });
-      i++;
-      continue;
-    }
-
-    // List: consecutive bullet or ordered items (a run of one kind).
-    if (BULLET.test(line) || ORDERED.test(line)) {
-      const ordered = ORDERED.test(line) && !BULLET.test(line);
-      const items: string[] = [];
-      while (i < lines.length) {
-        const m = ordered ? lines[i].match(ORDERED) : lines[i].match(BULLET);
-        if (!m) break;
-        items.push(m[1]);
-        i++;
-      }
-      blocks.push({ kind: 'list', ordered, items });
-      continue;
-    }
-
-    // Blockquote: consecutive '>' lines.
-    if (QUOTE.test(line)) {
-      const body: string[] = [];
-      while (i < lines.length && QUOTE.test(lines[i])) {
-        body.push(lines[i].match(QUOTE)![1]);
-        i++;
-      }
-      blocks.push({ kind: 'quote', text: body.join('\n') });
-      continue;
-    }
-
-    // Paragraph: consecutive plain lines until a blank line or a block starter.
-    const body: string[] = [];
-    while (i < lines.length) {
-      const l = lines[i];
-      if (
-        !l.trim() ||
-        FENCE.test(l) ||
-        HEADING.test(l) ||
-        RULE.test(l) ||
-        BULLET.test(l) ||
-        ORDERED.test(l) ||
-        QUOTE.test(l)
-      ) {
-        break;
-      }
-      body.push(l);
-      i++;
-    }
-    blocks.push({ kind: 'para', text: body.join('\n') });
-  }
-
-  return blocks;
-}
+import { parseBlocks, tableColumnWidths, type MdBlock } from '../util/markdownBlocks';
 
 // Inline token patterns, in priority order. Code is first so formatting markers
 // inside `code` stay literal.
-const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link' }[] = [
+const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image' }[] = [
   { re: /`([^`]+)`/, kind: 'code' },
+  { re: /!\[([^\]]*)\]\(([^)\s]+)\)/, kind: 'image' },
   { re: /\*\*([^]+?)\*\*/, kind: 'bold' },
   { re: /__([^]+?)__/, kind: 'bold' },
   { re: /~~([^]+?)~~/, kind: 'strike' },
@@ -134,6 +24,21 @@ const INLINE: { re: RegExp; kind: 'code' | 'bold' | 'italic' | 'strike' | 'link'
   { re: /(?<![\w_])_(?!\s)([^_\n]+?)_(?![\w_])/, kind: 'italic' },
   { re: /\[([^\]]+)\]\(([^)\s]+)\)/, kind: 'link' },
 ];
+
+function opener(url: string) {
+  return () => void Linking.openURL(url).catch(() => {});
+}
+
+/** A caption, not the picture: the docs' images are repo-relative paths nothing
+ *  serves, and the desktop CSP blocks remote images anyway. */
+function ImageCaption({ alt, url }: { alt: string; url: string }) {
+  const remote = /^https?:\/\//i.test(url);
+  return (
+    <Text style={remote ? styles.link : styles.imageCaption} onPress={remote ? opener(url) : undefined}>
+      {`Image: ${alt || url}`}
+    </Text>
+  );
+}
 
 /** Parse inline markdown (bold/italic/code/strike/links) into styled Text nodes. */
 function parseInline(text: string, keyBase: string): ReactNode[] {
@@ -183,10 +88,11 @@ function parseInline(text: string, keyBase: string): ReactNode[] {
           {parseInline(best.a, key)}
         </Text>,
       );
+    } else if (best.kind === 'image') {
+      nodes.push(<ImageCaption key={key} alt={best.a} url={best.b || ''} />);
     } else if (best.kind === 'link') {
-      const url = best.b || '';
       nodes.push(
-        <Text key={key} style={styles.link} onPress={() => void Linking.openURL(url).catch(() => {})}>
+        <Text key={key} style={styles.link} onPress={opener(best.b || '')}>
           {parseInline(best.a, key)}
         </Text>,
       );
@@ -242,10 +148,46 @@ function CodeBlock({ text }: { text: string }) {
 
 const HEADING_STYLE = [styles_h(1), styles_h(2), styles_h(3), styles_h(4), styles_h(5), styles_h(6)];
 
-/** Render a block of markdown as native RN nodes. Reused for the Hypervisor
- *  chat's assistant prose (parity with the web tab's markdown). */
-export function Markdown({ text, style }: { text: string; style?: object }) {
-  const blocks = parseBlocks(text || '');
+/** GFM table. Scrolls sideways when it can't fit, and stretches to fill when
+ *  it can: every row gets the same flexBasis/flexGrow, so columns stay aligned
+ *  whatever the available width turns out to be. */
+function Table({ block }: { block: Extract<MdBlock, { kind: 'table' }> }) {
+  const widths = tableColumnWidths(block.header, block.rows);
+  const minWidth = widths.reduce((sum, w) => sum + w, 0);
+  const renderRow = (cells: string[], rowKey: string, isHeader: boolean, isLast: boolean) => (
+    <View key={rowKey} style={[styles.tableRow, isHeader && styles.tableHeaderRow, isLast && styles.tableLastRow]}>
+      {cells.map((cell, c) => (
+        <View
+          key={c}
+          style={[
+            styles.tableCell,
+            { flexBasis: widths[c], flexGrow: widths[c] },
+            c === cells.length - 1 && styles.tableLastCell,
+          ]}
+        >
+          <Text style={[isHeader ? styles.tableHeaderText : styles.tableText, { textAlign: block.align[c] ?? 'left' }]}>
+            {parseInline(cell, `${rowKey}-${c}`)}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+  return (
+    <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.tableScroll}>
+      <View style={[styles.table, { minWidth }]}>
+        {renderRow(block.header, 'head', true, block.rows.length === 0)}
+        {block.rows.map((row, r) => renderRow(row, `r${r}`, false, r === block.rows.length - 1))}
+      </View>
+    </ScrollView>
+  );
+}
+
+function listMarker(block: Extract<MdBlock, { kind: 'list' }>, index: number, checked?: boolean): string {
+  if (checked !== undefined) return checked ? '☑' : '☐';
+  return block.ordered ? `${block.start + index}.` : '•';
+}
+
+function Blocks({ blocks, style }: { blocks: MdBlock[]; style?: object }) {
   return (
     <View style={[styles.root, style]}>
       {blocks.map((b, i) => {
@@ -261,10 +203,15 @@ export function Markdown({ text, style }: { text: string; style?: object }) {
             return <CodeBlock key={key} text={b.text} />;
           case 'rule':
             return <View key={key} style={styles.rule} />;
+          case 'table':
+            return <Table key={key} block={b} />;
           case 'quote':
+            return <Blocks key={key} blocks={b.blocks} style={styles.quote} />;
+          case 'callout':
             return (
-              <View key={key} style={styles.quote}>
-                <Text style={styles.para}>{parseInline(b.text, key)}</Text>
+              <View key={key} style={styles.callout}>
+                <Text style={styles.calloutLabel}>{b.label}</Text>
+                <Blocks blocks={b.blocks} />
               </View>
             );
           case 'list':
@@ -272,8 +219,8 @@ export function Markdown({ text, style }: { text: string; style?: object }) {
               <View key={key} style={styles.list}>
                 {b.items.map((it, j) => (
                   <View key={j} style={styles.listItem}>
-                    <Text style={styles.listMarker}>{b.ordered ? `${j + 1}.` : '•'}</Text>
-                    <Text style={styles.listText}>{parseInline(it, `${key}-${j}`)}</Text>
+                    <Text style={styles.listMarker}>{listMarker(b, j, it.checked)}</Text>
+                    <Blocks blocks={it.blocks} style={styles.listBody} />
                   </View>
                 ))}
               </View>
@@ -288,6 +235,21 @@ export function Markdown({ text, style }: { text: string; style?: object }) {
       })}
     </View>
   );
+}
+
+/** Render a block of markdown as native RN nodes. `breaks` matches the option
+ *  of the same name in `marked`: leave it on for chat, turn it off for
+ *  hard-wrapped documents (see ParseOptions). */
+export function Markdown({
+  text,
+  style,
+  breaks = true,
+}: {
+  text: string;
+  style?: object;
+  breaks?: boolean;
+}) {
+  return <Blocks blocks={parseBlocks(text || '', { breaks })} style={style} />;
 }
 
 function styles_h(level: number) {
@@ -308,6 +270,7 @@ const styles = StyleSheet.create({
   italic: { fontStyle: 'italic' },
   strike: { textDecorationLine: 'line-through' },
   link: { color: colors.info, textDecorationLine: 'underline' },
+  imageCaption: { color: colors.textMuted, fontStyle: 'italic' },
   codeInline: {
     fontFamily: font.mono,
     fontSize: font.size.sm,
@@ -346,5 +309,41 @@ const styles = StyleSheet.create({
   list: { gap: space.xs },
   listItem: { flexDirection: 'row', gap: space.sm, alignItems: 'flex-start' },
   listMarker: { color: colors.textMuted, fontSize: font.size.md, lineHeight: 22, minWidth: 16 },
-  listText: { flex: 1, color: colors.text, fontSize: font.size.md, lineHeight: 22 },
+  listBody: { flex: 1 },
+  callout: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accent,
+    backgroundColor: colors.card,
+    borderRadius: radius.sm,
+    padding: space.md,
+    gap: space.xs,
+  },
+  calloutLabel: {
+    color: colors.accent,
+    fontSize: font.size.xs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  tableScroll: { flexGrow: 1 },
+  table: {
+    flexGrow: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    overflow: 'hidden',
+  },
+  tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border },
+  tableLastRow: { borderBottomWidth: 0 },
+  tableHeaderRow: { backgroundColor: colors.surface2 },
+  tableCell: {
+    flexShrink: 0,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRightWidth: 1,
+    borderRightColor: colors.border,
+  },
+  tableLastCell: { borderRightWidth: 0 },
+  tableText: { color: colors.text, fontSize: font.size.sm, lineHeight: 19 },
+  tableHeaderText: { color: colors.text, fontSize: font.size.sm, lineHeight: 19, fontWeight: '700' },
 });

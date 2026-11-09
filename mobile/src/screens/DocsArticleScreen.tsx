@@ -2,8 +2,9 @@
  *
  *  The markdown comes from /api/docs/<id> and goes through the app's existing
  *  dependency-free renderer (src/components/Markdown.tsx) — the same one the
- *  Hypervisor chat uses — so headings, code fences and lists read as native
- *  text instead of raw syntax. The stack header supplies the back button. */
+ *  Hypervisor chat uses — so headings, code fences, lists and tables read as
+ *  native text instead of raw syntax. `breaks={false}` because the docs are
+ *  hard-wrapped (#856). The stack header supplies the back button. */
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -75,7 +76,7 @@ export default function DocsArticleScreen() {
         {page.edited_at ? ` · updated ${relativeTime(page.edited_at)}` : ''}
       </Text>
       <View style={styles.divider} />
-      <Markdown text={stripLeadingTitle(page.markdown, page.title)} />
+      <Markdown text={stripLeadingTitle(page.markdown, page.title)} breaks={false} />
     </ScrollView>
   );
 }
