@@ -2112,7 +2112,7 @@ resources:
 
 build:
   mode: buildkit
-  kanikoImage: gcr.io/kaniko-project/executor:v1.24.0
+  kanikoImage: gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
   pushSecretName: regcred
   defaultDestinationRepo: registry.digitalocean.com/resourceloop/coder
 

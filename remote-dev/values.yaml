@@ -56,7 +56,7 @@ build:
   # Build mode: "kaniko" for in-cluster builds, "buildkit" for Docker-in-Docker with BuildKit
   mode: kaniko
   # Kaniko executor image (only used when mode is "kaniko")
-  kanikoImage: gcr.io/kaniko-project/executor:latest
+  kanikoImage: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
   # Docker registry secret for pushing built images
   pushSecretName: regcred
   # Default repository for built images
