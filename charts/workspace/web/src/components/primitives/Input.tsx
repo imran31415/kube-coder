@@ -1,7 +1,7 @@
 import type { JSX } from 'preact';
 import './Input.css';
 
-export interface InputProps extends JSX.HTMLAttributes<HTMLInputElement> {
+export interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
   fullWidth?: boolean;
 }
 
