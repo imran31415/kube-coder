@@ -37,6 +37,7 @@ import urllib.parse
 import zipfile
 
 import handlers
+import upload_storage
 from handlers.routing import RouteTable
 
 
@@ -49,6 +50,12 @@ class FilesRoutes:
     # the user's home directory (e.g. via ".." or absolute paths).
     HOME_DEV = '/home/dev'
     MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MiB
+    # Storage bounds (#556): chart values files.uploadQuota / files.minFreeSpace.
+    # Class attributes like the limits above, so a suite can pin them.
+    UPLOAD_QUOTA_BYTES = upload_storage.parse_size_bytes(
+        os.environ.get('UPLOAD_QUOTA'), upload_storage.DEFAULT_QUOTA_BYTES, 'UPLOAD_QUOTA')
+    UPLOAD_MIN_FREE_BYTES = upload_storage.parse_size_bytes(
+        os.environ.get('UPLOAD_MIN_FREE'), upload_storage.DEFAULT_MIN_FREE_BYTES, 'UPLOAD_MIN_FREE')
 
     @classmethod
     def _resolve_under_home_dev(cls, rel_path: str) -> str:
@@ -242,16 +249,21 @@ class FilesRoutes:
     # with millions of tiny members.
     MAX_ZIP_MEMBERS = 10000
 
-    def _extract_zip_upload(self, zip_path: str, dest_dir: str) -> int:
+    def _extract_zip_upload(self, zip_path: str, dest_dir: str, reservation) -> int:
         """Extract an uploaded .zip into dest_dir. Returns the number of files
-        written. Raises ValueError for unsafe or oversized archives and
-        zipfile.BadZipFile for non-zip bytes.
+        written. Raises ValueError for unsafe or oversized archives,
+        UploadCapacityError when the expansion would breach a storage bound
+        (#556), and zipfile.BadZipFile for non-zip bytes.
 
         Zip-slip: member names with an absolute path, a `..` segment, or a
         backslash are rejected outright (the whole upload fails, rather than
         silently skipping — a partial extract would be confusing). Symlink
         members are skipped: zipfile.extract would write them as regular
-        files holding the target path, which is never what anyone wants."""
+        files holding the target path, which is never what anyone wants.
+
+        Members land in a staging directory and only move into dest_dir once
+        all of them have extracted, so a corrupt member or a full disk leaves
+        nothing behind."""
         with zipfile.ZipFile(zip_path) as zf:
             infos = zf.infolist()
             if len(infos) > self.MAX_ZIP_MEMBERS:
@@ -269,14 +281,111 @@ class FilesRoutes:
                 target = os.path.realpath(os.path.join(real_dest, name))
                 if target != real_dest and not target.startswith(real_dest + os.sep):
                     raise ValueError(f'unsafe path in zip: {name!r}')
+            # After the safety checks: a malicious archive is a 400, not a 507.
+            reservation.charge_expansion(total)
+            staging = reservation.staging_path(real_dest)
+            os.mkdir(staging)
             count = 0
             for info in infos:
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     continue  # symlink member
-                zf.extract(info, real_dest)
+                zf.extract(info, staging)
                 if not info.is_dir():
                     count += 1
+            reservation.commit(lambda: upload_storage.promote_tree(staging, real_dest))
             return count
+
+    def _drain_request_body(self, length: int) -> None:
+        """Read and discard a refused upload's body. nginx treats an upstream
+        that hangs up mid-request as a failure and answers 502, which would
+        replace the actionable refusal with a generic error. `length` is
+        already bounded by MAX_UPLOAD_BYTES at the only call site."""
+        try:
+            while length > 0:
+                chunk = self.rfile.read(min(64 * 1024, length))
+                if not chunk:
+                    return
+                length -= len(chunk)
+        except OSError:
+            pass  # client went away; there is nobody left to answer
+
+    def _missing_dirs(self, path: str) -> list:
+        """The directories makedirs(path) would create, deepest first."""
+        missing = []
+        while path != self.HOME_DEV and not os.path.isdir(path):
+            missing.append(path)
+            path = os.path.dirname(path)
+        return missing
+
+    def _store_upload(self, reservation, dest_dir, filename, extract, content_length):
+        """Stream the body into staging and move it into place. Returns the
+        (payload, status) to answer with; the caller owns cleanup."""
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except OSError as e:
+            if upload_storage.is_disk_full(e):
+                return upload_storage.disk_full_payload(), 507
+            return {'error': f'mkdir failed: {e}'}, 500
+        final_path = os.path.join(dest_dir, filename)
+        # Always staged, never written in place: a partial file must not appear
+        # under the name an agent is about to be told to read.
+        write_path = reservation.staging_path(dest_dir)
+        # Stream to disk in 64 KiB chunks so a 200 MiB upload doesn't have to
+        # fully buffer in memory before we touch the filesystem.
+        try:
+            with open(write_path, 'wb') as fh:
+                remaining = content_length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+        except OSError as e:
+            if upload_storage.is_disk_full(e):
+                return upload_storage.disk_full_payload(), 507
+            return {'error': f'write failed: {e}'}, 500
+        if remaining > 0:
+            return {'error': (f'upload interrupted: received '
+                              f'{content_length - remaining} of {content_length} bytes')}, 400
+        if extract:
+            try:
+                count = self._extract_zip_upload(write_path, dest_dir, reservation)
+            except zipfile.BadZipFile:
+                return {'error': 'not a valid zip archive'}, 400
+            except upload_storage.UploadCapacityError as e:
+                return e.payload, 507
+            except ValueError as e:
+                return {'error': str(e)}, 400
+            except OSError as e:
+                if upload_storage.is_disk_full(e):
+                    return upload_storage.disk_full_payload(), 507
+                return {'error': f'extract failed: {e}'}, 500
+            rel_out = os.path.relpath(dest_dir, self.HOME_DEV)
+            if rel_out == '.':
+                rel_out = ''
+            return {
+                'ok': True,
+                'path': rel_out,
+                'absolute_path': dest_dir,
+                'extracted': count,
+            }, 201
+        # Match perms to existing files in the target dir — workspace pods
+        # run as a non-root user, so this is mostly a safety net.
+        try:
+            os.chmod(write_path, 0o644)
+        except OSError:
+            pass
+        try:
+            reservation.commit(lambda: os.replace(write_path, final_path))
+        except OSError as e:
+            return {'error': f'write failed: {e}'}, 500
+        return {
+            'ok': True,
+            'path': os.path.relpath(final_path, self.HOME_DEV),
+            'absolute_path': final_path,
+            'size': content_length,
+        }, 201
 
     def handle_file_upload(self):
         if not self.check_claude_auth():
@@ -314,73 +423,33 @@ class FilesRoutes:
         if content_length > self.MAX_UPLOAD_BYTES:
             self.send_json({'error': f'file too large (max {self.MAX_UPLOAD_BYTES} bytes)'}, 413)
             return
+        # 507 Insufficient Storage, not the 413 above: the file is a fine size,
+        # there is simply nowhere to put it. Before makedirs, so a refused
+        # upload leaves no empty directory behind.
         try:
-            os.makedirs(dest_dir, exist_ok=True)
-        except OSError as e:
-            self.send_json({'error': f'mkdir failed: {e}'}, 500)
+            reservation = upload_storage.reserve(
+                self.HOME_DEV, dest_dir, content_length,
+                self.UPLOAD_QUOTA_BYTES, self.UPLOAD_MIN_FREE_BYTES)
+        except upload_storage.UploadCapacityError as e:
+            self._drain_request_body(content_length)
+            self.send_json(e.payload, 507)
             return
-        final_path = os.path.join(dest_dir, filename)
-        # Extract mode stages the archive next to the destination (same
-        # filesystem) and always removes it — only the unpacked tree remains.
-        write_path = final_path + '.uploading' if extract else final_path
-        # Stream to disk in 64 KiB chunks so a 200 MiB upload doesn't have to
-        # fully buffer in memory before we touch the filesystem.
+        created_dirs = self._missing_dirs(dest_dir)
+        payload, status = None, 0
         try:
-            with open(write_path, 'wb') as fh:
-                remaining = content_length
-                while remaining > 0:
-                    chunk = self.rfile.read(min(64 * 1024, remaining))
-                    if not chunk:
+            payload, status = self._store_upload(
+                reservation, dest_dir, filename, extract, content_length)
+        finally:
+            reservation.release()
+            if status != 201:
+                # A later refusal (a zip's expansion, say) must not leave the
+                # fresh destination behind. rmdir only removes an empty one.
+                for path in created_dirs:
+                    try:
+                        os.rmdir(path)
+                    except OSError:
                         break
-                    fh.write(chunk)
-                    remaining -= len(chunk)
-        except OSError as e:
-            self.send_json({'error': f'write failed: {e}'}, 500)
-            return
-        if extract:
-            try:
-                count = self._extract_zip_upload(write_path, dest_dir)
-            except zipfile.BadZipFile:
-                self.send_json({'error': 'not a valid zip archive'}, 400)
-                return
-            except ValueError as e:
-                self.send_json({'error': str(e)}, 400)
-                return
-            except OSError as e:
-                self.send_json({'error': f'extract failed: {e}'}, 500)
-                return
-            finally:
-                try:
-                    os.unlink(write_path)
-                except OSError:
-                    pass
-            rel_out = os.path.relpath(dest_dir, self.HOME_DEV)
-            if rel_out == '.':
-                rel_out = ''
-            self.send_json({
-                'ok': True,
-                'path': rel_out,
-                'absolute_path': dest_dir,
-                'extracted': count,
-            }, 201)
-            return
-        try:
-            size = os.path.getsize(final_path)
-        except OSError:
-            size = 0
-        # Match perms to existing files in the target dir — workspace pods
-        # run as a non-root user, so this is mostly a safety net.
-        try:
-            os.chmod(final_path, 0o644)
-        except OSError:
-            pass
-        rel_out = os.path.relpath(final_path, self.HOME_DEV)
-        self.send_json({
-            'ok': True,
-            'path': rel_out,
-            'absolute_path': final_path,
-            'size': size,
-        }, 201)
+        self.send_json(payload, status)
 
     def handle_file_mkdir(self):
         if not self.check_claude_auth():

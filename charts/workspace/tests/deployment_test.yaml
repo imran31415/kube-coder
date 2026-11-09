@@ -23,6 +23,56 @@ tests:
           path: metadata.namespace
           value: test
 
+  - it: should bound upload storage by default (#556)
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_QUOTA
+            value: "2Gi"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_MIN_FREE
+            value: "1Gi"
+
+  - it: should pass custom upload bounds through (#556)
+    template: templates/deployment.yaml
+    set:
+      files:
+        uploadQuota: "10Gi"
+        minFreeSpace: "500Mi"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_QUOTA
+            value: "10Gi"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_MIN_FREE
+            value: "500Mi"
+
+  - it: should honour an operator's 0 for the upload bounds (#556)
+    template: templates/deployment.yaml
+    set:
+      files:
+        uploadQuota: 0
+        minFreeSpace: "0"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_QUOTA
+            value: "0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: UPLOAD_MIN_FREE
+            value: "0"
+
   - it: should use Recreate strategy
     template: templates/deployment.yaml
     asserts:

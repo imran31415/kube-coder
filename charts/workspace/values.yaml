@@ -253,6 +253,23 @@ oauth2:
 # private workspace's PVC for a public demo. See the `publicDemo` block.
 readOnly: false
 
+# Bounds on what /api/files/upload may write to the PVC (issue #556). Both take
+# k8s-style sizes ("2Gi", "500Mi", "1073741824"); "0" disables that guard. Both
+# REJECT at the bound with a 507. Nothing is ever evicted: an uploaded file's
+# absolute path is handed to an agent as prompt text, and deleting it behind the
+# agent's back is harder to debug than a refused upload.
+files:
+  # Ceiling on the MANAGED upload dirs (uploads/<task-id>/ and
+  # .claude-tasks/<task-id>/attachments/), which the dashboard, mobile app and
+  # agents write into with nobody choosing a location. A file deliberately
+  # uploaded into a project directory is a project file, and is NOT counted
+  # here. It is still subject to minFreeSpace.
+  uploadQuota: "2Gi"
+  # Free space every upload must leave on /home/dev, wherever it lands. This is
+  # what stops a full volume, which otherwise breaks builds, git and the memory
+  # database with nothing pointing at the cause.
+  minFreeSpace: "1Gi"
+
 # Public-demo confidentiality controls (only meaningful with auth.type=none +
 # readOnly:true — the unauthenticated public demo). Both are optional.
 publicDemo:

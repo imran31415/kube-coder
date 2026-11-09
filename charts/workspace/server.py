@@ -94,6 +94,7 @@ import strix_connection
 # does `import server`, and a handler module that imported server by name would
 # execute a second copy of this file. Attribute lookups on the bound module all
 # happen at request time, so binding a half-initialized module here is fine.
+import upload_storage
 import handlers
 from handlers import apps as app_routes
 from handlers import boards as board_routes
@@ -318,7 +319,10 @@ except Exception as _mcp_reg_import_err:  # broken install shouldn't crash the s
 ALERT_THRESHOLDS = {
     'cpu': {'warning': 70, 'critical': 90},
     'memory': {'warning': 80, 'critical': 95},
-    'disk': {'warning': 80, 'critical': 90}
+    'disk': {'warning': 80, 'critical': 90},
+    # Managed uploads against their own cap (#556), separate from 'disk' (the
+    # whole volume): uploads can hit their limit while the PVC is mostly empty.
+    'uploads': {'warning': 80, 'critical': 90},
 }
 
 # Public-demo / read-only mode. Set from helm values via env vars on the
@@ -1284,7 +1288,18 @@ class MetricsCollector:
             return {'total_gb': 0, 'used_gb': 0, 'available_gb': 0, 'percent': 0, 'path': '/home/dev', 'error': str(e)}
 
     @staticmethod
-    def get_alerts(cpu, memory, disk):
+    def get_upload_usage():
+        """Managed upload storage against its cap (#556). Reads the handler's
+        attributes at call time so a pinned test root is honoured here too."""
+        try:
+            return upload_storage.usage(BrowserHandler.HOME_DEV,
+                                        BrowserHandler.UPLOAD_QUOTA_BYTES)
+        except Exception as e:
+            return {'used_bytes': 0, 'quota_bytes': BrowserHandler.UPLOAD_QUOTA_BYTES,
+                    'available_bytes': None, 'percent': 0, 'error': str(e)}
+
+    @staticmethod
+    def get_alerts(cpu, memory, disk, uploads=None):
         """Generate alerts based on current metrics"""
         alerts = []
 
@@ -1303,6 +1318,17 @@ class MetricsCollector:
         elif disk.get('percent', 0) >= ALERT_THRESHOLDS['disk']['warning']:
             alerts.append({'type': 'warning', 'resource': 'disk', 'message': f"Disk usage at {disk['percent']}%"})
 
+        # Only with a cap set: unbounded storage has no percentage to alarm on.
+        if uploads and uploads.get('quota_bytes'):
+            pct = uploads.get('percent', 0)
+            level = ('critical' if pct >= ALERT_THRESHOLDS['uploads']['critical']
+                     else 'warning' if pct >= ALERT_THRESHOLDS['uploads']['warning']
+                     else None)
+            if level:
+                cap = upload_storage.human_bytes(uploads['quota_bytes'])
+                alerts.append({'type': level, 'resource': 'uploads',
+                               'message': f'Upload storage at {pct}% of the {cap} limit'})
+
         return alerts
 
     @staticmethod
@@ -1311,12 +1337,16 @@ class MetricsCollector:
         cpu = MetricsCollector.get_cpu_usage()
         memory = MetricsCollector.get_memory_usage()
         disk = MetricsCollector.get_disk_usage()
-        alerts = MetricsCollector.get_alerts(cpu, memory, disk)
+        uploads = MetricsCollector.get_upload_usage()
+        alerts = MetricsCollector.get_alerts(cpu, memory, disk, uploads)
 
         return {
             'cpu': cpu,
             'memory': memory,
             'disk': disk,
+            # Managed uploads and their cap (#556): the slice of the volume
+            # uploads may occupy, where 'disk' is the whole PVC.
+            'uploads': uploads,
             'alerts': alerts,
             'timestamp': time.time(),
             # Product-usage metrics (#363) — a SEPARATE section from the system
@@ -1481,7 +1511,7 @@ class PrometheusMetricsCollector:
 
     ── CARDINALITY ───────────────────────────────────────────────────────────
     Every label here is drawn from a fixed, small vocabulary: scope (2), token
-    class (4), coverage (3), task status (7), hook outcome (2), section (4).
+    class (4), coverage (3), task status (7), hook outcome (2), section (6).
     The one label with values from data rather than code is `model`, and it is
     capped at MAX_MODELS with the tail folded into `model="other"`. Nothing is
     ever labelled by task id, thread id, session id, workdir, project or URL:
@@ -1492,7 +1522,7 @@ class PrometheusMetricsCollector:
     One `os.listdir` + one `json.load` per task.json, one `read_meta()` per
     hypervisor thread, and one indexed `COUNT(*)` on the embedding queue. That
     is the same work the JSON `/metrics` already does on every dashboard poll,
-    and the task scan is shared between the token and task sections rather than
+    as is the walk of the managed upload dirs, and the task scan is shared between the token and task sections rather than
     run twice. Deliberately excluded: CPU utilisation (`get_cpu_usage` sleeps
     500 ms to difference /proc/stat — unacceptable in a scrape) and RAM/disk
     (kubelet and cAdvisor already export both, per container and per PVC).
@@ -1527,7 +1557,7 @@ class PrometheusMetricsCollector:
     #: cover".
     MODEL_UNATTRIBUTED = 'unattributed'
 
-    SECTIONS = ('tokens', 'tasks', 'hooks', 'memory', 'boards')
+    SECTIONS = ('tokens', 'tasks', 'hooks', 'memory', 'boards', 'uploads')
 
     #: Distinct `board` label values before the tail is folded into `other`.
     #: Board ids are operator-created, so they are small in practice but
@@ -1849,6 +1879,27 @@ class PrometheusMetricsCollector:
             cls.PREFIX + 'board_review_open',
             'Items currently awaiting a human decision — the review badge.',
             open_samples)
+        return True
+
+    # ── uploads (#556) ────────────────────────────────────────────────────
+
+    @classmethod
+    def _add_uploads(cls, exp, _metas):
+        """The upload cap is an application limit, so unlike RAM and the PVC
+        as a whole, cAdvisor can't see it. A cap of 0 means no limit."""
+        usage = MetricsCollector.get_upload_usage()
+        if 'error' in usage:
+            return False
+        exp.gauge(
+            cls.PREFIX + 'upload_storage_used_bytes',
+            'Bytes held by the managed upload directories. Falls when uploads '
+            'are deleted.',
+            [({}, usage['used_bytes'])])
+        exp.gauge(
+            cls.PREFIX + 'upload_storage_quota_bytes',
+            'Cap on the managed upload directories (files.uploadQuota). 0 means '
+            'no limit, so exclude 0 before dividing used by this.',
+            [({}, usage['quota_bytes'])])
         return True
 
 
