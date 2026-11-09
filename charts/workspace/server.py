@@ -6330,7 +6330,8 @@ class WorktreeManager:
                                    occupied_by=cls.occupancy())
         except worktrees.WorktreeError as e:
             status = {'live': 409, 'dirty': 409, 'repo_missing': 409,
-                      'not_worktree': 404, 'lock_timeout': 503}.get(e.code, 500)
+                      'busy': 409, 'not_worktree': 404, 'lock_timeout': 503,
+                      'git_timeout': 503, 'remove_incomplete': 503}.get(e.code, 500)
             return e.as_dict(), status
         cls._mark_removed(owners, path)
         EventBroker.publish('task.worktree', {

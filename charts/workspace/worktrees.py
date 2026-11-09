@@ -191,11 +191,20 @@ def launch_writer(workdir, argv, *, runner=None, wt_root=None, **kwargs):
     run = runner or _RUN
     if managed is None:
         return run(argv, **kwargs)
-    with locked(wt_root):
-        manifest = read_manifest(str(managed))
-        if not manifest or manifest.get('publication'):
-            return subprocess.CompletedProcess(argv, 1, '', 'Worktree publication is in progress; retry after it finishes.')
-        return run(argv, **kwargs)
+    try:
+        with locked(wt_root):
+            manifest = read_manifest(str(managed))
+            if not manifest or manifest.get('publication'):
+                return subprocess.CompletedProcess(argv, 1, '', 'Worktree publication is in progress; retry after it finishes.')
+            if manifest.get('removing_at'):
+                # Half-deleted (#853): an agent here would see every missing
+                # file as its own change, and could commit the deletions.
+                return subprocess.CompletedProcess(argv, 1, '', 'Removing this worktree was interrupted; cleanup will finish it. Start the Build again to rebuild it from its branch.')
+            return run(argv, **kwargs)
+    except WorktreeError as e:
+        # A long delete holds this lock (#853). Callers read a failed launch
+        # from the result, so a timeout must not reach them as an exception.
+        return subprocess.CompletedProcess(argv, 1, '', e.message)
 
 
 def _git(args, cwd, *, timeout=None, check=True, binary=False):
@@ -789,6 +798,10 @@ def ensure(repo, slug, *, wt_root=None, base_ref=None, base_sha=None,
         if interrupted is not None and interrupted.get('removing_at'):
             # Half-deleted (#853), so it cannot be reused. Finish the job; the
             # branch survives and the code below re-adds it, commits intact.
+            _refuse_if_resume_is_unsafe(interrupted, real_path,
+                                        mine=(task_id, allow_owner),
+                                        is_owner_live=is_owner_live,
+                                        occupied_by=occupied_by)
             _finish_removal(root, real_path, interrupted)
             registered = {e['path']: e for e in _worktree_list(root)}
 
@@ -1138,6 +1151,25 @@ def _finish_removal(root, real, manifest):
     return {'removed': True, 'already': False, 'path': real,
             'branch': manifest.get('branch') or '', 'branch_kept': True,
             'resumed': True}
+
+
+def _refuse_if_resume_is_unsafe(manifest, real, *, mine, is_owner_live,
+                                occupied_by):
+    """`ensure` is about to delete what is left of `real`. The same holds that
+    stop `_remove_locked` stop this: `removing_at` says a delete began, not
+    that nobody has reserved or entered the folder since. `mine` are the tasks
+    this call is starting or replacing."""
+    if manifest.get('publication'):
+        raise WorktreeError('busy', 'This worktree is being published; retry after publishing finishes.', path=real)
+    owner = manifest.get('task_id') or ''
+    tenant = occupied_by(real) if occupied_by is not None else ''
+    if owner and owner not in mine and is_owner_live is not None and is_owner_live(owner):
+        holder = owner
+    else:
+        holder = tenant if tenant not in mine else ''
+    if holder:
+        raise WorktreeError('busy', f'task {holder} is working in this worktree; stop it first',
+                            owner_task_id=holder, path=real)
 
 
 def _restore_own_files(real, saved):

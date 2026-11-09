@@ -731,6 +731,91 @@ class InterruptedRemovalTests(gf.GitTestCase):
             wt.remove(self.path, wt_root=self.wt_root)
         self.assertEqual(cm.exception.code, 'git_timeout')
 
+    def reserve(self, operation='pub-1'):
+        manifest = wt.read_manifest(self.path)
+        manifest['publication'] = operation
+        wt._write_json(self.manifest, manifest)
+
+    def assert_nothing_more_deleted(self):
+        self.assertTrue(os.path.exists(self.manifest))
+        self.assertTrue(os.path.isdir(os.path.join(self.path, '.git'))
+                        or os.path.isfile(os.path.join(self.path, '.git')))
+
+    def test_a_publication_blocks_a_forced_removal_before_it_starts(self):
+        self.reserve()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root, force=True)
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assertTrue(os.path.exists(os.path.join(self.path, self.tracked)))
+        self.assertNotIn('removing_at', wt.read_manifest(self.path))
+
+    def test_a_publication_outranks_finishing_the_removal(self):
+        self.interrupt()
+        self.reserve()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root, force=True)
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+        out = wt.sweep(wt_root=self.wt_root, is_owner_live=never_live,
+                       owner_meta=lambda _t: None, grace_s=0, gc_days=0)
+        self.assertEqual(out['removed'], [])
+        self.assertEqual([k['reason'] for k in out['kept']], ['publishing'])
+        self.assert_nothing_more_deleted()
+
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='owner-1')
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_will_not_finish_it_under_a_live_owner(self):
+        self.interrupt()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='someone-else', is_owner_live=lambda t: t == 'owner-1')
+        self.assertEqual((cm.exception.code, cm.exception.detail.get('owner_task_id')),
+                         ('busy', 'owner-1'))
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_will_not_finish_it_under_a_live_tenant(self):
+        self.interrupt()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='owner-1', is_owner_live=never_live,
+                      occupied_by=lambda _p: 'tenant-9')
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_finishes_it_for_the_task_replacing_its_owner(self):
+        self.interrupt()
+        info = wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                         task_id='owner-2', allow_owner='owner-1',
+                         is_owner_live=lambda t: t == 'owner-1',
+                         occupied_by=lambda _p: 'owner-1')
+        self.assertTrue(info['created'])
+        self.assertNotIn('removing_at', wt.read_manifest(info['path']))
+
+    def test_no_writer_is_launched_into_a_half_deleted_tree(self):
+        self.interrupt()
+        runner = mock.Mock()
+        result = wt.launch_writer(self.path, ['tmux'], runner=runner,
+                                  wt_root=self.wt_root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('interrupted', result.stderr)
+        self.assertNotIn('publication', result.stderr)
+        runner.assert_not_called()
+
+    def test_a_launch_waiting_on_a_long_delete_fails_as_a_result(self):
+        runner = mock.Mock()
+        with mock.patch.dict(os.environ, {'KC_WT_LOCK_TIMEOUT': '1'}), \
+                wt.locked(self.wt_root):
+            result = wt.launch_writer(self.path, ['tmux'], runner=runner,
+                                      wt_root=self.wt_root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('try again', result.stderr)
+        runner.assert_not_called()
+
     def test_the_manifest_survives_and_marks_the_removal(self):
         self.interrupt()
         self.assertTrue(os.path.exists(self.manifest))

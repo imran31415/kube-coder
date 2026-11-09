@@ -490,6 +490,17 @@ class WorktreeRouteTests(_IsolatedBase):
         status, body = self.call('DELETE', '/api/claude/tasks/nope-123/worktree')
         self.assertEqual(status, 404)
 
+    def test_a_publication_refuses_a_forced_removal_as_a_conflict(self):
+        _s, a = self.post_task(isolate=True)
+        path = a['worktree']['path']
+        manifest = worktrees.read_manifest(path)
+        manifest['publication'] = 'pub-1'
+        worktrees._write_json(os.path.join(path, worktrees.MANIFEST), manifest)
+        status, body = self.call(
+            'DELETE', f"/api/worktrees/app/{a['worktree']['slug']}?force=1")
+        self.assertEqual((status, body['code']), (409, 'busy'))
+        self.assertTrue(os.path.isdir(path))
+
     def test_registry_lists_leftovers_and_removes_them_only_with_force(self):
         # #853: a folder with no manifest used to be invisible and unremovable.
         _s, a = self.post_task(isolate=True)

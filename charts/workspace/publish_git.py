@@ -66,6 +66,9 @@ def identity(meta):
     if wt.get('removed_at') or not os.path.isdir(path):
         raise PublishError('worktree_missing', 'This Build worktree has been removed.')
     manifest = worktrees.read_manifest(path) or {}
+    if manifest.get('removing_at'):
+        # A half-deleted tree diffs as a mass deletion of tracked files (#853).
+        raise PublishError('worktree_missing', 'Removing this Build worktree was interrupted, so it cannot be published.')
     if manifest.get('task_id') != meta['task_id']:
         raise PublishError('owner_changed', 'This worktree belongs to another Build now.')
     common = text(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')
