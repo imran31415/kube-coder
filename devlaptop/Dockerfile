@@ -50,6 +50,11 @@ FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Ride out Ubuntu mirror blips: "Unable to connect to archive.ubuntu.com" failed
+# the smoke build on main and on open PRs at once (2026-11-09). Every apt-get
+# below picks this up, and the retries back off between attempts.
+RUN echo 'Acquire::Retries "8";' > /etc/apt/apt.conf.d/80-retries
+
 # `apt-get upgrade` patches base-image OS packages that ship with known CVEs
 # (e.g. libgnutls30t64, libgcrypt20) and auto-picks-up future base CVE fixes on
 # rebuild. See github.com/imran31415/kube-coder/issues/75.
