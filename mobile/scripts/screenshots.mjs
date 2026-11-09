@@ -15,6 +15,8 @@
  *
  * Prereq:  EXPO_PUBLIC_MOCK=1 npx expo export --platform web   (writes dist/)
  * Run:     node scripts/screenshots.mjs        (or: npm run screenshots)
+ *          SCREENSHOT_PLATFORM=android|ios limits the run to one store, so
+ *          refreshing one listing doesn't rewrite the other's tracked PNGs.
  * Output:  ../ios-assets/<device>/*.png  and  ../android-assets/<device>/*.png
  */
 import http from 'node:http';
@@ -35,8 +37,40 @@ const DEVICES = [
   { platform: 'ios', name: 'iphone-6.7', label: 'iPhone 6.7" (1290×2796)', w: 430, h: 932, scale: 3 },
   { platform: 'ios', name: 'iphone-6.5', label: 'iPhone 6.5" (1242×2688)', w: 414, h: 896, scale: 3 },
   { platform: 'ios', name: 'ipad-12.9', label: 'iPad 12.9" (2048×2732)', w: 1024, h: 1366, scale: 2 },
+  // Play wants exactly 9:16 portrait for every class — a 10:16 tablet frame
+  // (the natural 1600×2560) is off-spec.
   { platform: 'android', name: 'phone', label: 'Android phone (1080×1920)', w: 360, h: 640, scale: 3 },
-  { platform: 'android', name: 'tablet-10', label: 'Android 10" tablet (1600×2560)', w: 800, h: 1280, scale: 2 },
+  { platform: 'android', name: 'tablet-7', label: 'Android 7" tablet (1216×2160)', w: 608, h: 1080, scale: 2 },
+  { platform: 'android', name: 'tablet-10', label: 'Android 10" tablet (1620×2880)', w: 810, h: 1440, scale: 2 },
+];
+
+// Play caps each device class at 8 screenshots and shows them in filename
+// order, so Android keeps a curated subset, re-numbered to lead with the
+// strongest screens. Anything not listed here is skipped on Android.
+const PLAY_SET = {
+  '03-desktop.png': '01-desktop.png',
+  '02-task-detail.png': '02-task-detail.png',
+  '10-board.png': '03-board.png',
+  '09-chat.png': '04-chat.png',
+  '01-tasks.png': '05-builds.png',
+  '04-apps.png': '06-apps.png',
+  '06-memory.png': '07-memory.png',
+  '07-metrics.png': '08-metrics.png',
+};
+
+const ONLY_PLATFORM = process.env.SCREENSHOT_PLATFORM;
+
+const DEMO_CHAT = [
+  { seq: 1, ts: 1, role: 'user', type: 'message', text: "What's running and how much CPU am I using?" },
+  { seq: 2, ts: 2, role: 'assistant', type: 'tool_call', tool: { name: 'Bash', input: { command: 'kc status' } }, tool_id: 't1' },
+  { seq: 3, ts: 3, role: 'system', type: 'tool_result', text: 'ok', tool_use_id: 't1' },
+  {
+    seq: 4,
+    ts: 4,
+    role: 'assistant',
+    type: 'message',
+    text: "You're at 37% CPU and 2.1 GB of 4 GB memory, so there's plenty of headroom.\n\nRunning now: the /healthz build, the onboarding polish, and two web apps (storefront on 3000, another on 8080). The auth middleware refactor is waiting on you.",
+  },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -100,7 +134,9 @@ async function go(page, label) {
 }
 
 async function shots(page, device, outDir) {
-  const shot = async (file) => {
+  const shot = async (name) => {
+    const file = device.platform === 'android' ? PLAY_SET[name] : name;
+    if (!file) return;
     await sleep(450);
     await page.screenshot({ path: path.join(outDir, file) });
     console.log(`    ✓ ${device.name}/${file}`);
@@ -161,6 +197,29 @@ async function shots(page, device, outDir) {
   await go(page, 'Walkie-Talkie');
   await sleep(700);
   await shot('08-walkie.png');
+
+  // 10) Board — agent runs waiting on the user's decision
+  await go(page, 'Board');
+  await waitVisible(page.getByText('Needs review', { exact: true }), 'Board');
+  // Keep the first card's Approve/Reject row on screen on short phone frames.
+  await page.getByLabel('Send back').first().scrollIntoViewIfNeeded();
+  await shot('10-board.png');
+
+  // 9) Chat — the demo build has no chat backend, so serve one past thread's
+  // transcript here (figures match the mock Builds/Metrics screens) and open it.
+  await page.route('**/api/hypervisor/threads/th-1*', (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' },
+      json: { thread: { id: 'th-1', title: 'Ship the chart change', assistant: 'claude', status: 'idle' }, events: DEMO_CHAT },
+    }),
+  );
+  await go(page, 'Chat');
+  await clickVisible(page.getByLabel(/Past chats/), 'past chats');
+  await sleep(500);
+  await clickVisible(page.getByText('Ship the chart change'), 'demo thread');
+  await waitVisible(page.getByText(/37% CPU/), 'demo transcript');
+  await shot('09-chat.png');
 }
 
 async function main() {
@@ -169,7 +228,7 @@ async function main() {
   console.log(`Serving ${distDir} at ${url}`);
   const browser = await chromium.launch();
   try {
-    for (const device of DEVICES) {
+    for (const device of DEVICES.filter((d) => !ONLY_PLATFORM || d.platform === ONLY_PLATFORM)) {
       const base = device.platform === 'ios' ? iosDir : androidDir;
       const outDir = path.join(base, device.name);
       await rm(outDir, { recursive: true, force: true });

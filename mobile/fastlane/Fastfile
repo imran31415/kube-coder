@@ -27,7 +27,7 @@ def stage_android_screenshots
   require "fileutils"
   src_root = File.join(REPO_ROOT, "android-assets")
   images = File.join(__dir__, "metadata", "android", "en-US", "images")
-  mapping = { "phone" => "phoneScreenshots", "tablet-10" => "tenInchScreenshots" }
+  mapping = { "phone" => "phoneScreenshots", "tablet-7" => "sevenInchScreenshots", "tablet-10" => "tenInchScreenshots" }
   count = 0
   mapping.each do |cls, play_type|
     dst = File.join(images, play_type)
@@ -88,6 +88,9 @@ end
 # submit config references). That file is a secret and is git-ignored.
 PLAY_PKG = ENV["SUPPLY_PACKAGE_NAME"] || "app.kubecoder.mobile"
 PLAY_KEY = ENV["SUPPLY_JSON_KEY"] || File.join(REPO_ROOT, "mobile", "play-service-account.json")
+# A listing is per-app, but supply still looks up a release on some track and
+# raises NoMethodError on one with no releases, as `production` is before launch.
+PLAY_TRACK = ENV["SUPPLY_TRACK"] || "internal"
 
 platform :android do
   desc "Push Play Store listing text + screenshots to Google Play (no binary)"
@@ -96,6 +99,7 @@ platform :android do
     supply(
       package_name: PLAY_PKG,
       json_key: PLAY_KEY,
+      track: PLAY_TRACK,
       skip_upload_apk: true,
       skip_upload_aab: true,
       # Changelogs are tied to a release/track; a listing-only push doesn't need
@@ -109,6 +113,7 @@ platform :android do
     supply(
       package_name: PLAY_PKG,
       json_key: PLAY_KEY,
+      track: PLAY_TRACK,
       skip_upload_apk: true,
       skip_upload_aab: true,
       skip_upload_images: true,
