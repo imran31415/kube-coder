@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-android-screenshots mobile-ensure-ios-version mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
+.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-android-screenshots mobile-ensure-ios-version mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-ios-listing mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
 
 # =============================================================================
 # Generic per-user helpers
@@ -539,8 +539,13 @@ mobile-metadata: ## Push App Store listing TEXT to App Store Connect (no screens
 mobile-metadata-text: ## Alias of mobile-metadata — App Store listing text only
 	cd $(MOBILE_DIR) && bundle exec fastlane ios metadata_text
 
-mobile-ios-screenshots: ## Sync ios-assets/ screenshots to the App Store listing (deterministic — deletes then uploads exactly 7/device, no deliver dupes)
+mobile-ios-screenshots: ## Sync ios-assets/ screenshots to the App Store listing (deterministic — deletes then uploads each device's PNGs, no deliver dupes)
 	cd $(MOBILE_DIR) && set -a && . ./fastlane/.env && set +a && bundle exec ruby scripts/sync-ios-screenshots.rb
+
+mobile-ios-listing: ## Recapture iOS screenshots and upload them to the next App Store version (stops first if that version is already submitted)
+	cd $(MOBILE_DIR) && set -a && . ./fastlane/.env && set +a && bundle exec ruby scripts/sync-ios-screenshots.rb --check
+	SCREENSHOT_PLATFORM=ios $(MAKE) mobile-screenshots
+	$(MAKE) mobile-ios-screenshots
 
 mobile-metadata-download: ## Pull the live App Store listing into mobile/fastlane/metadata/
 	cd $(MOBILE_DIR) && bundle exec fastlane deliver download_metadata

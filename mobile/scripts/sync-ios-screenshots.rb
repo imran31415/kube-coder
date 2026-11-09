@@ -3,8 +3,8 @@
 # Why this exists: fastlane `deliver` uploads screenshots, then runs a second
 # verification pass that RE-uploads already-present images, leaving duplicates
 # (our 7 + ~3 dupes = the 10-cap per device). This script bypasses that flaky
-# path: per device it deletes every screenshot, then uploads exactly the 7
-# source PNGs from ios-assets/<class>/ once, in 01→07 order — no retry pass.
+# path: per device it deletes every screenshot, then uploads the source PNGs
+# from ios-assets/<class>/ once, in filename order — no retry pass.
 #
 # It only touches the EDITABLE (Prepare for Submission) iOS version's en-US
 # screenshots. Metadata text is deliver's job (`make mobile-metadata-text`).
@@ -42,13 +42,21 @@ edit = app.get_edit_app_store_version(platform: "IOS")
 raise "no editable iOS version — create one in App Store Connect first" unless edit
 log "editable version #{edit.version_string} (#{edit.app_store_state})"
 
+# Spaceship's "edit" version includes WAITING_FOR_REVIEW, but this script starts
+# by deleting screenshots, so never let it near a submitted version.
+UPLOADABLE_STATES = %w(PREPARE_FOR_SUBMISSION DEVELOPER_REJECTED REJECTED METADATA_REJECTED INVALID_BINARY).freeze
+unless UPLOADABLE_STATES.include?(edit.app_store_state)
+  abort "[sync] #{edit.version_string} is #{edit.app_store_state}, nothing changed. Create the next version in App Store Connect first."
+end
+exit if ARGV.include?("--check")
+
 loc = edit.get_app_store_version_localizations.find { |l| l.locale == "en-US" }
 raise "no en-US localization" unless loc
 
 sets = loc.get_app_screenshot_sets
 
 DEVICES.each do |folder, display_type|
-  pngs = Dir.glob(File.join(IOS_ASSETS, folder, "*.png")).sort   # 01..07
+  pngs = Dir.glob(File.join(IOS_ASSETS, folder, "*.png")).sort
   raise "no PNGs in ios-assets/#{folder}" if pngs.empty?
 
   set = sets.find { |s| s.screenshot_display_type == display_type } ||
@@ -63,9 +71,9 @@ DEVICES.each do |folder, display_type|
     log "  + #{File.basename(png)}"
   end
 
-  # Enforce 01→07 order by filename. The set is briefly locked right after
+  # Enforce filename order. The set is briefly locked right after
   # uploads finish processing ("Can't Add/Remove Relationship when reorder"),
-  # so retry with backoff, then continue — uploads already go up in 01→07 order,
+  # so retry with backoff, then continue — uploads already go up in filename order,
   # so a skipped reorder is cosmetic at worst.
   final = set.app_screenshots.sort_by(&:file_name)
   ordered = false

@@ -39,7 +39,11 @@ def stage_android_screenshots
     end
   end
   UI.user_error!("No screenshots found under android-assets/ — run `make mobile-screenshots` first") if count.zero?
-  UI.message("Staged #{count} Play screenshots into metadata/android/en-US/images/")
+  # Unlike screenshots, these sit directly in images/ under fixed names.
+  { "feature-graphic-1024x500.png" => "featureGraphic.png", "icon-512.png" => "icon.png" }.each do |src, name|
+    FileUtils.cp(File.join(src_root, "store", src), File.join(images, name))
+  end
+  UI.message("Staged #{count} Play screenshots, feature graphic and icon into metadata/android/en-US/images/")
 end
 
 # Authenticate with an App Store Connect API key when one is configured (the

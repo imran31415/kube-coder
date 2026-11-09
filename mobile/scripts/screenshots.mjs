@@ -44,10 +44,10 @@ const DEVICES = [
   { platform: 'android', name: 'tablet-10', label: 'Android 10" tablet (1620×2880)', w: 810, h: 1440, scale: 2 },
 ];
 
-// Play caps each device class at 8 screenshots and shows them in filename
-// order, so Android keeps a curated subset, re-numbered to lead with the
-// strongest screens. Anything not listed here is skipped on Android.
-const PLAY_SET = {
+// Play caps each device class at 8 screenshots (App Store: 10) and both stores
+// show them in filename order, so both get this one curated subset, re-numbered
+// to lead with the strongest screens. Anything not listed here is skipped.
+const STORE_SET = {
   '03-desktop.png': '01-desktop.png',
   '02-task-detail.png': '02-task-detail.png',
   '10-board.png': '03-board.png',
@@ -135,7 +135,7 @@ async function go(page, label) {
 
 async function shots(page, device, outDir) {
   const shot = async (name) => {
-    const file = device.platform === 'android' ? PLAY_SET[name] : name;
+    const file = STORE_SET[name];
     if (!file) return;
     await sleep(450);
     await page.screenshot({ path: path.join(outDir, file) });
