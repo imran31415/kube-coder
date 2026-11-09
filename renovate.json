@@ -45,7 +45,8 @@
       "matchStrings": [
         "kanikoImage: (?<depName>gcr\\.io/kaniko-project/executor):(?<currentValue>[^\\s@\"]+)(@(?<currentDigest>sha256:[a-f0-9]+))?"
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "autoReplaceStringTemplate": "kanikoImage: {{{depName}}}:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}}"
     },
     {
       "customType": "regex",
@@ -91,6 +92,11 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "browser-dockerfile/Dockerfile is deprecated and kept for reference only. Its base image is in a private registry Renovate has no credentials for, so looking it up only produced a `No docker auth found` warning on the dependency dashboard every run.",
+      "matchDepNames": ["registry.digitalocean.com/resourceloop/coder"],
+      "enabled": false
+    },
     {
       "description": "Group the devlaptop + provisioner image CLI/tool bumps into one weekly PR.",
       "matchFileNames": ["devlaptop/Dockerfile", "provisioner/Dockerfile"],
@@ -145,6 +151,19 @@
       "description": "Expo SDK pins react, react-dom and react-native to exact versions (react-native's renderer is built for one React release). Bumping them alone fails expo-doctor and can crash the app with 'Incompatible React versions', so they move only with an Expo SDK upgrade (`npx expo install --fix`), never as their own PR. See #844.",
       "matchFileNames": ["mobile/package.json"],
       "matchPackageNames": ["react", "react-dom", "react-native"],
+      "enabled": false
+    },
+    {
+      "description": "These native modules are versioned by the Expo SDK too: expo-doctor fails if one moves on its own, so they move with an SDK upgrade (`npx expo install --fix`), not as their own PRs. Same reason as the rule above.",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["react-native-safe-area-context", "react-native-screens", "react-native-webview", "@react-native-async-storage/async-storage"],
+      "enabled": false
+    },
+    {
+      "description": "An Expo SDK major is a coordinated upgrade (`npx expo install expo@^N --fix` moves the native modules and React with it), not a dependency bump Renovate can do alone. SDK patch releases stay tracked, because expo-doctor fails CI when they are missed (#849).",
+      "matchFileNames": ["mobile/package.json"],
+      "matchPackageNames": ["expo", "expo-*", "@expo/*"],
+      "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
