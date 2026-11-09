@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -28,6 +29,7 @@ sys.path.insert(0, WORKSPACE)
 import server  # noqa: E402
 
 CTM = server.ClaudeTaskManager
+_REAL_THREAD = threading.Thread  # setUp swaps server.threading.Thread
 
 NOW = 10_000.0
 IDLE = NOW - 10_000  # idle far longer than any grace
@@ -44,15 +46,23 @@ class _InlineThread:
 
 
 class FakeTmux:
-    """subprocess.run stub: `alive` controls has-session; every argv is kept."""
+    """subprocess.run stub: `alive` controls has-session; every argv is kept.
+
+    Only calls from the thread that built it are recorded. The stub replaces
+    subprocess.run for the whole process, so a daemon thread left running by
+    an earlier test can land here mid-test; the reaper itself runs on this
+    thread (see _InlineThread).
+    """
 
     def __init__(self, alive=True):
         self.alive = alive
         self.calls = []
+        self._owner = threading.get_ident()
 
     def __call__(self, cmd, **kwargs):
         argv = list(cmd)
-        self.calls.append(argv)
+        if threading.get_ident() == self._owner:
+            self.calls.append(argv)
         if argv[:2] == ['tmux', 'has-session']:
             return mock.Mock(returncode=0 if self.alive else 1,
                              stdout='', stderr='')
@@ -166,6 +176,15 @@ class CandidateTests(ReaperBase):
         _, tmux, _ = self._reap()
         self.assertNotIn('capture-pane', tmux.verbs())
         self.assertNotIn('send-keys', tmux.verbs())
+
+    def test_a_stray_thread_is_not_recorded_against_the_reaper(self):
+        # The stub is process-wide; another test's daemon thread polling a pane
+        # must not read as the reaper having captured the screen.
+        tmux = FakeTmux()
+        real_thread = _REAL_THREAD(target=tmux, args=(['tmux', 'capture-pane'],))
+        real_thread.start()
+        real_thread.join()
+        self.assertEqual(tmux.verbs(), [])
 
 
 class RetryTests(ReaperBase):
