@@ -172,15 +172,25 @@ def _git_env():
     return env
 
 
+def _managed_root(workdir):
+    """The managed worktree `workdir` is inside, or None."""
+    from pathlib import Path
+    path = Path(os.path.realpath(workdir or '/home/dev'))
+    return next((p for p in (path, *path.parents) if (p / MANIFEST).is_file()), None)
+
+
+def launch_takes_lock(workdir):
+    """Whether launching in `workdir` can wait on the worktree lock first."""
+    return _managed_root(workdir) is not None
+
+
 def launch_writer(workdir, argv, *, runner=None, wt_root=None, **kwargs):
     """Serialize managed writer launch with publication and cleanup.
 
     Task metadata must be on disk before launching, so publication can see
     the session after this lock is released. Unmanaged paths cost no lock.
     """
-    from pathlib import Path
-    path = Path(os.path.realpath(workdir or '/home/dev'))
-    managed = next((p for p in (path, *path.parents) if (p / MANIFEST).is_file()), None)
+    managed = _managed_root(workdir)
     run = runner or _RUN
     if managed is None:
         return run(argv, **kwargs)

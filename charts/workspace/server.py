@@ -3728,7 +3728,9 @@ class ClaudeTaskManager:
         arbitrarily delayed — or never fire if nothing polls (issue #96).
 
         Best-effort: a bad task dir is skipped, never raised. Terminal tasks
-        are skipped cheaply (no tmux subprocess).
+        are skipped cheaply (no tmux subprocess), except one another process
+        settled whose side effects have not run yet, which is claimed once
+        (also without tmux) and then skipped like the rest.
         """
         ClaudeTaskManager.ensure_tasks_dir()
         try:
@@ -3747,7 +3749,8 @@ class ClaudeTaskManager:
             except (json.JSONDecodeError, OSError):
                 continue
             # Cheap skip for terminal tasks — avoids the tmux has-session call.
-            if meta.get('status') not in task_status.LIVE_STATUSES:
+            if meta.get('status') not in task_status.LIVE_STATUSES and \
+                    not task_status.needs_settle_effects(meta):
                 continue
             try:
                 ClaudeTaskManager._reconcile_status(meta, task_dir)
@@ -4221,6 +4224,12 @@ class ClaudeTaskManager:
     #: its error. In-process on purpose: a restart ends every launch with it.
     _launching = set()
 
+    #: Seconds after `created_at` that a sub-agent's missing session means the
+    #: orchestrator has not started tmux yet. `_launching` cannot cover this:
+    #: that launch runs in another process. Bounded, so a session that really
+    #: died still settles. See `_orchestrator_still_launching`.
+    _ORCHESTRATOR_LAUNCH_GRACE = 15
+
     @staticmethod
     def _transition(task_dir, to, *, guard=None, record=None, fields=None,
                     at=None, end_session=False, screen=''):
@@ -4320,6 +4329,47 @@ class ClaudeTaskManager:
             except Exception as e:
                 print(f'[task-lifecycle] {task_id}: side effect of {to} '
                       f'failed: {type(e).__name__}: {e}', file=sys.stderr)
+
+    @staticmethod
+    def _run_missed_settle_effects(meta, task_dir):
+        """Finish the job when another process ended this Build.
+
+        The orchestrator writes a terminal status without any of what
+        `_after_transition` does. Only a record it stamped qualifies (see
+        task_status.SETTLED_BY_ORCHESTRATOR), so a Build this server settled,
+        and every record from before the stamp existed, is left alone.
+
+        The claim is made under the task lock and persisted before anything
+        runs, so concurrent reconcilers and a restart cannot repeat the
+        effects. A crash after the claim loses them, as with `hook_fired_at`.
+        """
+        cls = ClaudeTaskManager
+        if not task_status.needs_settle_effects(meta):
+            return
+        claimed = fire_hook = False
+        now = time.time()
+
+        def claim(m):
+            nonlocal claimed, fire_hook
+            if not task_status.needs_settle_effects(m):
+                return False
+            m[task_status.SETTLE_EFFECTS_AT] = now
+            # The orchestrator's kill and launch failure don't write this, and
+            # the task.status event and the list both report it.
+            if not m.get('finished_at'):
+                m['finished_at'] = m.get('killed_at') or now
+            if m.get('response_url') and not m.get('hook_fired_at'):
+                m['hook_fired_at'] = now
+                fire_hook = True
+            claimed = True
+
+        updated = cls._atomic_update_meta(task_dir, claim)
+        if updated is not None and claimed:
+            task_id = updated.get('task_id') or os.path.basename(task_dir)
+            cls._after_transition(updated, task_dir, task_id,
+                                  updated.get('status'), fire_hook,
+                                  session_was_gone=True)
+        cls._adopt_meta(meta, updated)
 
     @staticmethod
     def _fail_launch(task_dir, meta, error):
@@ -5704,8 +5754,10 @@ class ClaudeTaskManager:
         # final figure includes the last turn, then stops for good.
         ClaudeTaskManager.ingest_usage(meta, task_dir)
         
-        # If task is already finished, no need to check further
+        # If task is already finished, no need to check further -- beyond
+        # running what it skipped, if another process is what finished it.
         if current_status not in task_status.LIVE_STATUSES:
+            ClaudeTaskManager._run_missed_settle_effects(meta, task_dir)
             return
         if meta.get('task_id') in ClaudeTaskManager._launching:
             return
@@ -5731,17 +5783,37 @@ class ClaudeTaskManager:
             boot = ClaudeTaskManager.boot_id()
             task_boot = meta.get('boot_id') or ''
             wiped = bool(boot) and bool(task_boot) and task_boot != boot
-            # `termination_reason` is why it ended, for an orchestrator
-            # deciding whether to recover. Its `terminated_at` is separate from
-            # `finished_at` in meaning because a terminated task did not finish
-            # -- this is when we NOTICED, which is boot time, not the moment
-            # the work stopped.
+            # A sub-agent's spawn wrapper records how its CLI exited. Same
+            # precedence as the orchestrator's _reconcile_status, so the status
+            # does not depend on which process noticed first: a code at all
+            # means the wrapper ran to its end, restart or no restart.
+            exit_code = ClaudeTaskManager._read_exit_code(task_dir)
+            if exit_code is None and not wiped and \
+                    ClaudeTaskManager._orchestrator_still_launching(meta):
+                return
+            fields = {}
+            if exit_code is not None and exit_code != 0:
+                to = 'error'
+                fields['error'] = f'agent exited with code {exit_code}'
+            elif exit_code is None and wiped:
+                # `termination_reason` is why it ended, for an orchestrator
+                # deciding whether to recover. Its `terminated_at` is separate
+                # from `finished_at` in meaning because a terminated task did
+                # not finish -- this is when we NOTICED, which is boot time,
+                # not the moment the work stopped.
+                to = 'terminated'
+                fields['termination_reason'] = 'pod_restart'
+            else:
+                to = 'completed'
+            if exit_code is not None:
+                fields['exit_code'] = exit_code
             updated, _ = ClaudeTaskManager._transition(
-                task_dir, 'terminated' if wiped else 'completed',
-                fields={'termination_reason': 'pod_restart'} if wiped else None)
+                task_dir, to, fields=fields)
             ClaudeTaskManager._adopt_meta(meta, updated)
+            # If the orchestrator got there first, `meta` was stale until now.
+            ClaudeTaskManager._run_missed_settle_effects(meta, task_dir)
             return
-        
+
         # Session is alive. Adopt it into this boot if it predates us (#792):
         # task.json may have been written by an older image that never stamped
         # a boot, or by a process whose /tmp marker was unreadable. Stamping it
@@ -5797,6 +5869,33 @@ class ClaudeTaskManager:
                 ClaudeTaskManager._adopt_meta(meta, updated)
         elif current_status == 'waiting-for-input':
             ClaudeTaskManager._refresh_waiting_reason(meta, task_dir, screen)
+
+    @staticmethod
+    def _read_exit_code(task_dir):
+        """The exit status the orchestrator's spawn wrapper persisted, or None
+        (a Build this server launched never has one)."""
+        try:
+            with open(os.path.join(task_dir, 'exit_code')) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _orchestrator_still_launching(meta):
+        """Whether a missing session may just be a sub-agent tmux hasn't
+        started yet, in which case calling it finished would be permanent.
+
+        `depth` is only ever written by the orchestrator's spawn. A launch in a
+        managed worktree queues on the worktree lock first, so it gets that
+        lock's whole timeout on top.
+        """
+        created = meta.get('created_at')
+        if 'depth' not in meta or not isinstance(created, (int, float)):
+            return False
+        grace = ClaudeTaskManager._ORCHESTRATOR_LAUNCH_GRACE
+        if _WORKTREES_AVAILABLE and worktrees.launch_takes_lock(meta.get('workdir')):
+            grace += worktrees.lock_timeout()
+        return time.time() - created < grace
 
     @staticmethod
     def _adopt_meta(meta, fresh):
@@ -7668,6 +7767,8 @@ class FeedManager:
         # notification's target, and both clients resolve a `board:` ref to the
         # item's approval card.
         review = FeedManager._board_review_link(meta)
+        if meta.get('parent_task_id') and not review:
+            return FeedManager._emit_fan_out_rollup(meta)
         links = [{'label': 'Open task', 'ref': f'task:{tid}'}]
         if review:
             links.insert(0, review)
@@ -7680,11 +7781,46 @@ class FeedManager:
             dedupe_key=f'task:{tid}:terminal',
         )
 
+    #: Holds a fan-out's count and its emit together, so two children settling
+    #: at once cannot leave the older count as the row's last word.
+    _rollup_lock = threading.Lock()
+
+    @staticmethod
+    def _emit_fan_out_rollup(meta):
+        """One row per parent for all its sub-agents, updated in place. A
+        fan-out is the parent's work: a row each would bury the rest of the
+        Feed. `activity` and not waiting, so it never pushes."""
+        parent_id = meta['parent_task_id']
+        parent = ClaudeTaskManager.read_meta(parent_id) or {}
+        lines = (parent.get('prompt') or '').strip().splitlines()
+        label = lines[0][:80] if lines else parent_id
+        with FeedManager._rollup_lock:
+            statuses = [m.get('status')
+                        for m in ProjectsManager._scan_task_metas()
+                        if m.get('parent_task_id') == parent_id]
+            done = sum(s in task_status.TERMINAL_STATUSES for s in statuses)
+            failed = sum(s in task_status.FAILED_STATUSES for s in statuses)
+            title = f'Sub-agents of {label}: {done} of {len(statuses)} done'
+            if failed:
+                title += f', {failed} failed or stopped'
+            return FeedManager.emit(
+                'activity', title,
+                source='system:task',
+                project_id=FeedManager._project_for_meta(meta),
+                links=[{'label': 'Open parent task', 'ref': f'task:{parent_id}'}],
+                dedupe_key=f'task:{parent_id}:subagents',
+            )
+
     @staticmethod
     def emit_task_waiting(meta):
         """A task flipped to waiting-for-input — flagged 'waiting on you'."""
         tid = meta.get('task_id')
         if not tid:
+            return None
+        # A sub-agent is waiting on its parent, not on the person: a headless
+        # one with a quiet screen reads as waiting after a minute and a half,
+        # and this row is what pushes to a phone.
+        if meta.get('parent_task_id'):
             return None
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
         # Deliberately NOT carrying the board approval link that

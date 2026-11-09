@@ -56,9 +56,31 @@ MISSION_STATE = {
 }
 
 
+#: task.json `settled_by`: this process wrote the terminal status, and it runs
+#: none of what a status change implies. Only the sub-agent orchestrator stamps
+#: it, so a record without it is either the server's own or pre-dates this
+#: field. That absence is what keeps old records from ever being replayed: no
+#: other field tells a pre-upgrade record from one settled a moment ago.
+SETTLED_BY_ORCHESTRATOR = 'orchestrator'
+
+#: task.json: when the server claimed the side effects of a settlement another
+#: process wrote. Claimed under the task lock, before they run (at-most-once,
+#: as `hook_fired_at` is).
+SETTLE_EFFECTS_AT = 'settle_effects_at'
+
+
 def can_transition(current, to):
     """Whether a Build in status `current` may move to status `to`."""
     return to in TRANSITIONS.get(current, ())
+
+
+def needs_settle_effects(meta):
+    """Whether another process ended this Build and the server has yet to run
+    the side effects it skipped. Pure, so a reconciler tick can ask it about
+    every record it reads without touching tmux or the lock."""
+    return (meta.get('settled_by') == SETTLED_BY_ORCHESTRATOR
+            and meta.get('status') in TERMINAL_STATUSES
+            and not meta.get(SETTLE_EFFECTS_AT))
 
 
 def atomic_update_meta(task_dir, mutate_fn):

@@ -203,6 +203,9 @@ def _transition(task_dir: str, to: str, fields: Optional[Dict[str, Any]] = None,
         if not task_status.can_transition(m.get('status'), to):
             return record is not None  # keep only what `record` wrote
         m['status'] = to
+        # Tells the dashboard server this settlement is not its own, so it
+        # runs the side effects this process does not (task_status).
+        m['settled_by'] = task_status.SETTLED_BY_ORCHESTRATOR
         m.update(fields or {})
         m.pop('waiting_for_input', None)
         m.pop('last_input_prompt', None)
