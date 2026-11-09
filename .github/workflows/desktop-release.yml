@@ -1,0 +1,199 @@
+name: Desktop release
+
+# Builds the desktop client's installers (desktop/, #833) from a
+# `desktop-v<X.Y.Z>` tag and attaches them to a DRAFT GitHub prerelease, which a
+# maintainer reads and publishes by hand. The workspace's own release tags are
+# `v<X.Y.Z>` (release.yml); this pattern does not match them, nor they it.
+#
+# A desktop release must never become the repo's "latest" release: the
+# workspace controller reads /releases/latest to decide whether workspaces have
+# an update (latest_version in charts/workspace-controller/controller.py).
+# GitHub leaves drafts and prereleases out of that endpoint, which is why this
+# is a prerelease and stays one when published.
+on:
+  push:
+    tags: ['desktop-v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One draft, created before the matrix: tauri-action jobs that each look for
+  # a release by tag race and can leave several drafts.
+  draft:
+    name: Create the draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Tag must match the app version
+        run: |
+          version=$(jq -r .version desktop/src-tauri/tauri.conf.json)
+          if [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
+            echo "::error::$GITHUB_REF_NAME does not match desktop/src-tauri/tauri.conf.json (desktop-v$version)"
+            exit 1
+          fi
+
+      # A rerun reuses its draft. A tag that was already published has no draft,
+      # so the POST fails (GitHub allows one release per tag) rather than
+      # replacing installers people may have downloaded.
+      - name: Create or reuse the draft
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: |
+            Installers for the kube-coder desktop client. It runs nothing locally; it connects to a remote kube-coder workspace.
+
+            Check the workflow run's warnings before publishing: a build made without signing credentials is unsigned, and the OS will warn on install.
+        run: |
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq '.[] | select(.draft and .tag_name == env.GITHUB_REF_NAME) | .id' | head -n1)
+          if [ -z "$id" ]; then
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$GITHUB_REF_NAME" \
+              -f name="Desktop ${GITHUB_REF_NAME#desktop-}" \
+              -f body="$BODY" \
+              -F draft=true \
+              -F prerelease=true \
+              -f make_latest=false \
+              --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: draft
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported image, not ubuntu-latest: a binary only runs
+          # on a glibc at least as new as the one it was built against.
+          - name: linux-x64
+            os: ubuntu-22.04
+            bundles: deb,appimage
+            targets: ''
+            args: ''
+          # Universal (arm64 + x86_64) in one .dmg.
+          - name: macos-universal
+            os: macos-latest
+            bundles: dmg
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            bundles: msi,nsis
+            targets: ''
+            args: ''
+          - name: windows-arm64
+            os: windows-latest
+            bundles: msi,nsis
+            targets: aarch64-pc-windows-msvc
+            args: --target aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            mobile/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf
+
+      - name: Rust toolchain
+        shell: bash
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if [ -n "$TARGETS" ]; then
+            # Split on spaces: one rustup argument per target.
+            # shellcheck disable=SC2086
+            rustup target add $TARGETS
+          fi
+
+      - name: Install mobile deps (the bundled UI)
+        run: npm ci --no-audit --no-fund
+        working-directory: mobile
+
+      - name: Install desktop deps (Tauri CLI)
+        run: npm ci --no-audit --no-fund
+        working-directory: desktop
+
+      # Tauri tries to sign as soon as these variables exist, even empty ones,
+      # so a repo without the secrets must not export them at all. Half a set
+      # fails, since it would otherwise ship signed but not notarized.
+      - name: macOS signing credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          names=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          missing=()
+          for name in "${names[@]}"; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -eq "${#names[@]}" ]; then
+            echo "::warning::No Apple signing secrets are set: this .dmg is unsigned and not notarized."
+            exit 0
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Incomplete Apple signing secrets, missing: ${missing[*]}"
+            exit 1
+          fi
+          for name in "${names[@]}"; do
+            printf '%s=%s\n' "$name" "$(printf '%s' "${!name}" | tr -d '\r\n')" >> "$GITHUB_ENV"
+          done
+
+      # Authenticode is not wired up yet: how depends on the kind of
+      # certificate the maintainer gets (#833, question 4).
+      - name: Note unsigned Windows build
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "::warning::This Windows installer is not Authenticode-signed; SmartScreen will warn on install."
+
+      # beforeBuildCommand exports the mobile web build into desktop/dist.
+      - name: Build and attach to the draft
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # linuxdeploy is itself an AppImage; runners have no FUSE for it.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          projectPath: desktop
+          tauriScript: npx tauri
+          args: --bundles ${{ matrix.bundles }} ${{ matrix.args }}
+          # No updater yet: it needs a signing key pair the maintainer holds.
+          uploadUpdaterJson: false

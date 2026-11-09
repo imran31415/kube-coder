@@ -6,8 +6,9 @@ A low-footprint desktop client for a kube-coder workspace, built with
 runs nothing locally. It sits in the tray, shows what needs you, raises native
 notifications, badges the dock and opens straight into a review or a Build.
 
-Phase 1 of [#833](https://github.com/imran31415/kube-coder/issues/833).
-Signing, notarization, auto-update and release publishing are Phase 2.
+Tracked in [#833](https://github.com/imran31415/kube-coder/issues/833). Tagged
+draft releases exist (see *Releasing*); Windows signing and auto-update do not
+yet, and macOS signing is wired up but needs credentials.
 
 ## Architecture
 
@@ -228,7 +229,7 @@ webview.
 Xcode command-line tools. `npx tauri build --bundles dmg --target
 universal-apple-darwin` (after `rustup target add aarch64-apple-darwin
 x86_64-apple-darwin`) makes one universal `.dmg`. Unsigned builds need a
-right-click → Open the first time; signing is Phase 2.
+right-click → Open the first time.
 
 ### Windows
 
@@ -271,6 +272,43 @@ Alongside the builds, a **memory soak** job (`scripts/soak.mjs`, ~2 minutes)
 loads the exported UI in headless Chromium with a stand-in for the Tauri
 bridge and fails if the JS heap grows under a busy workspace's workload, or if
 a hidden window still polls or animates (see *Under a busy workspace* below).
+
+### Releasing
+
+Set the same version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
+`package.json`, run `cargo check` in `src-tauri` so `Cargo.lock` follows (CI
+builds with `--locked`), merge it, then push a matching tag from that commit:
+
+```bash
+git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
+```
+
+`.github/workflows/desktop-release.yml` refuses a tag that does not match
+`tauri.conf.json`, creates one draft prerelease and attaches the Linux x64
+(`.deb`, `.AppImage`), macOS universal (`.dmg`) and Windows x64 and arm64
+(`.msi`, NSIS `.exe`) installers. Nothing is public until a maintainer publishes
+the draft.
+
+**Keep it a prerelease when you publish.** The workspace controller reads the
+repo's `releases/latest` to offer workspace updates, and GitHub leaves
+prereleases out of that endpoint. Ticking "Set as the latest release" on a
+desktop release breaks the update check.
+
+macOS builds are signed and notarized when all six of these Actions secrets
+are set, and unsigned, with a warning on the run, when none are. Setting only
+some of them fails the build.
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | the Developer ID Application `.p12`, base64-encoded |
+| `APPLE_CERTIFICATE_PASSWORD` | the password of that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID` | the Apple ID used to notarize |
+| `APPLE_PASSWORD` | an app-specific password for that Apple ID |
+| `APPLE_TEAM_ID` | the Apple Developer team id |
+
+Windows builds are not signed yet, so SmartScreen warns on install. Auto-update
+is not built; it needs an updater key pair held by the maintainer.
 
 ## Tests
 
