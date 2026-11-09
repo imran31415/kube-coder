@@ -46,6 +46,39 @@ beforeEach(() => {
   sweepMock.mockReset();
 });
 
+describe('Settings → Worktrees leftovers (#853)', () => {
+  const item = {
+    repo: 'app', slug: 't-gone', path: '/home/dev/.worktrees/app/t-gone', has_git: true,
+    modified_at: 1, live: false,
+  };
+
+  it('offers nothing when the server reports no leftovers', async () => {
+    listMock.mockResolvedValue(list([row()]));
+    render(<WorktreesSection />);
+    await screen.findByText('kc/t-1');
+    expect(screen.queryByText('Leftover folders')).not.toBeInTheDocument();
+  });
+
+  it('removes a leftover with force, after warning that it is still a checkout', async () => {
+    listMock.mockResolvedValue(list([], { leftovers: [item] }));
+    removeMock.mockResolvedValue({ removed: true, path: item.path } as never);
+    render(<WorktreesSection />);
+    await screen.findByText('Leftover folders');
+    fireEvent.click(screen.getByRole('button', { name: /Remove/ }));
+    expect(await screen.findByText(/anything uncommitted in it is lost/)).toBeInTheDocument();
+    expect(removeMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete folder' }));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith('app', 't-gone', true));
+  });
+
+  it('will not offer to remove a leftover a live task is working in', async () => {
+    listMock.mockResolvedValue(list([], { leftovers: [{ ...item, live: true }] }));
+    render(<WorktreesSection />);
+    await screen.findByText('in use');
+    expect(screen.getByRole('button', { name: /Remove/ })).toBeDisabled();
+  });
+});
+
 describe('Settings → Worktrees (#701)', () => {
   it('lists every worktree with its owner, state and why it was kept', async () => {
     listMock.mockResolvedValue(list([

@@ -490,6 +490,38 @@ class WorktreeRouteTests(_IsolatedBase):
         status, body = self.call('DELETE', '/api/claude/tasks/nope-123/worktree')
         self.assertEqual(status, 404)
 
+    def test_a_publication_refuses_a_forced_removal_as_a_conflict(self):
+        _s, a = self.post_task(isolate=True)
+        path = a['worktree']['path']
+        manifest = worktrees.read_manifest(path)
+        manifest['publication'] = 'pub-1'
+        worktrees._write_json(os.path.join(path, worktrees.MANIFEST), manifest)
+        status, body = self.call(
+            'DELETE', f"/api/worktrees/app/{a['worktree']['slug']}?force=1")
+        self.assertEqual((status, body['code']), (409, 'busy'))
+        self.assertTrue(os.path.isdir(path))
+
+    def test_registry_lists_leftovers_and_removes_them_only_with_force(self):
+        # #853: a folder with no manifest used to be invisible and unremovable.
+        _s, a = self.post_task(isolate=True)
+        stray = os.path.join(os.path.dirname(a['worktree']['path']), 'stray')
+        os.makedirs(stray)
+        with mock.patch.dict(os.environ, {'KC_WORKTREE_GRACE_S': '0'}):
+            status, body = self.call('GET', '/api/worktrees')
+        self.assertEqual(status, 200)
+        self.assertEqual([(r['repo'], r['slug'], r['live'])
+                          for r in body['leftovers']], [('app', 'stray', False)])
+        self.assertEqual(body['count'], 1)
+
+        status, body = self.call('DELETE', '/api/worktrees/app/stray')
+        self.assertEqual((status, body['code']), (404, 'not_worktree'))
+        self.assertTrue(os.path.isdir(stray))
+
+        status, body = self.call('DELETE', '/api/worktrees/app/stray?force=1')
+        self.assertEqual(status, 200)
+        self.assertTrue(body['leftover'])
+        self.assertFalse(os.path.exists(stray))
+
     def test_registry_list_remove_and_sweep(self):
         _s, a = self.post_task(isolate=True)
         _s, b = self.post_task(isolate=True)

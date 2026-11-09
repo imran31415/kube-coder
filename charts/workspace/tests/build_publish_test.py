@@ -355,6 +355,27 @@ class PublishTests(PublishFixture):
         self.service.run('t1')
         self.assertEqual(self.service.status('t1')['operation']['commit_sha'], before)
 
+    def mark_half_deleted(self):
+        manifest = worktrees.read_manifest(self.path)
+        manifest['removing_at'] = 1.0
+        worktrees._write_json(os.path.join(self.path, worktrees.MANIFEST), manifest)
+
+    def test_a_half_deleted_worktree_cannot_be_prepared(self):
+        self.mark_half_deleted()
+        status = self.service.status('t1')
+        self.assertFalse(status['eligibility']['can_prepare'])
+        self.assertEqual(status['eligibility']['reason']['code'], 'worktree_missing')
+        with self.assertRaises(pg.PublishError):
+            self.service.prepare('t1')
+
+    def test_a_queued_publish_never_reserves_a_half_deleted_worktree(self):
+        self.submit(self.prepare())
+        self.mark_half_deleted()
+        self.service.run('t1')
+        self.assertEqual(self.service.status('t1')['operation']['stage'], 'failed')
+        self.assertIsNone(self.service.status('t1')['operation']['commit_sha'])
+        self.assertNotIn('publication', worktrees.read_manifest(self.path))
+
     def test_new_writer_launch_is_blocked_during_publication(self):
         manifest = worktrees.read_manifest(self.path)
         manifest['publication'] = 'pub-active'

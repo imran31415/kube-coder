@@ -44,6 +44,11 @@ export const KEEP_REASON_LABEL: Record<string, string> = {
   unpushed: 'has commits not on any remote',
   repo_missing: 'its repository is gone',
   error: 'could not be checked',
+  publishing: 'is being published',
+  ignored_secrets: 'holds ignored .env-style files',
+  git_timeout: 'git timed out, cleanup will try again',
+  git_failed: 'git could not remove it',
+  remove_incomplete: 'its removal is not finished, cleanup will try again',
 };
 
 /** Short SHA for display. */

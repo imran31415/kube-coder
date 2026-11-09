@@ -141,12 +141,21 @@ unique:
 | changed nothing at all | removed, and its empty branch deleted |
 | has every commit on a remote, and its Build finished over 7 days ago | removed, branch kept |
 | has uncommitted changes | kept |
-| has commits that are on no remote | kept |
+| has commits that are on no remote, on its branch or on whatever is checked out | kept |
+| holds ignored `.env`-style files (`.env`, `*.pem`, `.npmrc` and similar) | kept |
 | belongs to a running Build | kept |
 | has a live Build working in it, owned or not | kept |
 
+Other ignored files, such as `node_modules`, are deleted with the worktree.
+They can be reinstalled.
+
 **Settings → Worktrees** lists every worktree, who owns it and why cleanup
 kept it, and has a *Clean up now* button.
+
+If a removal is cut off partway, the next cleanup pass finishes it. A folder
+with no worktree record, from a removal killed outright or one made by hand,
+appears under **Leftover folders**. Cleanup never deletes those, so remove them
+there yourself.
 
 ## Limits
 

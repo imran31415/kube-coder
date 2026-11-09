@@ -3,6 +3,7 @@ import {
   listWorktrees,
   removeWorktree,
   sweepWorktrees,
+  type WorktreeLeftover,
   type WorktreeList,
   type WorktreeRow,
 } from '../../api/worktrees';
@@ -32,6 +33,7 @@ const STATE_PILL = {
 export function WorktreesSection() {
   const [data, setData] = useState<WorktreeList | null>(null);
   const [target, setTarget] = useState<{ row: WorktreeRow; force: boolean } | null>(null);
+  const [leftover, setLeftover] = useState<WorktreeLeftover | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   async function refresh() {
@@ -62,6 +64,20 @@ export function WorktreesSection() {
     }
   }
 
+  async function onRemoveLeftover(item: WorktreeLeftover) {
+    setLeftover(null);
+    setBusy(item.path);
+    try {
+      await removeWorktree(item.repo, item.slug, true);
+      pushToast(`Removed leftover folder ${item.slug}.`, { kind: 'success' });
+      await refresh();
+    } catch (err) {
+      pushToast(err instanceof ApiError ? err.message : String(err), { kind: 'danger' });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onSweep() {
     setBusy('sweep');
     try {
@@ -81,6 +97,7 @@ export function WorktreesSection() {
   }
 
   const rows = data?.worktrees ?? [];
+  const leftovers = data?.leftovers ?? [];
   return (
     <section class="settings-section">
       <h2 class="settings-section-title">
@@ -164,6 +181,42 @@ export function WorktreesSection() {
         </div>
       )}
 
+      {leftovers.length > 0 && (
+        <>
+          <h3 class="settings-subsection-title">Leftover folders</h3>
+          <p class="settings-row-hint muted">
+            These folders have no worktree record, usually because a removal was interrupted. They
+            use disk space, and cleanup leaves them alone because nothing says what is in them.
+          </p>
+          <div class="settings-subs">
+            {leftovers.map((item) => (
+              <div class="settings-sub-row" key={item.path}>
+                <div class="settings-sub-label">
+                  <span class="settings-sub-name mono">{item.slug}</span>
+                  <Pill tone="warn" mono>{item.live ? 'in use' : 'leftover'}</Pill>
+                </div>
+                <div class="settings-sub-control">
+                  <MutatorOnly>
+                    <Button
+                      variant="secondary"
+                      type="button"
+                      disabled={busy === item.path || item.live}
+                      title={item.live ? 'A running task is working in this folder' : 'Delete this folder'}
+                      onClick={() => setLeftover(item)}
+                    >
+                      <Icon name="trash" size={14} /> Remove
+                    </Button>
+                  </MutatorOnly>
+                </div>
+                <div class="settings-sub-note settings-radio-hint muted">
+                  <span class="mono">{item.path}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {data?.available && (
         <MutatorOnly>
           <div class="settings-row">
@@ -203,6 +256,17 @@ export function WorktreesSection() {
         destructive
         onConfirm={() => target && void onRemove(target.row, true)}
         onCancel={() => setTarget(null)}
+      />
+      <ConfirmDialog
+        open={leftover !== null}
+        title="Delete this leftover folder?"
+        body={leftover
+          ? `${leftover.path} and everything in it is deleted for good.${leftover.has_git ? ' It is still a git checkout, so anything uncommitted in it is lost.' : ''} No branch is deleted.`
+          : ''}
+        confirmLabel="Delete folder"
+        destructive
+        onConfirm={() => leftover && void onRemoveLeftover(leftover)}
+        onCancel={() => setLeftover(null)}
       />
     </section>
   );

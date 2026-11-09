@@ -25,6 +25,20 @@ export interface WorktreeRow {
   keep_reason: string;
 }
 
+/**
+ * A folder in a worktree slot with no manifest: a removal cut off partway, or
+ * one made by hand (#853). Cleanup never touches these.
+ */
+export interface WorktreeLeftover {
+  repo: string;
+  slug: string;
+  path: string;
+  /** Still a git checkout, so it may hold work nothing else records. */
+  has_git: boolean;
+  modified_at: number;
+  live: boolean;
+}
+
 export interface WorktreeSweepStatus {
   running: boolean;
   last_run_at: number | null;
@@ -35,6 +49,8 @@ export interface WorktreeSweepStatus {
 
 export interface WorktreeList {
   worktrees: WorktreeRow[];
+  /** Absent on a server older than #853. */
+  leftovers?: WorktreeLeftover[];
   count: number;
   max: number;
   root: string;

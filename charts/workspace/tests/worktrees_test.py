@@ -701,6 +701,301 @@ class RemoveTests(gf.GitTestCase):
         self.assertFalse(os.path.exists(info['path']))
 
 
+class InterruptedRemovalTests(gf.GitTestCase):
+    """#853 finding 4: a delete cut off partway must not lose the worktree."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo_path = make_repo(self.home)
+        self.repo = wt.resolve_repo(self.repo_path, home_root=self.home)
+        self.info = wt.ensure(self.repo, 't-big', wt_root=self.wt_root,
+                              listening=set(), task_id='owner-1')
+        self.path = self.info['path']
+        self.manifest = os.path.join(self.path, wt.MANIFEST)
+        self.tracked = git(self.path, 'ls-files').split()[0]
+
+    def killed_partway(self):
+        """Stand in for git being killed mid-delete: a file is gone, the
+        tracked tree now looks modified, and the call times out."""
+        real = wt._RUN
+
+        def fake(argv, **kw):
+            if 'worktree' in argv and 'remove' in argv:
+                os.unlink(os.path.join(self.path, self.tracked))
+                raise subprocess.TimeoutExpired(argv, kw.get('timeout'))
+            return real(argv, **kw)
+        return mock.patch.object(wt, '_RUN', fake)
+
+    def interrupt(self):
+        with self.killed_partway(), self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root)
+        self.assertEqual(cm.exception.code, 'git_timeout')
+
+    def reserve(self, operation='pub-1'):
+        manifest = wt.read_manifest(self.path)
+        manifest['publication'] = operation
+        wt._write_json(self.manifest, manifest)
+
+    def assert_nothing_more_deleted(self):
+        self.assertTrue(os.path.exists(self.manifest))
+        self.assertTrue(os.path.isdir(os.path.join(self.path, '.git'))
+                        or os.path.isfile(os.path.join(self.path, '.git')))
+
+    def test_a_publication_blocks_a_forced_removal_before_it_starts(self):
+        self.reserve()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root, force=True)
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assertTrue(os.path.exists(os.path.join(self.path, self.tracked)))
+        self.assertNotIn('removing_at', wt.read_manifest(self.path))
+
+    def test_a_publication_outranks_finishing_the_removal(self):
+        self.interrupt()
+        self.reserve()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root, force=True)
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+        out = wt.sweep(wt_root=self.wt_root, is_owner_live=never_live,
+                       owner_meta=lambda _t: None, grace_s=0, gc_days=0)
+        self.assertEqual(out['removed'], [])
+        self.assertEqual([k['reason'] for k in out['kept']], ['publishing'])
+        self.assert_nothing_more_deleted()
+
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='owner-1')
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_will_not_finish_it_under_a_live_owner(self):
+        self.interrupt()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='someone-else', is_owner_live=lambda t: t == 'owner-1')
+        self.assertEqual((cm.exception.code, cm.exception.detail.get('owner_task_id')),
+                         ('busy', 'owner-1'))
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_will_not_finish_it_under_a_live_tenant(self):
+        self.interrupt()
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                      task_id='owner-1', is_owner_live=never_live,
+                      occupied_by=lambda _p: 'tenant-9')
+        self.assertEqual(cm.exception.code, 'busy')
+        self.assert_nothing_more_deleted()
+
+    def test_ensure_finishes_it_for_the_task_replacing_its_owner(self):
+        self.interrupt()
+        info = wt.ensure(self.repo, 't-big', wt_root=self.wt_root, listening=set(),
+                         task_id='owner-2', allow_owner='owner-1',
+                         is_owner_live=lambda t: t == 'owner-1',
+                         occupied_by=lambda _p: 'owner-1')
+        self.assertTrue(info['created'])
+        self.assertNotIn('removing_at', wt.read_manifest(info['path']))
+
+    def test_no_writer_is_launched_into_a_half_deleted_tree(self):
+        self.interrupt()
+        runner = mock.Mock()
+        result = wt.launch_writer(self.path, ['tmux'], runner=runner,
+                                  wt_root=self.wt_root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('interrupted', result.stderr)
+        self.assertNotIn('publication', result.stderr)
+        runner.assert_not_called()
+
+    def test_a_launch_waiting_on_a_long_delete_fails_as_a_result(self):
+        runner = mock.Mock()
+        with mock.patch.dict(os.environ, {'KC_WT_LOCK_TIMEOUT': '1'}), \
+                wt.locked(self.wt_root):
+            result = wt.launch_writer(self.path, ['tmux'], runner=runner,
+                                      wt_root=self.wt_root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('try again', result.stderr)
+        runner.assert_not_called()
+
+    def test_the_manifest_survives_and_marks_the_removal(self):
+        self.interrupt()
+        self.assertTrue(os.path.exists(self.manifest))
+        self.assertTrue(wt.read_manifest(self.path)['removing_at'])
+        self.assertEqual([m['slug'] for m in wt.list_all(self.wt_root)], ['t-big'])
+        self.assertEqual(wt.list_leftovers(self.wt_root), [])
+
+    def test_removal_gets_its_own_time_limit(self):
+        seen = {}
+        real = wt._RUN
+
+        def spy(argv, **kw):
+            if 'worktree' in argv and 'remove' in argv:
+                seen['timeout'] = kw['timeout']
+            return real(argv, **kw)
+        with mock.patch.object(wt, '_RUN', spy), \
+                mock.patch.dict(os.environ, {'KC_GIT_REMOVE_TIMEOUT': '777',
+                                             'KC_GIT_TIMEOUT': '3'}):
+            wt.remove(self.path, wt_root=self.wt_root)
+        self.assertEqual(seen['timeout'], 777)
+
+    def test_the_next_sweep_finishes_the_job_and_keeps_the_branch(self):
+        commit(self.path, 'w.txt', 'w\n')
+        self.interrupt()
+        rep = wt.sweep(wt_root=self.wt_root, is_owner_live=never_live,
+                       owner_meta=lambda _t: {'status': 'completed'}, grace_s=0)
+        self.assertEqual([(r['slug'], r['reason']) for r in rep['removed']],
+                         [('t-big', 'resumed')])
+        self.assertFalse(os.path.exists(self.path))
+        self.assertIn('kc/t-big', git(self.repo_path, 'branch', '--list', 'kc/*'))
+        self.assertNotIn(self.path, git(self.repo_path, 'worktree', 'list'))
+
+    def test_dry_run_reports_but_does_not_finish(self):
+        self.interrupt()
+        rep = wt.sweep(wt_root=self.wt_root, is_owner_live=never_live,
+                       owner_meta=lambda _t: {'status': 'completed'}, grace_s=0,
+                       dry_run=True)
+        self.assertEqual(rep['removed'][0]['reason'], 'resumed')
+        self.assertTrue(os.path.isdir(self.path))
+
+    def test_a_live_owner_still_holds_it(self):
+        self.interrupt()
+        rep = wt.sweep(wt_root=self.wt_root, grace_s=0,
+                       is_owner_live=lambda t: t == 'owner-1',
+                       owner_meta=lambda _t: {'status': 'running'})
+        self.assertEqual(rep['removed'], [])
+        self.assertTrue(os.path.isdir(self.path))
+
+    def test_remove_button_finishes_it_without_force(self):
+        self.interrupt()
+        self.assertTrue(wt.remove(self.path, wt_root=self.wt_root)['resumed'])
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_starting_the_item_again_rebuilds_from_the_branch(self):
+        sha = commit(self.path, 'w.txt', 'w\n')
+        self.interrupt()
+        info = wt.ensure(self.repo, 't-big', wt_root=self.wt_root,
+                         listening=set(), task_id='owner-2')
+        self.assertTrue(info['created'])
+        self.assertTrue(os.path.exists(os.path.join(info['path'], self.tracked)))
+        self.assertEqual(git(info['path'], 'rev-parse', 'HEAD').strip(), sha)
+        self.assertNotIn('removing_at', wt.read_manifest(info['path']))
+
+    def test_git_refusing_up_front_is_not_an_interrupted_removal(self):
+        real = wt._RUN
+
+        def refuse(argv, **kw):
+            if 'worktree' in argv and 'remove' in argv:
+                return subprocess.CompletedProcess(argv, 128, '', 'fatal: locked')
+            return real(argv, **kw)
+        with mock.patch.object(wt, '_RUN', refuse), \
+                self.assertRaises(WorktreeError):
+            wt.remove(self.path, wt_root=self.wt_root)
+        self.assertNotIn('removing_at', wt.read_manifest(self.path))
+
+    def test_git_failing_partway_is_an_interrupted_removal(self):
+        real = wt._RUN
+
+        def partial(argv, **kw):
+            if 'worktree' in argv and 'remove' in argv:
+                return subprocess.CompletedProcess(
+                    argv, 255, '', "error: failed to delete 'x': Permission denied")
+            return real(argv, **kw)
+        with mock.patch.object(wt, '_RUN', partial), \
+                self.assertRaises(WorktreeError):
+            wt.remove(self.path, wt_root=self.wt_root)
+        self.assertTrue(wt.read_manifest(self.path)['removing_at'])
+
+    def test_read_only_trees_are_still_deleted(self):
+        self.interrupt()
+        locked_dir = os.path.join(self.path, 'gomod')
+        os.makedirs(locked_dir)
+        write(os.path.join(locked_dir, 'f'), 'x')
+        os.chmod(locked_dir, 0o555)
+        wt.remove(self.path, wt_root=self.wt_root)
+        self.assertFalse(os.path.exists(self.path))
+
+
+class LeftoverTests(gf.GitTestCase):
+    """#853 finding 4 / test K: folders with no manifest."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo_path = make_repo(self.home)
+        self.repo = wt.resolve_repo(self.repo_path, home_root=self.home)
+        self.info = wt.ensure(self.repo, 't-a', wt_root=self.wt_root,
+                              listening=set())
+        self.key_dir = os.path.dirname(self.info['path'])
+        self.path = os.path.join(self.key_dir, 'stray')
+        os.makedirs(self.path)
+        write(os.path.join(self.path, 'f.txt'), 'x')
+
+    def test_listed_without_the_managed_worktrees(self):
+        rows = wt.list_leftovers(self.wt_root)
+        self.assertEqual([r['slug'] for r in rows], ['stray'])
+        self.assertFalse(rows[0]['has_git'])
+
+    def test_a_hand_made_checkout_says_so(self):
+        p = os.path.join(self.key_dir, 'by-hand')
+        git(self.repo_path, 'worktree', 'add', '-q', '--detach', p)
+        self.assertTrue({r['slug']: r for r in wt.list_leftovers(self.wt_root)}
+                        ['by-hand']['has_git'])
+
+    def test_a_folder_still_being_created_is_hidden(self):
+        self.assertEqual(wt.list_leftovers(self.wt_root, min_age_s=600), [])
+
+    def test_the_sweep_never_touches_one(self):
+        wt.sweep(wt_root=self.wt_root, is_owner_live=never_live,
+                 owner_meta=lambda _t: None, grace_s=0, gc_days=0)
+        self.assertTrue(os.path.isdir(self.path))
+
+    def test_removal_needs_force(self):
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root)
+        self.assertEqual(cm.exception.code, 'not_worktree')
+        self.assertTrue(os.path.isdir(self.path))
+
+    def test_force_removes_it_and_prunes(self):
+        p = os.path.join(self.key_dir, 'by-hand')
+        git(self.repo_path, 'worktree', 'add', '-q', '--detach', p)
+        out = wt.remove(p, wt_root=self.wt_root, force=True)
+        self.assertTrue(out['leftover'])
+        self.assertFalse(os.path.exists(p))
+        self.assertNotIn(p, git(self.repo_path, 'worktree', 'list'))
+
+    def test_a_live_task_refuses_even_with_force(self):
+        with self.assertRaises(WorktreeError) as cm:
+            wt.remove(self.path, wt_root=self.wt_root, force=True,
+                      occupied_by=lambda _p: 'task-9')
+        self.assertEqual(cm.exception.code, 'live')
+        self.assertTrue(os.path.isdir(self.path))
+
+    def test_force_only_reaches_worktree_slots(self):
+        deeper = os.path.join(self.path, 'sub')
+        os.makedirs(deeper)
+        for target in (self.key_dir, deeper):
+            with self.assertRaises(WorktreeError) as cm:
+                wt.remove(target, wt_root=self.wt_root, force=True)
+            self.assertEqual(cm.exception.code, 'not_worktree', target)
+            self.assertTrue(os.path.isdir(target), target)
+
+    def test_the_conflict_message_points_at_settings(self):
+        with self.assertRaises(WorktreeError) as cm:
+            wt.ensure(self.repo, 'stray', wt_root=self.wt_root, listening=set())
+        self.assertEqual(cm.exception.code, 'path_conflict')
+        self.assertIn('Leftover folders', cm.exception.message)
+
+
+class EnvStyleNameTests(unittest.TestCase):
+
+    def test_names(self):
+        for name in ('.env', '.env.local', '.env.production', '.envrc', '.netrc',
+                     '.npmrc', 'server.pem', 'id.key', 'credentials.json',
+                     'secrets.yaml'):
+            self.assertTrue(wt._ENV_STYLE_NAME.match(name), name)
+        for name in ('.env.example', '.env.sample', '.env.template', '.environment',
+                     'app.log', 'keys.txt', 'pem'):
+            self.assertFalse(wt._ENV_STYLE_NAME.match(name), name)
+
+
 class OccupancyTests(unittest.TestCase):
     """Which live task is working where (#791) — no git, no tmux."""
 
@@ -785,6 +1080,69 @@ class SweepTests(gf.GitTestCase):
         rep = self.sweep()
         self.assertFalse(rep['removed'][0]['branch_deleted'])
         self.assertIn('kc/t-pre', self.branches())
+
+    def push(self, info):
+        make_remote(self.home, self.repo_path)
+        git(info['path'], 'push', '-q', 'origin', info['branch'])
+
+    def test_a_commit_on_a_detached_head_is_kept(self):
+        # #853 test G: the branch is fully pushed; HEAD is not on it.
+        info = self.make('t-det', owner='o1')
+        commit(info['path'], 'w.txt', 'w\n')
+        self.push(info)
+        git(info['path'], 'checkout', '-q', '--detach')
+        commit(info['path'], 'x.txt', 'x\n')
+        rep = self.sweep()
+        self.assertEqual(rep['removed'], [])
+        self.assertEqual(self.reasons(rep), {'t-det': 'unpushed'})
+        self.assertTrue(os.path.isdir(info['path']))
+
+    def test_head_unpushed_fails_closed(self):
+        self.assertEqual(wt.head_unpushed(self.repo_path, ''), 1)
+        self.assertEqual(wt.head_unpushed(self.repo_path, 'f' * 40), 1)
+
+    def ignore(self, pattern):
+        git(self.repo_path, 'config', 'core.excludesFile',
+            os.path.join(self.home, 'global-ignore'))
+        write(os.path.join(self.home, 'global-ignore'), pattern + '\n')
+
+    def test_an_ignored_env_file_keeps_a_pushed_worktree(self):
+        # #853 test F: the only copy of this .env is here.
+        info = self.make('t-env', owner='o1')
+        commit(info['path'], 'w.txt', 'w\n')
+        self.push(info)
+        self.ignore('.env')
+        write(os.path.join(info['path'], '.env'), 'TOKEN=x\n')
+        rep = self.sweep()
+        self.assertEqual(self.reasons(rep), {'t-env': 'ignored_secrets'})
+        self.assertTrue(os.path.exists(os.path.join(info['path'], '.env')))
+
+    def test_an_ignored_env_file_keeps_a_pristine_worktree(self):
+        info = self.make('t-envp', owner='o1')
+        self.ignore('.env')
+        write(os.path.join(info['path'], '.env'), 'TOKEN=x\n')
+        self.assertEqual(self.reasons(self.sweep()), {'t-envp': 'ignored_secrets'})
+
+    def test_regenerable_ignored_files_do_not_keep_a_worktree(self):
+        info = self.make('t-nm', owner='o1')
+        commit(info['path'], 'w.txt', 'w\n')
+        self.push(info)
+        self.ignore('node_modules/')
+        os.makedirs(os.path.join(info['path'], 'node_modules', 'x'))
+        # A .env inside a dependency is the dependency's, not the user's.
+        write(os.path.join(info['path'], 'node_modules', 'x', '.env'), 'a\n')
+        rep = self.sweep()
+        self.assertEqual([r['slug'] for r in rep['removed']], ['t-nm'])
+
+    def test_a_virtualenv_named_env_does_not_keep_a_worktree(self):
+        info = self.make('t-venv', owner='o1')
+        commit(info['path'], 'w.txt', 'w\n')
+        self.push(info)
+        self.ignore('.env/')
+        os.makedirs(os.path.join(info['path'], '.env', 'bin'))
+        write(os.path.join(info['path'], '.env', 'bin', 'python'), 'x\n')
+        rep = self.sweep()
+        self.assertEqual([r['slug'] for r in rep['removed']], ['t-venv'])
 
     def test_keep_rules(self):
         live = self.make('t-live', owner='live1')
