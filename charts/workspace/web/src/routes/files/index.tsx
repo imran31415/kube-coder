@@ -16,15 +16,28 @@ import { vscodeUrl } from '../../api/tasks';
 import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { pushToast } from '../../store/ui';
+import { pushUploadError, UPLOAD_REFUSAL_TTL_MS } from '../../store/uploadErrors';
+import { metrics, refreshMetrics } from '../../store/metrics';
+import { formatBytes } from '../../util/formatBytes';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import './files.css';
 
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+/** How full the managed upload storage is (#556). Only where a limit exists:
+ *  older pods omit the section and a limit of 0 means there is no wall. */
+function UploadUsageNote() {
+  const uploads = metrics.value?.uploads;
+  if (!uploads || !uploads.quota_bytes) return null;
+  const tone = uploads.percent >= 90 ? 'danger' : uploads.percent >= 80 ? 'warn' : 'ok';
+  return (
+    <div
+      class={`files-upload-usage files-upload-usage-${tone} mono`}
+      role={tone === 'danger' ? 'alert' : undefined}
+      title="Attachments and session uploads. Files you upload into your own folders are not counted."
+    >
+      Upload storage: {formatBytes(uploads.used_bytes)} of {formatBytes(uploads.quota_bytes)} used ({Math.round(uploads.percent)}%)
+    </div>
+  );
 }
 
 export function FilesRoute() {
@@ -62,6 +75,7 @@ export function FilesRoute() {
 
   useEffect(() => {
     void refresh('');
+    void refreshMetrics();
   }, []);
 
   async function go(name: string, kind: FileEntry['kind']) {
@@ -120,8 +134,8 @@ export function FilesRoute() {
       const r = await uploadBatch(items, (done, total) => setUploadProg({ done, total }));
       if (r.failed.length) {
         pushToast(
-          `Uploaded ${r.done}/${items.length} — failed: ${r.failed.map((f) => f.name).join(', ')}`,
-          { kind: 'danger' },
+          `Uploaded ${r.done}/${items.length} — failed: ${r.failed.map((f) => f.name).join(', ')}. ${r.failed[0].error}`,
+          { kind: 'danger', ttl: UPLOAD_REFUSAL_TTL_MS },
         );
       } else {
         pushToast(items.length === 1 ? `Uploaded ${items[0].file.name}` : `Uploaded ${r.done} files`, {
@@ -129,6 +143,7 @@ export function FilesRoute() {
         });
       }
       await refresh(path);
+      void refreshMetrics();
     } finally {
       setBusy(false);
       setUploadProg(null);
@@ -173,8 +188,9 @@ export function FilesRoute() {
       }
       pushToast(`Extracted ${extracted} file${extracted === 1 ? '' : 's'}`, { kind: 'success' });
       await refresh(path);
+      void refreshMetrics();
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : 'Extract failed', { kind: 'danger' });
+      pushUploadError(err, 'Extract failed');
     } finally {
       setBusy(false);
     }
@@ -293,6 +309,8 @@ export function FilesRoute() {
 
       {error && <div class="trig-error" role="alert">{error}</div>}
 
+      <UploadUsageNote />
+
       <div class={`files-body${selected ? ' files-body-split' : ''}`}>
         <div class="files-table-wrap">
           <table class="files-table">
@@ -345,7 +363,7 @@ export function FilesRoute() {
                         <span>{e.name}</span>
                       </button>
                     </td>
-                    <td class="muted mono">{fmtSize(e.size)}</td>
+                    <td class="muted mono">{formatBytes(e.size)}</td>
                     <td class="muted mono">{new Date(e.mtime * 1000).toLocaleDateString()}</td>
                     <td>
                       <RowActions
@@ -519,7 +537,7 @@ function PreviewPane({
               <>
                 {preview.truncated && (
                   <p class="files-preview-trunc muted">
-                    Showing the first {fmtSize(preview.content.length)} of {fmtSize(preview.size)} — download for the full file.
+                    Showing the first {formatBytes(preview.content.length)} of {formatBytes(preview.size)} — download for the full file.
                   </p>
                 )}
                 <pre class="files-preview-text mono">{preview.content}</pre>
@@ -537,7 +555,7 @@ function PreviewPane({
                 <p class="muted">
                   {preview.reason === 'too_large' ? 'File is too large to preview.' : 'Binary file — no inline preview.'}
                 </p>
-                <p class="muted mono">{fmtSize(preview.size)}</p>
+                <p class="muted mono">{formatBytes(preview.size)}</p>
                 <Button variant="secondary" onClick={onDownload}>
                   <Icon name="download" size={14} /> Download
                 </Button>

@@ -30,9 +30,19 @@ export interface DiskMetrics {
   error?: string;
 }
 
+/** Managed upload storage against its cap (#556). `quota_bytes` of 0 means no
+ *  limit is set, so there is nothing to warn about. */
+export interface UploadMetrics {
+  used_bytes: number;
+  quota_bytes: number;
+  available_bytes: number | null;
+  percent: number;
+  error?: string;
+}
+
 export interface MetricsAlert {
   type: 'critical' | 'warning';
-  resource: 'cpu' | 'memory' | 'disk';
+  resource: 'cpu' | 'memory' | 'disk' | 'uploads';
   message: string;
 }
 
@@ -121,6 +131,8 @@ export interface SystemMetrics {
   cpu: CpuMetrics;
   memory: MemoryMetrics;
   disk: DiskMetrics;
+  // Present on pods running the #556 build; older pods omit it.
+  uploads?: UploadMetrics;
   alerts: MetricsAlert[];
   timestamp: number;
   // Present on pods running the #363 build; older pods omit it.

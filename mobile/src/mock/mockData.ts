@@ -310,6 +310,8 @@ export const mockMetrics: Metrics = {
   memory_total_mb: 4096,
   disk_used_gb: 12.4,
   disk_total_gb: 50,
+  uploads_used_bytes: 412 * 1024 * 1024,
+  uploads_quota_bytes: 2 * 1024 * 1024 * 1024,
 };
 
 export const mockHealth: Health = {

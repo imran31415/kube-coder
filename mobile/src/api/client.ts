@@ -894,6 +894,7 @@ interface RawMetrics {
   cpu?: { usage_percent?: number };
   memory?: { used_mb?: number; total_mb?: number };
   disk?: { used_gb?: number; total_gb?: number };
+  uploads?: { used_bytes?: number; quota_bytes?: number };
 }
 
 export async function getMetrics(): Promise<Metrics> {
@@ -908,6 +909,8 @@ export async function getMetrics(): Promise<Metrics> {
     memory_total_mb: d.memory?.total_mb ?? 0,
     disk_used_gb: d.disk?.used_gb ?? 0,
     disk_total_gb: d.disk?.total_gb ?? 0,
+    uploads_used_bytes: d.uploads?.used_bytes ?? 0,
+    uploads_quota_bytes: d.uploads?.quota_bytes ?? 0,
   };
 }
 

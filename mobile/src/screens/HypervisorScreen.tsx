@@ -551,9 +551,12 @@ export default function HypervisorScreen() {
         .then((path) =>
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x))),
         )
-        .catch(() =>
-          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x))),
-        );
+        .catch((e) => {
+          setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x)));
+          // An error chip can't say *why*, and a full-storage refusal (#556)
+          // won't be cured by retrying: the server's message says what to do.
+          setError(e instanceof Error ? e.message : 'Image upload failed');
+        });
     }
   }
 

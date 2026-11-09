@@ -9,6 +9,7 @@ import { serverMode } from '../../store/server-mode';
 import { TerminalPane } from './TerminalPane';
 import { getSessionSignals, type DraftAttachment } from './sessionSignals';
 import { imagesFromClipboard, isImageFile, uploadTaskImage } from './imageAttach';
+import { pushUploadError } from '../../store/uploadErrors';
 import { isAliveStatus } from '../../util/taskStatus';
 
 export interface MessageChatProps {
@@ -168,7 +169,7 @@ export function MessageChat({ taskId, status }: MessageChatProps) {
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, path, status: 'ready' } : x)));
         } catch (err) {
           setAttachments((a) => a.map((x) => (x.id === id ? { ...x, status: 'error' } : x)));
-          pushToast(err instanceof Error ? err.message : 'Image upload failed', { kind: 'danger' });
+          pushUploadError(err, 'Image upload failed');
         }
       })();
     }

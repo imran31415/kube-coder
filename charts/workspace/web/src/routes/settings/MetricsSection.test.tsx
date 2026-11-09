@@ -153,6 +153,27 @@ describe('MetricsSection — Product usage card (#363)', () => {
     expect(document.body.innerHTML).toContain('knowledge store');
   });
 
+  it('meters upload storage against its cap (#556)', () => {
+    metrics.value = sys({
+      uploads: { used_bytes: 1610612736, quota_bytes: 2147483648, available_bytes: 536870912, percent: 75 },
+    }) as never;
+    render(<MetricsSection />);
+    expect(screen.getByRole('progressbar', { name: 'Uploads' })).toHaveAttribute('aria-valuenow', '75');
+    expect(screen.getByText(/1\.5 GB \/ 2\.0 GB of attachments/)).toBeInTheDocument();
+  });
+
+  it('has no uploads meter without a cap or on an older pod (#556)', () => {
+    metrics.value = sys({
+      uploads: { used_bytes: 5, quota_bytes: 0, available_bytes: null, percent: 0 },
+    }) as never;
+    const { unmount } = render(<MetricsSection />);
+    expect(screen.queryByRole('progressbar', { name: 'Uploads' })).not.toBeInTheDocument();
+    unmount();
+    metrics.value = sys() as never;
+    render(<MetricsSection />);
+    expect(screen.queryByRole('progressbar', { name: 'Uploads' })).not.toBeInTheDocument();
+  });
+
   it('is absent when the pod omits product (backward compatible)', () => {
     metrics.value = sys() as never;   // no product key
     render(<MetricsSection />);

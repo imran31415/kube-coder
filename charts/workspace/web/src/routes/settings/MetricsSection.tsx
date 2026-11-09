@@ -23,6 +23,7 @@ import { Button } from '../../components/primitives/Button';
 import { Icon } from '../../components/Icon';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { formatBytes } from '../../util/formatBytes';
 
 function tone(percent: number): 'success' | 'warn' | 'danger' {
   if (percent >= 90) return 'danger';
@@ -330,6 +331,13 @@ export function MetricsSection() {
               percent={m.disk.percent}
               hint={`${m.disk.used_gb.toFixed(1)} / ${m.disk.total_gb.toFixed(1)} GB used · ${m.disk.available_gb.toFixed(1)} GB free (${m.disk.path})`}
             />
+            {m.uploads && m.uploads.quota_bytes > 0 && (
+              <MeterRow
+                label="Uploads"
+                percent={m.uploads.percent}
+                hint={`${formatBytes(m.uploads.used_bytes)} / ${formatBytes(m.uploads.quota_bytes)} of attachments and session uploads`}
+              />
+            )}
           </div>
         </>
       )}

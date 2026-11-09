@@ -10,6 +10,7 @@ import { usePolling } from '../util/usePolling';
 
 /** Percentage that stays sane when the denominator is missing or zero. */
 const pctOf = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
+const MIB = 1024 * 1024;
 
 function Bar({ pct, color }: { pct: number; color: string }) {
   return (
@@ -107,6 +108,16 @@ export default function MetricsScreen() {
         <Gauge label="CPU" used={Math.round(m.cpu_percent)} total={100} unit="%" pct={m.cpu_percent} color={colors.accent} />
         <Gauge label="Memory" used={Math.round(m.memory_used_mb)} total={Math.round(m.memory_total_mb)} unit="MB" pct={memPct} color={colors.warning} />
         <Gauge label="Disk" used={Math.round(m.disk_used_gb)} total={Math.round(m.disk_total_gb)} unit="GB" pct={diskPct} color={colors.success} />
+        {m.uploads_quota_bytes > 0 && (
+          <Gauge
+            label="Uploads"
+            used={Math.round(m.uploads_used_bytes / MIB)}
+            total={Math.round(m.uploads_quota_bytes / MIB)}
+            unit="MB"
+            pct={pctOf(m.uploads_used_bytes, m.uploads_quota_bytes)}
+            color={colors.warning}
+          />
+        )}
 
         <Card style={{ gap: space.md, marginTop: space.sm }}>
           <Text style={styles.gaugeLabel}>Services</Text>
