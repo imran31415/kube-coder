@@ -1,0 +1,37 @@
+suite: workspace metrics scrape token env (#581)
+templates:
+  - templates/deployment.yaml
+  - templates/claude-configmap.yaml
+  - templates/terminal-entry-configmap.yaml
+  - templates/workspace-entrypoint-configmap.yaml
+  - templates/assistant-secret.yaml
+  - templates/ssh-server-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: does not mount a scrape token unless one is configured
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_METRICS_SCRAPE_TOKEN
+          any: true
+
+  # The value is the per-workspace HMAC derivation seeded by
+  # ensure-workspace-namespace.sh — never the Claude Task API token, which is
+  # read/write over the whole API and lives on the PVC, not in a Secret.
+  - it: mounts the per-workspace scrape token from its own namespace Secret
+    template: templates/deployment.yaml
+    set:
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KC_METRICS_SCRAPE_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: kc-metrics-scrape
+                key: metrics-scrape-token
+          any: true

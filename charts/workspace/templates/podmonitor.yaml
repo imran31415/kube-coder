@@ -1,0 +1,38 @@
+{{- if .Values.metrics.podMonitor.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") }}
+{{- fail "Install Prometheus Operator PodMonitor CRDs before enabling workspace scraping" }}
+{{- end }}
+{{- $_ := required "metrics.scrapeSecretName is required for workspace scraping" .Values.metrics.scrapeSecretName }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ws-{{ .Values.user.name }}-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: ws-{{ .Values.user.name }}
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app: ws-{{ .Values.user.name }}
+  podMetricsEndpoints:
+  # `browser` is the 6080 container port (see service.yaml / deployment.yaml).
+  # Named rather than numeric so a port renumber can't silently scrape nothing.
+  - port: browser
+    path: /metrics/prometheus
+    relabelings:
+    - targetLabel: kube_coder_component
+      replacement: workspace
+    scheme: http
+    interval: {{ .Values.metrics.podMonitor.interval | default "60s" | quote }}
+    scrapeTimeout: {{ .Values.metrics.podMonitor.scrapeTimeout | default "10s" | quote }}
+    {{- if .Values.metrics.scrapeSecretName }}
+    authorization:
+      type: Bearer
+      credentials:
+        name: {{ .Values.metrics.scrapeSecretName }}
+        key: metrics-scrape-token
+    {{- end }}
+{{- end }}

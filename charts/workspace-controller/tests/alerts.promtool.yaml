@@ -1,0 +1,70 @@
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: memory deduplicates targets and ignores zero limits
+    interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{namespace="ws-a",pod="ws-a-1",container="ide",instance="one"}'
+        values: '95x10 20x10'
+      - series: 'container_memory_working_set_bytes{namespace="ws-a",pod="ws-a-1",container="ide",instance="two"}'
+        values: '95x10 20x10'
+      - series: 'kube_pod_container_resource_limits{namespace="ws-a",pod="ws-a-1",container="ide",resource="memory",unit="byte",instance="one"}'
+        values: '100x21'
+      - series: 'kube_pod_container_resource_limits{namespace="ws-a",pod="ws-a-1",container="ide",resource="memory",unit="byte",instance="two"}'
+        values: '100x21'
+      - series: 'container_memory_working_set_bytes{namespace="ws-b",pod="ws-b-1",container="ide"}'
+        values: '95x21'
+      - series: 'kube_pod_container_resource_limits{namespace="ws-b",pod="ws-b-1",container="ide",resource="memory",unit="byte"}'
+        values: '0x21'
+    promql_expr_test:
+      - expr: 'sum(ALERTS{alertname="WorkspaceMemoryPressure",alertstate="firing"}) or vector(0)'
+        eval_time: 4m
+        exp_samples: [{labels: '{}', value: 0}]
+      - expr: 'sum(ALERTS{alertname="WorkspaceMemoryPressure",alertstate="firing"})'
+        eval_time: 6m
+        exp_samples: [{labels: '{}', value: 1}]
+      - expr: 'sum(ALERTS{alertname="WorkspaceMemoryPressure",alertstate="firing"}) or vector(0)'
+        eval_time: 12m
+        exp_samples: [{labels: '{}', value: 0}]
+  - name: disk uses PVC bytes with separate warning and critical windows
+    interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ws-a",persistentvolumeclaim="home",instance="one"}'
+        values: '96x20 20x5'
+      - series: 'kubelet_volume_stats_used_bytes{namespace="ws-a",persistentvolumeclaim="home",instance="two"}'
+        values: '96x20 20x5'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="ws-a",persistentvolumeclaim="home"}'
+        values: '100x26'
+    promql_expr_test:
+      - expr: 'sum(ALERTS{alertname="WorkspaceDiskPressure",alertstate="firing"})'
+        eval_time: 6m
+        exp_samples: [{labels: '{}', value: 1}]
+      - expr: 'sum(ALERTS{alertname="WorkspaceDiskPressure",alertstate="firing"})'
+        eval_time: 16m
+        exp_samples: [{labels: '{}', value: 2}]
+      - expr: 'sum(ALERTS{alertname="WorkspaceDiskPressure",alertstate="firing"}) or vector(0)'
+        eval_time: 22m
+        exp_samples: [{labels: '{}', value: 0}]
+  - name: missing targets alert only for running workspaces and resolve after recovery
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="ws-a",pod="ws-a-1",phase="Running"}'
+        values: '1x20'
+      - series: 'kube_pod_status_phase{namespace="ws-sleep",pod="ws-sleep-1",phase="Running"}'
+        values: '0x20'
+      - series: 'up{namespace="ws-a",pod="ws-a-1",kube_coder_component="workspace"}'
+        values: '_x12 1x8'
+      - series: 'kubecoder_hook_dead_letters{namespace="ws-a",pod="ws-a-1"}'
+        values: '1x10 0x10'
+      - series: 'kubecoder_metrics_collector_up{namespace="ws-a",pod="ws-a-1",section="tasks"}'
+        values: '0x10 1x10'
+    promql_expr_test:
+      - expr: 'sum(ALERTS{alertname="WorkspaceMetricsUnavailable",alertstate="firing"})'
+        eval_time: 11m
+        exp_samples: [{labels: '{}', value: 1}]
+      - expr: 'sum(ALERTS{alertstate="firing"}) or vector(0)'
+        eval_time: 15m
+        exp_samples: [{labels: '{}', value: 0}]
+      - expr: 'sum(ALERTS{alertname=~"WorkspaceHookDeadLetters|WorkspaceMetricsCollectorFailed",alertstate="firing"})'
+        eval_time: 6m
+        exp_samples: [{labels: '{}', value: 2}]

@@ -49,6 +49,22 @@ controller:
     # by sealed-secrets/SOPS. When set, the chart does not create its own Secret.
     existingSecretName: ""
 
+  # Master token behind per-workspace Prometheus metrics scraping (#581).
+  # Never leaves this namespace: ensure-workspace-namespace.sh seeds each
+  # workspace with only HMAC-SHA256(master, "kc-metrics-scrape/<user>"), and
+  # the workspace chart's PodMonitor authenticates with that derivation. Off by
+  # default — a cluster with no Prometheus scraping workspace pods has no use
+  # for it, and the workspace chart's metrics.podMonitor.enabled is the other
+  # half of the switch.
+  metricsScrapeToken:
+    enabled: false
+    # Pin a specific master instead of auto-generating. Empty => generate +
+    # preserve across upgrades.
+    value: ""
+    # Bring your own Secret (must expose a `metrics-scrape-token` key). When
+    # set, the chart does not create its own.
+    existingSecretName: ""
+
   # Workspace version updates: surface "update available" per workspace and let
   # a confirmed action restart it onto the latest release image. The live
   # Deployment is patched immediately; when provisioning's GitOps repo is
@@ -92,6 +108,27 @@ controller:
   # Per-workspace usage metrics come from the in-cluster Prometheus (this
   # cluster has no metrics-server). Empty disables the metrics panel cleanly.
   metrics:
+    enabled: false
+    port: 9091
+    prometheusNamespace: ""
+    prometheusPodLabels:
+      app.kubernetes.io/name: prometheus
+    podMonitor:
+      enabled: false
+      labels: {}
+      interval: 30s
+      scrapeTimeout: 10s
+    prometheusRule:
+      enabled: false
+      labels: {}
+      namespaceRegex: "ws-.*"
+      memoryRatio: 0.9
+      memoryFor: 5m
+      diskWarningRatio: 0.85
+      diskWarningFor: 15m
+      diskCriticalRatio: 0.95
+      diskCriticalFor: 5m
+      deadLettersFor: 5m
     prometheusUrl: http://prometheus-kube-prometheus-prometheus.default.svc:9090
     # Rough, operator-tunable cost model shown in the mini dashboard. Compute
     # is estimated from observed CPU/memory usage; storage from PVC size.

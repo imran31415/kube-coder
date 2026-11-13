@@ -59,8 +59,8 @@ export interface CapacityResponse {
   metricsError: string | null;
 }
 
-export const getCapacity = (rangeSeconds = 3600) =>
-  apiGet<CapacityResponse>('/api/capacity', { range: rangeSeconds });
+export const getCapacity = (rangeSeconds = 3600, signal?: AbortSignal) =>
+  apiGet<CapacityResponse>('/api/capacity', { range: rangeSeconds }, signal);
 
 /** Overall cluster traffic-light for the landing page. */
 export type HealthStatus = 'ok' | 'warn' | 'crit' | 'unknown';
@@ -77,4 +77,4 @@ export interface ClusterHealthResponse {
   metricsError: string | null;
 }
 
-export const getCapacitySummary = () => apiGet<ClusterHealthResponse>('/api/capacity/summary');
+export const getCapacitySummary = (signal?: AbortSignal) => apiGet<ClusterHealthResponse>('/api/capacity/summary', undefined, signal, 20000);

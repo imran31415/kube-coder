@@ -1,0 +1,112 @@
+suite: workspace metrics scraping — PodMonitor + NetworkPolicy carve-out (#581)
+templates:
+  - templates/podmonitor.yaml
+capabilities:
+  apiVersions:
+    - monitoring.coreos.com/v1/PodMonitor
+set:
+  metrics.scrapeSecretName: kc-metrics-scrape
+  user.name: alice
+  namespace: ws-alice
+tests:
+  # A cluster with no Prometheus scraping workspace pods gets no object and no
+  # network carve-out — the whole feature is opt-in at the chart level.
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a PodMonitor, not a ServiceMonitor, when enabled
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodMonitor
+      - equal:
+          path: apiVersion
+          value: monitoring.coreos.com/v1
+      - equal:
+          path: metadata.name
+          value: ws-alice-metrics
+      # Co-located with the workspace: the Operator resolves a monitor's
+      # credential Secret from the monitor's OWN namespace.
+      - equal:
+          path: metadata.namespace
+          value: ws-alice
+
+  # Stock kube-prometheus-stack renders podMonitorSelector as
+  # {matchLabels: {release: <helm release>}}. Without this label the object is
+  # silently never selected — no error surfaces anywhere.
+  - it: carries the release label the stock Prometheus selector matches on
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+
+  - it: lets an operator override the selector label for a differently-named release
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.podMonitor.labels:
+        release: kps
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: kps
+
+  # `browser` is the name of containerPort 6080. PodMonitor resolves the port
+  # by NAME against the pod spec, so a renumber can't silently scrape nothing.
+  - it: scrapes the 6080 container port by name, on the exposition path
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: browser
+      - equal:
+          path: spec.podMetricsEndpoints[0].path
+          value: /metrics/prometheus
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: ws-alice
+
+  - it: authenticates with the metrics-only token, never the Task API token
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.type
+          value: Bearer
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.credentials.name
+          value: kc-metrics-scrape
+      - equal:
+          path: spec.podMetricsEndpoints[0].authorization.credentials.key
+          value: metrics-scrape-token
+
+  # A PodMonitor cannot express bearerTokenFile at all (it embeds
+  # HTTPConfigWithProxy, which has no file fields). That is why this is a
+  # PodMonitor: a monitor in a tenant namespace must not be able to name a file
+  # inside the Prometheus container and have its contents delivered to a pod
+  # where the tenant has root (CVE-2026-47701 in another operator).
+  - it: never emits a filesystem-backed credential
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.scrapeSecretName: kc-metrics-scrape
+    asserts:
+      - notExists:
+          path: spec.podMetricsEndpoints[0].bearerTokenFile
+      - notExists:
+          path: spec.podMetricsEndpoints[0].tlsConfig
+
+  - it: rejects missing scrape credentials
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.scrapeSecretName: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: metrics.scrapeSecretName is required for workspace scraping

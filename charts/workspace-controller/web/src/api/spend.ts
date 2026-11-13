@@ -64,5 +64,5 @@ export interface SpendResponse {
   scrapeHint: string | null;
 }
 
-export const getSpend = (rangeSeconds = 21600) =>
-  apiGet<SpendResponse>('/api/spend', { range: rangeSeconds });
+export const getSpend = (rangeSeconds = 21600, signal?: AbortSignal) =>
+  apiGet<SpendResponse>('/api/spend', { range: rangeSeconds }, signal);

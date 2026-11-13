@@ -59,6 +59,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: CONTROLLER_METRICS_ENABLED
+          value: {{ .Values.controller.metrics.enabled | quote }}
+        - name: CONTROLLER_METRICS_PORT
+          value: {{ .Values.controller.metrics.port | quote }}
         - name: CONTROLLER_PORT
           value: "8080"
         - name: CONTROLLER_DIST_DIR
@@ -168,6 +172,10 @@ spec:
               key: git-token
         {{- end }}
         ports:
+        {{- if .Values.controller.metrics.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.controller.metrics.port }}
+        {{- end }}
         - name: http
           containerPort: 8080
         {{- if .Values.controller.update.selfServeSecretName }}

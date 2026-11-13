@@ -1442,7 +1442,8 @@ class SleepingWorkspaceTest(unittest.TestCase):
             sys.stderr = orig
         self.assertEqual(by_user['bob']['state'], 'stopped')
         self.assertIn('cannot read who stopped ws-bob/ws-bob', err.getvalue())
-        self.assertIn('forbidden', err.getvalue())
+        self.assertIn('KubectlError', err.getvalue())
+        self.assertNotIn('forbidden', err.getvalue())
 
     def test_find_workspace_reads_ownership_for_one_at_zero(self):
         seen = []

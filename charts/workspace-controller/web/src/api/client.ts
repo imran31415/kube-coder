@@ -1,7 +1,6 @@
 /**
- * Thin typed fetch wrapper. Copied verbatim from charts/workspace/web so the
- * controller SPA shares the dashboard's proven auth behavior: prepend /oauth
- * to /api/* (so the oauth2 cookie attaches), and on the "auth expired" symptom
+ * Typed fetch wrapper with read deadlines and cancellation. Preserves auth: prepend /oauth
+ * to /api/* (so the oauth2 cookie attaches), and on a confirmed 401
  * bounce the page to /oauth2/start.
  *
  * For local dev a Bearer token from localStorage['kc.devToken'] is attached
@@ -11,15 +10,18 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
-  constructor(message: string, status: number, body: unknown) {
+  readonly code?: string;
+  constructor(message: string, status: number, body: unknown, code?: string) {
     super(message);
     this.status = status;
     this.body = body;
+    this.code = code;
   }
 }
 
 interface Options extends Omit<RequestInit, 'body'> {
   body?: unknown;
+  timeoutMs?: number;
   query?: Record<string, string | number | boolean | undefined | null>;
 }
 
@@ -69,53 +71,59 @@ function redirectToSignIn(): void {
   window.location.href = `/oauth2/start?rd=${rd}`;
 }
 
-function isAuthExpiredError(e: unknown): boolean {
-  // Browser fetch raises TypeError when it tries to follow a cross-origin
-  // redirect with credentials (oauth2-proxy 302 → github.com/login/...).
-  if (!(e instanceof TypeError)) return false;
-  const msg = (e.message || '').toLowerCase();
-  return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('load failed');
-}
-
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {
-  const { body, query, headers, ...rest } = opts;
-  const init: RequestInit = {
-    ...rest,
-    headers: {
-      'Accept': 'application/json',
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...(devToken() ? { Authorization: `Bearer ${devToken()}` } : {}),
-      ...(headers as Record<string, string> | undefined),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
+  const { body, query, headers, signal, timeoutMs, ...rest } = opts;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectAbort: (reason: unknown) => void = () => {};
+  const interrupted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const abort = () => {
+    controller.abort();
+    rejectAbort(new DOMException('Request cancelled', 'AbortError'));
   };
+  signal?.addEventListener('abort', abort, { once: true });
   const url = buildUrl(path, query);
-  let res: Response;
-  try {
-    res = await fetch(url, init);
-  } catch (e) {
-    if (isAuthExpiredError(e)) {
+  async function request(): Promise<T> {
+    const token = devToken();
+    const res = await fetch(url, {
+      ...rest, signal: controller.signal,
+      headers: { Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(headers as Record<string, string> | undefined) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (res.status === 401 && url.startsWith('/oauth/')) {
       redirectToSignIn();
-      throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+      throw new ApiError('Session expired. Redirecting to sign in.', 401, null);
     }
-    throw e;
+    const isJson = (res.headers.get('Content-Type') || '').includes('application/json');
+    const parsed: unknown = isJson ? await res.json() : await res.text();
+    if (!res.ok) {
+      const data = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+      throw new ApiError(typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`, res.status, parsed);
+    }
+    if (!isJson) throw new ApiError('The server returned an unexpected response.', res.status, null);
+    return parsed as T;
   }
-  if (res.status === 401 && url.startsWith('/oauth/')) {
-    redirectToSignIn();
-    throw new ApiError('Session expired — redirecting to sign in.', 401, null);
+  try {
+    if (signal?.aborted) throw new DOMException('Request cancelled', 'AbortError');
+    // Reads have a deadline; mutation outcomes must never be guessed or replayed.
+    const limit = timeoutMs ?? ((opts.method ?? 'GET') === 'GET' ? 35000 : 0);
+    if (limit > 0) timer = setTimeout(() => {
+      rejectAbort(new ApiError('The request took too long. Try again.', 0, null, 'request_timeout'));
+      controller.abort();
+    }, limit);
+    return await Promise.race([request(), interrupted]);
+  } catch (error) {
+    if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+    throw new ApiError("Can't reach the server.", 0, null, 'network_error');
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
-  const ctype = res.headers.get('Content-Type') || '';
-  const isJson = ctype.includes('application/json');
-  const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
-  if (!res.ok) {
-    const msg =
-      (isJson && parsed && typeof parsed === 'object' && 'error' in (parsed as Record<string, unknown>)
-        ? String((parsed as Record<string, unknown>).error)
-        : null) ?? `${res.status} ${res.statusText}`;
-    throw new ApiError(msg, res.status, parsed);
-  }
-  return parsed as T;
 }
 
-export const apiGet = <T>(path: string, query?: Options['query']) => api<T>(path, { method: 'GET', query });
+export const apiGet = <T>(path: string, query?: Options['query'], signal?: AbortSignal, timeoutMs?: number) =>
+  api<T>(path, { method: 'GET', query, signal, timeoutMs });
 export const apiPost = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', body });

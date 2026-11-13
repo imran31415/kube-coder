@@ -101,6 +101,22 @@ jobs:
       - name: Run unit tests (workspace-controller)
         run: helm unittest charts/workspace-controller/
 
+      - name: Install promtool for alert validation
+        run: |
+          set -euo pipefail
+          version=3.5.0
+          archive="prometheus-${version}.linux-amd64.tar.gz"
+          base="https://github.com/prometheus/prometheus/releases/download/v${version}"
+          cd "$RUNNER_TEMP"
+          curl -fsSL "$base/$archive" -o "$archive"
+          curl -fsSL "$base/sha256sums.txt" -o sha256sums.txt
+          grep " $archive$" sha256sums.txt | sha256sum -c -
+          tar -xzf "$archive" "prometheus-${version}.linux-amd64/promtool"
+          echo "$RUNNER_TEMP/prometheus-${version}.linux-amd64" >> "$GITHUB_PATH"
+
+      - name: Test rendered alert rules
+        run: python3 scripts/check-observability-rules.py
+
   python-tests:
     name: Server.py Unit Tests
     runs-on: ubuntu-latest
@@ -112,6 +128,9 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.15'
+
+      - name: Check shared observability helpers
+        run: python scripts/sync-observability.py --check
 
       - name: Run server.py tests
         run: make python-tests

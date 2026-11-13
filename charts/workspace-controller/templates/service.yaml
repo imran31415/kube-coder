@@ -21,3 +21,9 @@ spec:
     targetPort: 8081
     protocol: TCP
   {{- end }}
+  {{- if .Values.controller.metrics.enabled }}
+  - name: metrics
+    port: {{ .Values.controller.metrics.port }}
+    targetPort: metrics
+    protocol: TCP
+  {{- end }}

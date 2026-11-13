@@ -23,6 +23,7 @@ is a pure relocation. Managers that still live in server.py are reached
 through `handlers.server` — see handlers/__init__.py for why that injection
 exists instead of an `import server`.
 """
+from observability_logging import legacy_log
 
 import html
 import json
@@ -196,7 +197,7 @@ class SystemRoutes:
         token as a Bearer credential (`authorization` / `bearerTokenSecret` in
         a ServiceMonitor).
         """
-        if not self.check_claude_auth():
+        if not self.check_metrics_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         if not handlers.server._PROMETHEUS_AVAILABLE:
@@ -208,7 +209,7 @@ class SystemRoutes:
             # render() already isolates each section, so reaching here means the
             # document itself could not be built — serve nothing rather than a
             # half-formed exposition Prometheus would reject wholesale anyway.
-            print(f'[prom-metrics] render failed: {type(e).__name__}: {e}',
+            legacy_log('workspace', f'[prom-metrics] render failed: {type(e).__name__}: {type(e).__name__}',
                   file=sys.stderr)
             self.send_json({'error': 'metrics unavailable'}, 500)
             return

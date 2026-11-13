@@ -1,0 +1,68 @@
+suite: workspace ingress NetworkPolicy — Prometheus scrape carve-out (#581)
+templates:
+  - templates/networkpolicy.yaml
+set:
+  user.name: alice
+  namespace: ws-alice
+tests:
+  # Without this the PodMonitor scrapes nothing and reports no error: the base
+  # policy denies all ingress except from ingress-nginx, on every port.
+  - it: leaves the deny-all-but-ingress-nginx policy alone by default
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 2
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+
+  - it: admits the Prometheus pod on 6080 only, when scraping is enabled
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 3
+      # The original rule is untouched and still carries no port restriction.
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: ingress-nginx
+      - notExists:
+          path: spec.ingress[0].ports
+      - equal:
+          path: spec.ingress[2].ports[0].port
+          value: 6080
+      - equal:
+          path: spec.ingress[2].ports[0].protocol
+          value: TCP
+
+  # namespaceSelector AND podSelector in the SAME peer, not two peers: the
+  # carve-out is one pod in one namespace, not every pod in `default`.
+  - it: scopes the peer to the Prometheus pod rather than its whole namespace
+    set:
+      metrics.podMonitor.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.ingress[2].from
+          count: 1
+      - equal:
+          path: spec.ingress[2].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: default
+      - equal:
+          path: spec.ingress[2].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: prometheus
+
+  - it: follows a Prometheus installed somewhere other than default
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.prometheusNamespace: monitoring
+      metrics.prometheusPodLabels:
+        app.kubernetes.io/name: prometheus
+        prometheus: kps
+    asserts:
+      - equal:
+          path: spec.ingress[2].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: monitoring
+      - equal:
+          path: spec.ingress[2].from[0].podSelector.matchLabels.prometheus
+          value: kps
