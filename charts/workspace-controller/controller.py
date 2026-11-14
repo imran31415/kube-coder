@@ -1865,9 +1865,9 @@ def fleet_spend(window_seconds=None):
     if not out['workspacesReporting']:
         out['scrapeHint'] = (
             f'Prometheus has no {SPEND_TOKENS} series for any workspace. The '
-            'workspaces expose them on their metrics-only listener, but '
-            'nothing scrapes it by default — see docs/platform-observability.md '
-            'to enable the workspace PodMonitor.')
+            'workspaces expose them at /metrics/prometheus on their '
+            'metrics-only listener, but nothing scrapes it by default — see '
+            'docs/platform-observability.md to enable the workspace PodMonitor.')
     return out
 
 
