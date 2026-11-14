@@ -1,4 +1,5 @@
-# kube-coder — local single-node cluster overlay (minikube).
+# kube-coder — local single-node cluster overlay (minikube, or Apple
+# `container cluster` with LOCAL_DRIVER=apple).
 #
 # This is the values file the `make local-*` targets feed to Helm. It runs a
 # fully self-contained workspace with NO cloud dependencies:
@@ -30,6 +31,9 @@ user:
 # trying to pull from a registry; no pull secret because it never leaves the
 # node. `make local-build` builds and loads this exact tag for your host arch
 # (native arm64 on Apple Silicon — no emulation).
+# LOCAL_DRIVER=apple overrides this to Always at deploy time: with
+# `container cluster --shared-image-store` a node keeps a stale copy of a
+# rebuilt tag under IfNotPresent (see the Makefile's local-deploy).
 image:
   repository: kube-coder
   tag: local
