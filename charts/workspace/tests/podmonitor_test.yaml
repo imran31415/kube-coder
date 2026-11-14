@@ -57,13 +57,18 @@ tests:
           path: metadata.labels.release
           value: kps
 
-  # `browser` is the name of containerPort 6080. PodMonitor resolves the port
-  # by NAME against the pod spec, so a renumber can't silently scrape nothing.
-  - it: scrapes the 6080 container port by name, on the exposition path
+  # `metrics` is the metrics-only listener's container port. PodMonitor
+  # resolves the port by NAME against the pod spec, so a renumber can't
+  # silently scrape nothing. Never `browser` (6080, the dashboard/Task API):
+  # the NetworkPolicy admits Prometheus to the metrics port alone (#869).
+  - it: scrapes the metrics-only container port by name, on the exposition path
     set:
       metrics.podMonitor.enabled: true
     asserts:
       - equal:
+          path: spec.podMetricsEndpoints[0].port
+          value: metrics
+      - notEqual:
           path: spec.podMetricsEndpoints[0].port
           value: browser
       - equal:

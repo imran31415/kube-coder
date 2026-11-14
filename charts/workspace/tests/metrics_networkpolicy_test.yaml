@@ -16,7 +16,7 @@ tests:
           path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
           value: ingress-nginx
 
-  - it: admits the Prometheus pod on 6080 only, when scraping is enabled
+  - it: admits the Prometheus pod on the metrics port only, when scraping is enabled
     set:
       metrics.podMonitor.enabled: true
     asserts:
@@ -29,12 +29,53 @@ tests:
           value: ingress-nginx
       - notExists:
           path: spec.ingress[0].ports
+      - lengthEqual:
+          path: spec.ingress[2].ports
+          count: 1
       - equal:
           path: spec.ingress[2].ports[0].port
-          value: 6080
+          value: 6082
       - equal:
           path: spec.ingress[2].ports[0].protocol
           value: TCP
+
+  # #869 review: 6080 is the dashboard + Task API, and in oauth2 mode it trusts
+  # identity headers from whoever reaches it. The monitoring selector must
+  # never be admitted there, whatever port the metrics listener uses.
+  - it: never admits the monitoring selector to the dashboard/API port 6080
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.prometheusNamespace: monitoring
+    asserts:
+      - notContains:
+          path: spec.ingress[2].ports
+          content:
+            protocol: TCP
+            port: 6080
+      - notExists:
+          path: spec.ingress[2].ports[1]
+      # The only other rules that name 6080 are this workspace's own cron and
+      # keeper pods, by same-namespace podSelector — no namespaceSelector, so
+      # nothing in the monitoring namespace can match them.
+      - notExists:
+          path: spec.ingress[1].from[0].namespaceSelector
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels.app
+          value: kube-coder-cron
+
+  - it: follows a custom metrics port and still leaves 6080 closed to it
+    set:
+      metrics.podMonitor.enabled: true
+      metrics.port: 9464
+    asserts:
+      - equal:
+          path: spec.ingress[2].ports[0].port
+          value: 9464
+      - notContains:
+          path: spec.ingress[2].ports
+          content:
+            protocol: TCP
+            port: 6080
 
   # namespaceSelector AND podSelector in the SAME peer, not two peers: the
   # carve-out is one pod in one namespace, not every pod in `default`.

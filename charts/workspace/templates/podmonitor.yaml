@@ -18,9 +18,10 @@ spec:
     matchLabels:
       app: ws-{{ .Values.user.name }}
   podMetricsEndpoints:
-  # `browser` is the 6080 container port (see service.yaml / deployment.yaml).
-  # Named rather than numeric so a port renumber can't silently scrape nothing.
-  - port: browser
+  # `metrics` is the metrics-only listener (metrics.port, see deployment.yaml),
+  # never `browser`/6080: the NetworkPolicy admits Prometheus to this port
+  # alone. Named rather than numeric so a renumber can't silently scrape nothing.
+  - port: metrics
     path: /metrics/prometheus
     relabelings:
     - targetLabel: kube_coder_component

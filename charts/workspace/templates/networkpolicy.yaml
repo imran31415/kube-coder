@@ -90,12 +90,18 @@ spec:
   {{- end }}
 
 {{- if .Values.metrics.podMonitor.enabled }}
-  # Prometheus scrape of /metrics/prometheus (#581). A SECOND rule rather than
-  # another peer on the rule above, because this one is port-scoped: the
-  # ingress-nginx rule deliberately carries no `ports:` (the controller fronts
-  # every port), while a scraper has business with 6080 and nothing else. A
-  # NetworkPolicy ORs its rules, so adding this widens the allow-list by
-  # exactly one pod-selector on exactly one port.
+  # Prometheus scrape of the metrics-only listener (#581, #869). A SECOND rule
+  # rather than another peer on the rule above, because this one is
+  # port-scoped: the ingress-nginx rule deliberately carries no `ports:` (the
+  # controller fronts every port), while a scraper has business with the
+  # metrics port and nothing else. A NetworkPolicy ORs its rules, so adding
+  # this widens the allow-list by exactly one pod-selector on exactly one port.
+  #
+  # NEVER 6080. That is the dashboard and Task API, and in oauth2 mode it
+  # trusts X-Auth-Request-User / Remote-User from any caller that reaches it
+  # directly; a monitoring pod admitted there could forge a header and drive
+  # the workspace. metrics.port serves GET /metrics/prometheus to the scrape
+  # token and nothing else (metrics_listener.py).
   #
   # This is required, not optional: without it the endpoint is unreachable from
   # any monitoring namespace and the scrape silently yields nothing — the
@@ -109,5 +115,5 @@ spec:
           {{- toYaml (.Values.metrics.prometheusPodLabels | default (dict "app.kubernetes.io/name" "prometheus")) | nindent 10 }}
     ports:
     - protocol: TCP
-      port: 6080
+      port: {{ .Values.metrics.port }}
 {{- end }}

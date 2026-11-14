@@ -477,19 +477,26 @@ spec:
               key: self-serve-token
         {{- end }}
         {{- if .Values.metrics.scrapeSecretName }}
-        # Metrics-only bearer token a Prometheus scrape presents to
-        # /metrics/prometheus (#581). Deliberately NOT the Claude Task API
+        {{- if has (int .Values.metrics.port) (list 6080 6081 7681 8080) }}
+        {{- fail "metrics.port must be a dedicated port, not one of the workspace's own (6080, 6081, 7681, 8080)" }}
+        {{- end }}
+        # Metrics-only bearer token a Prometheus scrape presents to the
+        # metrics listener (#581, #869). Deliberately NOT the Claude Task API
         # token: that one is read/write over the whole API, lives on the PVC
         # rather than in a Secret (so no PodMonitor could reference it), and is
         # user-regenerable. This value is the per-workspace derivation
         # HMAC-SHA256(master, "kc-metrics-scrape/<user>") seeded by
-        # scripts/ensure-workspace-namespace.sh; check_metrics_auth accepts it
-        # on that one path and nowhere else.
+        # scripts/ensure-workspace-namespace.sh; only metrics_listener.py
+        # accepts it, and 6080 never does.
         - name: KC_METRICS_SCRAPE_TOKEN
           valueFrom:
             secretKeyRef:
               name: {{ .Values.metrics.scrapeSecretName }}
               key: metrics-scrape-token
+        # Starts the metrics-only listener (GET /metrics/prometheus, nothing
+        # else). The Prometheus NetworkPolicy rule opens this port and not 6080.
+        - name: KC_METRICS_PORT
+          value: {{ .Values.metrics.port | quote }}
         {{- end }}
         # DEMO_SHOW_ALL=true makes the SPA render mutation UI (dimmed +
         # click-intercepted) instead of hiding it, so the public demo shows
@@ -536,6 +543,11 @@ spec:
           containerPort: 6080
         - name: vnc
           containerPort: 6081
+        {{- if .Values.metrics.scrapeSecretName }}
+        # Metrics-only listener; the PodMonitor scrapes it by this name.
+        - name: metrics
+          containerPort: {{ .Values.metrics.port }}
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /health
