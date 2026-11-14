@@ -1,7 +1,8 @@
+import { usePollingResource } from '../hooks/usePollingResource';
+import { ResourceStatus } from './ResourceStatus';
 import type { ComponentChildren } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useState } from 'preact/hooks';
 import {
-  type SpendResponse,
   type TokenBlock,
   type WorkspaceSpend,
   type ModelSpend,
@@ -30,46 +31,13 @@ const CLASSES: [keyof TokenBlock, string][] = [
  *  these series to, and a genuinely quiet fleet. A zero an operator trusts is
  *  worse than no number. */
 export function SpendPanel() {
-  const [spend, setSpend] = useState<SpendResponse | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [range, setRange] = useState(21600);
   const [open, setOpen] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const r = await getSpend(range);
-        if (!alive) return;
-        setSpend(r);
-        setErr(null);
-      } catch (e) {
-        if (alive) setErr(e instanceof Error ? e.message : String(e));
-      }
-    }
-    void load();
-    const id = window.setInterval(() => void load(), 30000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  const resource = usePollingResource(`spend:${range}`, signal => getSpend(range, signal), 30000);
+  const spend = resource.data;
 
-  if (err && !spend) {
-    return (
-      <Frame range={range} setRange={setRange} open={open} setOpen={setOpen}>
-        <div class="panel-msg err">Couldn't load agent spend: {err}</div>
-      </Frame>
-    );
-  }
-  if (!spend) {
-    return (
-      <Frame range={range} setRange={setRange} open={open} setOpen={setOpen}>
-        <div class="panel-msg">Loading agent spend…</div>
-      </Frame>
-    );
-  }
+  if (!spend) return <Frame range={range} setRange={setRange} open={open} setOpen={setOpen}><ResourceStatus {...resource} /></Frame>;
 
   const cov = spend.coverage.window;
   const unmeasured = cov.not_instrumented + cov.no_session_id;
@@ -82,15 +50,10 @@ export function SpendPanel() {
       setOpen={setOpen}
       sub={`${spend.workspacesReporting} workspace${spend.workspacesReporting === 1 ? '' : 's'} reporting`}
     >
-      {spend.metricsError && (
-        <div class="panel-msg err">
-          Spend metrics require Prometheus: {spend.metricsError}
-        </div>
-      )}
-      {!spend.metricsError && spend.scrapeHint && (
-        <div class="panel-msg err">No workspace is exporting spend metrics. {spend.scrapeHint}</div>
-      )}
+      <ResourceStatus {...resource} />
 
+      {/* Spend is Prometheus-only: with metricsError its figures are absent,
+          not zero, so none are drawn (other panels keep their kubectl data). */}
       {open && !spend.metricsError && (
         <>
           <div class="spend-total">

@@ -1,0 +1,79 @@
+{{- if .Values.controller.metrics.prometheusRule.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+{{- fail "Install Prometheus Operator PrometheusRule CRDs before enabling alert rules" }}
+{{- end }}
+{{- $rules := .Values.controller.metrics.prometheusRule }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kube-coder-workspaces
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "wc.labels" . | nindent 4 }}
+    {{- with $rules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: kube-coder.workspaces
+    rules:
+    - alert: WorkspaceMemoryPressure
+      expr: >-
+        (max by (namespace, pod, container) (container_memory_working_set_bytes{namespace=~{{ $rules.namespaceRegex | quote }},container!="",container!="POD"})
+        / on (namespace, pod, container)
+        (max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace=~{{ $rules.namespaceRegex | quote }},resource="memory",unit="byte"}) > 0))
+        > {{ $rules.memoryRatio }}
+      for: {{ $rules.memoryFor }}
+      labels: {severity: warning, component: workspace}
+      annotations:
+        summary: Workspace memory is close to its limit
+        description: Inspect memory consumers before raising the container limit.
+        runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- range $severity, $config := dict "warning" (dict "ratio" $rules.diskWarningRatio "duration" $rules.diskWarningFor) "critical" (dict "ratio" $rules.diskCriticalRatio "duration" $rules.diskCriticalFor) }}
+    - alert: WorkspaceDiskPressure
+      expr: >-
+        (max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=~{{ $rules.namespaceRegex | quote }}})
+        / on (namespace, persistentvolumeclaim)
+        (max by (namespace, persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace=~{{ $rules.namespaceRegex | quote }}}) > 0))
+        > {{ $config.ratio }}
+      for: {{ $config.duration }}
+      labels: {severity: {{ $severity }}, component: workspace}
+      annotations:
+        summary: Workspace volume is nearly full
+        description: Remove unneeded files or expand the PVC; upload quota is not total disk usage.
+        runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- end }}
+    - alert: WorkspaceHookDeadLetters
+      expr: max by (namespace, pod) (kubecoder_hook_dead_letters) > 0
+      for: {{ $rules.deadLettersFor }}
+      labels: {severity: warning, component: workspace}
+      annotations:
+        summary: A workspace completion hook exhausted its retries
+        description: Check the hook destination and credentials before retrying delivery.
+        runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- if $rules.workspaceScrapeAlert }}
+    # Fires on ABSENCE, so it is only meaningful once every running workspace
+    # is scraped: each workspace's own chart values set
+    # metrics.podMonitor.enabled + metrics.scrapeSecretName. Off by default and
+    # separate from prometheusRule.enabled, which says nothing about that.
+    - alert: WorkspaceMetricsUnavailable
+      expr: >-
+        (max by (namespace, pod) (kube_pod_status_phase{namespace=~{{ $rules.namespaceRegex | quote }},pod=~"ws-.*",phase="Running"}) == 1)
+        unless on (namespace, pod)
+        (max by (namespace, pod) (up{kube_coder_component="workspace"}) == 1)
+      for: 10m
+      labels: {severity: warning, component: workspace}
+      annotations:
+        summary: A running workspace is not reporting metrics
+        description: Check PodMonitor selection, its Secret and the monitoring NetworkPolicy. Sleeping workspaces have no running pod.
+        runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- end }}
+    - alert: WorkspaceMetricsCollectorFailed
+      expr: min by (namespace, pod, section) (kubecoder_metrics_collector_up) == 0
+      for: 5m
+      labels: {severity: warning, component: workspace}
+      annotations:
+        summary: A workspace metrics section cannot be collected
+        description: Inspect the workspace JSON logs; absent measurements do not mean zero usage.
+        runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+{{- end }}

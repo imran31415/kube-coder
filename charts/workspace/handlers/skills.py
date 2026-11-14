@@ -25,6 +25,7 @@ Ordering notes now carried as table data:
 parse inline and hand over as an argument; that is the route's `query=True`
 column — see handlers/routing.py.
 """
+from observability_logging import legacy_log
 
 import json
 import re
@@ -56,7 +57,7 @@ class SkillsRoutes:
             try:
                 handlers.server.SkillsSyncer.trigger_sync()
             except Exception as e:
-                print(f'[skills] refresh failed: {e}', file=sys.stderr)
+                legacy_log('workspace', f'[skills] refresh failed: {e}', file=sys.stderr)
         records = handlers.server.SkillsSyncer.snapshot()
         system = (query.get('system') or [None])[0]
         scope = (query.get('scope') or [None])[0]

@@ -88,6 +88,44 @@ print(hmac.new(os.environ["KC_MASTER"].encode(),
     --dry-run=client -o yaml | kubectl apply -n "$NS" -f -
 }
 
+# Seed the per-workspace metrics scrape token: HMAC-SHA256 of
+# "kc-metrics-scrape/<user>" keyed by the controller's master scrape token.
+# Same derivation shape as the self-serve token above and for the same reason —
+# the master never enters a tenant namespace, so a token read out of one
+# workspace scrapes that workspace alone.
+#
+# This is what a Prometheus PodMonitor authenticates with (#581). It exists
+# INSTEAD of handing a scraper the workspace's Claude Task API token, which is
+# read/write over the whole API, is self-minted onto the PVC rather than into a
+# Secret (so no monitor object could reference it), and is user-regenerable.
+# The Prometheus Operator resolves a monitor's credential Secret from the
+# monitor's OWN namespace, which is why this lands in $NS rather than in the
+# monitoring namespace. Optional: skipped silently when no master exists.
+seed_metrics_scrape_secret() {
+  local name="${METRICS_SCRAPE_SECRET_NAME:-kc-metrics-scrape}"
+  if [ "$NS" = "$REGCRED_SRC" ]; then
+    echo "WARNING: workspace namespace == $REGCRED_SRC; refusing to overwrite" \
+         "the master $name Secret with a derived token." >&2
+    return 0
+  fi
+  local master
+  master=$(kubectl get secret "$name" -n "$REGCRED_SRC" \
+             -o jsonpath='{.data.metrics-scrape-token}' 2>/dev/null | base64 -d) || true
+  if [ -z "$master" ]; then
+    echo "==> $name absent in $REGCRED_SRC (metrics scraping disabled); skipping"
+    return 0
+  fi
+  echo "==> seeding per-workspace metrics scrape token $name into $NS"
+  local derived
+  derived=$(KC_MASTER="$master" KC_USER="$USER_SLUG" python3 -c 'import hashlib, hmac, os
+print(hmac.new(os.environ["KC_MASTER"].encode(),
+               ("kc-metrics-scrape/" + os.environ["KC_USER"]).encode(),
+               hashlib.sha256).hexdigest())')
+  kubectl create secret generic "$name" -n "$NS" \
+    --from-literal=metrics-scrape-token="$derived" \
+    --dry-run=client -o yaml | kubectl apply -n "$NS" -f -
+}
+
 # Image-pull Secret — required for the pod to pull from the private registry.
 copy_secret "$REGCRED_NAME" 1
 # Self-serve update token: per-workspace derivation of the controller's
@@ -95,6 +133,10 @@ copy_secret "$REGCRED_NAME" 1
 # update.selfServeSecretName mount it; without a per-namespace Secret the pod
 # dies with CreateContainerConfigError.
 seed_self_serve_secret
+# Metrics scrape token: per-workspace derivation of the kc-metrics-scrape
+# master. Workspaces whose values set metrics.scrapeSecretName mount it; the
+# chart's PodMonitor references the same Secret, in the same namespace.
+seed_metrics_scrape_secret
 # Shared assistant secret (openrouter key). Provisioned workspaces reference it
 # via assistant.openrouter.sharedSecretName (default coder-shared-assistant) as
 # a pre-existing shared Secret the chart does NOT create; per-namespace isolation

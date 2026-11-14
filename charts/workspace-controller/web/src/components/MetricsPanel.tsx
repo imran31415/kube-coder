@@ -1,45 +1,19 @@
-import { useEffect, useState } from 'preact/hooks';
-import { type WorkspaceMetrics, getWorkspaceMetrics } from '../api/workspaces';
+import { usePollingResource } from '../hooks/usePollingResource';
+import { ResourceStatus } from './ResourceStatus';
+import { getWorkspaceMetrics } from '../api/workspaces';
 import { Card } from './Card';
 import { fmtBytes, fmtCores, fmtPct, fmtRate, fmtUptime, fmtUsd, tone } from '../format';
 
 /** Per-workspace mini dashboard, shown when a row is expanded. Loads on mount
  *  and refreshes every 10s while open. */
 export function MetricsPanel({ user }: { user: string }) {
-  const [m, setM] = useState<WorkspaceMetrics | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const res = await getWorkspaceMetrics(user, 3600);
-        if (alive) {
-          setM(res);
-          setErr(null);
-        }
-      } catch (e) {
-        if (alive) setErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-    void load();
-    const id = window.setInterval(() => void load(), 10000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [user]);
-
-  if (loading && !m) return <div class="panel"><div class="panel-msg">Loading metrics…</div></div>;
-  if (err && !m) return <div class="panel"><div class="panel-msg err">Couldn't load metrics: {err}</div></div>;
-  if (!m) return null;
+  const resource = usePollingResource(`workspace:${user}`, signal => getWorkspaceMetrics(user, 3600, signal), 10000);
+  const m = resource.data;
+  if (!m || (resource.problem && !resource.updatedAt)) return <div class="panel"><ResourceStatus {...resource} /></div>;
 
   return (
     <div class="panel">
-      {m.metricsError && <div class="panel-msg err">Live metrics unavailable: {m.metricsError}</div>}
+      <ResourceStatus {...resource} />
       <div class="cards">
         <Card
           title="CPU"

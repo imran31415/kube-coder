@@ -16,13 +16,20 @@ web/src/api/client.ts) so the auth cookie attaches; we strip that prefix here.
 
 Stdlib only — no third-party deps, so it runs on the unmodified coder image.
 """
+from observability_logging import legacy_log
+import functools
+from observability_http import ObservedHTTP, MetricsHandler, RequestDeadlineExceeded, remaining_timeout, without_deadline
+from observability_metrics import REGISTRY
+from observability_logging import event_every, problem, safe_text
 import base64
 import concurrent.futures
+import contextvars
 import datetime
 import hashlib
 import http.server
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -143,6 +150,15 @@ class KubectlError(RuntimeError):
         self.stderr = stderr
 
 
+def _kubectl_timeout_message(args, timeout):
+    """Say which limit ran out: kubectl's own, or what was left of the
+    request's read budget (a shorter, different number)."""
+    if timeout < KUBECTL_TIMEOUT:
+        return (f'kubectl {args[0]} stopped after {timeout:.1f}s: the request ran out '
+                f'of its time budget (kubectl limit is {KUBECTL_TIMEOUT}s)')
+    return f'kubectl {args[0]} timed out after {KUBECTL_TIMEOUT}s'
+
+
 def _kubectl_json(args, _attempts=2, namespace=None):
     """Run `kubectl <args> -o json -n <ns>` and parse stdout.
 
@@ -156,12 +172,13 @@ def _kubectl_json(args, _attempts=2, namespace=None):
     cmd = ['kubectl', *args, '-n', namespace or NAMESPACE, '-o', 'json']
     last = None
     for attempt in range(_attempts):
+        timeout = remaining_timeout(KUBECTL_TIMEOUT)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             raise KubectlError('kubectl not found on PATH')
         except subprocess.TimeoutExpired:
-            last = KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
+            last = KubectlError(_kubectl_timeout_message(args, timeout))
         else:
             if proc.returncode == 0:
                 try:
@@ -182,13 +199,14 @@ def _kubectl_run(args, namespace=None, input=None):
     mutations (scale/patch) pass the workspace's resolved namespace (#103).
     `input` is fed to stdin, for an `apply -f -`."""
     cmd = ['kubectl', *args, '-n', namespace or NAMESPACE]
+    timeout = remaining_timeout(KUBECTL_TIMEOUT)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=KUBECTL_TIMEOUT,
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               input=input)
     except FileNotFoundError:
         raise KubectlError('kubectl not found on PATH')
     except subprocess.TimeoutExpired:
-        raise KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
+        raise KubectlError(_kubectl_timeout_message(args, timeout))
     if proc.returncode != 0:
         raise KubectlError(f'kubectl {args[0]} failed', proc.stderr.strip())
     return proc.stdout.strip()
@@ -276,8 +294,9 @@ def _collect(resource):
     items = []
     workers = min(COLLECT_CONCURRENCY, len(namespaces))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for chunk in pool.map(_one, namespaces):
-            items.extend(chunk)
+        futures = [pool.submit(contextvars.copy_context().run, _one, ns) for ns in namespaces]
+        for future in futures:
+            items.extend(future.result())
     return items
 
 
@@ -327,7 +346,7 @@ def _owners_for(dep):
         full = _kubectl_json(['get', 'deployment', key[1], '--show-managed-fields'],
                              namespace=key[0])
     except KubectlError as exc:
-        print(f'[controller] cannot read who stopped {key[0]}/{key[1]}, so it shows '
+        legacy_log('controller', f'[controller] cannot read who stopped {key[0]}/{key[1]}, so it shows '
               f'as stopped: {exc} {exc.stderr}'.rstrip(), file=sys.stderr)
         return None
     full_meta = full.get('metadata', {})
@@ -422,8 +441,9 @@ def list_workspaces():
     elif at_zero:
         workers = min(COLLECT_CONCURRENCY, len(at_zero))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            for dep, result in zip(at_zero, pool.map(_owners_for, at_zero)):
-                owners[id(dep)] = result
+            futures = [pool.submit(contextvars.copy_context().run, _owners_for, dep) for dep in at_zero]
+            for dep, future in zip(at_zero, futures):
+                owners[id(dep)] = future.result()
     # Forget workspaces that are no longer at 0, or no longer exist.
     keep = {(d.get('metadata', {}).get('namespace') or NAMESPACE,
              d.get('metadata', {}).get('name', '')) for d in at_zero}
@@ -454,7 +474,9 @@ def cached_list_workspaces(force=False):
         # Re-check under the lock: a concurrent caller may have just refreshed.
         if not force and c['data'] is not None and time.time() - c['ts'] < LIST_CACHE_TTL:
             return c['data']
-        c['data'] = list_workspaces()
+        # Shared by every caller, so never bounded by the one request that
+        # happened to miss: see observability_http.without_deadline.
+        c['data'] = without_deadline(list_workspaces)
         c['ts'] = time.time()
         return c['data']
 
@@ -496,6 +518,22 @@ def find_workspace(user):
     raise LookupError(name)
 
 
+def observed_operation(name):
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            with REGISTRY.operation(name) as observation:
+                result = fn(*args, **kwargs)
+                if name == 'provision_submit':
+                    observation['outcome'] = 'submitted'
+                elif isinstance(result, dict) and (result.get('persistError') or result.get('reconcile') == 'failed'):
+                    observation['outcome'] = 'partial'
+                return result
+        return wrapped
+    return decorate
+
+
+@observed_operation('scale')
 def scale_workspace(user, replicas):
     # Confirm the deployment exists (and is actually a workspace) before
     # touching it — never scale something the listing wouldn't show.
@@ -590,6 +628,7 @@ def _validate_mem(q):
     return q
 
 
+@observed_operation('resources')
 def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
     """Patch the ide container's CPU+memory limits (immediate) and, when GitOps is
     configured and persist=True, also commit them to the user's values.yaml so the
@@ -619,7 +658,7 @@ def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
             persisted = gitops_update_resources(user, limits)
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
-            sys.stderr.write(f'[controller] gitops resource update {user} failed: {exc}\n')
+            legacy_log('controller', f'[controller] gitops resource update {user} failed: {exc}\n')
     invalidate_workspaces_cache()
     return {'user': user, 'limits': limits, 'persisted': persisted, 'persistError': persist_error}
 
@@ -748,7 +787,7 @@ def latest_version(force=False):
         if parse_version(tag):
             _latest_cache['version'] = tag
     except GithubError as exc:
-        sys.stderr.write(f'[controller] latest_version lookup failed: {exc}\n')
+        legacy_log('controller', f'[controller] latest_version lookup failed: {exc}\n')
     _latest_cache['ts'] = now
     return _latest_cache['version']
 
@@ -883,6 +922,7 @@ def gitops_update_resources(slug, limits):
                                f'update {slug} resource limits ({summary})')
 
 
+@observed_operation('update')
 def set_workspace_image(user, target_version=None, persist=True):
     """Repoint a workspace at a release version.
 
@@ -917,7 +957,7 @@ def set_workspace_image(user, target_version=None, persist=True):
             persisted = gitops_update_image_tag(user, new_tag)
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
-            sys.stderr.write(f'[controller] gitops image update {user}->{new_tag} failed: {exc}\n')
+            legacy_log('controller', f'[controller] gitops image update {user}->{new_tag} failed: {exc}\n')
     # Config reconcile — the crux of a real "update". The live image patch above
     # rolls the pod, but the pod runs server.py (and every other script) from the
     # Helm-rendered ConfigMaps, which a bare `kubectl patch` NEVER refreshes. So
@@ -937,7 +977,7 @@ def set_workspace_image(user, target_version=None, persist=True):
             reconcile = 'launched'
         except (KubectlError, ProvisionError) as exc:
             reconcile = 'failed'
-            sys.stderr.write(f'[controller] update {user}: config reconcile Job failed: {exc}\n')
+            legacy_log('controller', f'[controller] update {user}: config reconcile Job failed: {exc}\n')
     return {
         'user': user,
         'fromVersion': current_ver,
@@ -994,7 +1034,20 @@ def workspace_version_info(user):
 # --- Metrics (Prometheus) ----------------------------------------------------
 
 class PromError(RuntimeError):
-    pass
+    def __init__(self, message):
+        codes = ('metrics_disabled', 'metrics_timeout', 'metrics_unavailable')
+        self.code = message if message in codes else 'metrics_unavailable'
+        super().__init__(message)
+
+
+def _prom_failed(code, reason):
+    """Raise the code the dashboard explains, after logging the reason it
+    can't show (unreachable host, HTTP status, query error). Once a minute at
+    most: every open dashboard polls several queries, and an outage would
+    otherwise log each of them on each poll."""
+    event_every(60, 'controller', 'prometheus_query_failed', logging.WARNING,
+                code=code, detail=safe_text(reason))
+    return PromError(code)
 
 
 def parse_cpu(q):
@@ -1025,15 +1078,18 @@ def parse_bytes(q):
 
 def _prom_get(path, params):
     if not PROMETHEUS_URL:
-        raise PromError('metrics disabled (PROMETHEUS_URL unset)')
+        raise PromError('metrics_disabled')
     url = f'{PROMETHEUS_URL}{path}?{urllib.parse.urlencode(params)}'
     try:
-        with urllib.request.urlopen(url, timeout=PROM_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=remaining_timeout(PROM_TIMEOUT)) as resp:
             data = json.load(resp)
-    except (OSError, ValueError) as exc:  # URLError/HTTPError/timeout subclass OSError
-        raise PromError(f'prometheus unreachable: {exc}')
-    if data.get('status') != 'success':
-        raise PromError(data.get('error', 'prometheus query failed'))
+    except (OSError, ValueError, RequestDeadlineExceeded) as exc:  # URLError/HTTPError/timeout subclass OSError
+        timed_out = isinstance(exc, (TimeoutError, RequestDeadlineExceeded)) or isinstance(getattr(exc, 'reason', None), TimeoutError)
+        raise _prom_failed('metrics_timeout' if timed_out else 'metrics_unavailable',
+                           f'prometheus {path}: {type(exc).__name__}: {exc}') from exc
+    if not isinstance(data, dict) or data.get('status') != 'success' or not isinstance(data.get('data'), dict) or not isinstance(data['data'].get('result'), list):
+        reason = data.get('error') if isinstance(data, dict) else None
+        raise _prom_failed('metrics_unavailable', f'prometheus {path}: {reason or "unexpected response"}')
     return data['data']
 
 
@@ -1809,9 +1865,9 @@ def fleet_spend(window_seconds=None):
     if not out['workspacesReporting']:
         out['scrapeHint'] = (
             f'Prometheus has no {SPEND_TOKENS} series for any workspace. The '
-            'workspaces expose them at /metrics/prometheus, but that endpoint '
-            'is authenticated and nothing scrapes it by default — see '
-            'docs/prometheus-metrics.md for the ServiceMonitor.')
+            'workspaces expose them at /metrics/prometheus on their '
+            'metrics-only listener, but nothing scrapes it by default — see '
+            'docs/platform-observability.md to enable the workspace PodMonitor.')
     return out
 
 
@@ -1959,7 +2015,7 @@ def _github_api(method, path, token=None, body=None):
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode('utf-8', 'replace')[:500]
         raise GithubError(f'github {method} {path} -> HTTP {exc.code}', exc.code, detail)
-    except (OSError, ValueError) as exc:  # URLError/timeout subclass OSError
+    except (OSError, ValueError, RequestDeadlineExceeded) as exc:  # URLError/timeout subclass OSError
         raise GithubError(f'github {method} {path} failed: {exc}')
 
 
@@ -2198,7 +2254,7 @@ def gitops_config_exists(slug):
         return True
     except GithubError as exc:
         if getattr(exc, 'status', None) != 404:
-            sys.stderr.write(f'[controller] gitops_config_exists({slug}) check failed: {exc}\n')
+            legacy_log('controller', f'[controller] gitops_config_exists({slug}) check failed: {exc}\n')
         return False
 
 
@@ -2264,7 +2320,7 @@ def build_job_manifest(slug):
     # would git-clone it and run its make deploy under the provisioner SA
     # (finding 7). Also log the ref + its classification for provenance.
     ref_kind = validate_chart_ref(CHART_REF)
-    sys.stderr.write(
+    legacy_log('controller',
         f'[controller] provisioning {slug}: chart repo={CHART_REPO} ref={CHART_REF} '
         f'({ref_kind}) allowMutableRef={ALLOW_MUTABLE_CHART_REF}\n')
     name = f'provision-{slug}-{int(time.time())}'[:63]
@@ -2336,13 +2392,18 @@ def build_job_manifest(slug):
 
 def _kubectl_apply(manifest):
     cmd = ['kubectl', 'apply', '-n', NAMESPACE, '-f', '-']
-    proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
-                          text=True, timeout=KUBECTL_TIMEOUT)
+    timeout = remaining_timeout(KUBECTL_TIMEOUT)
+    try:
+        proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise KubectlError(_kubectl_timeout_message(['apply'], timeout))
     if proc.returncode != 0:
         raise KubectlError('kubectl apply failed', proc.stderr.strip())
     return proc.stdout.strip()
 
 
+@observed_operation('provision_submit')
 def create_provision_job(slug):
     return _kubectl_apply(build_job_manifest(slug))
 
@@ -2399,15 +2460,43 @@ def provision_workspace(login, client_id, client_secret, opts_in):
 
 # --- HTTP handler ------------------------------------------------------------
 
-class Handler(http.server.SimpleHTTPRequestHandler):
+class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
+    telemetry_service = 'controller'
     server_version = 'workspace-controller/0.1'
-
-    def log_message(self, fmt, *args):
-        sys.stderr.write('[controller] %s - %s\n' % (self.address_string(), fmt % args))
 
     # ----- helpers (mirror server.py) -----
 
+    METRICS_ROUTES = ('/api/insights', '/api/capacity', '/api/capacity/summary', '/api/spend')
+    METRICS_CODES = ('metrics_disabled', 'metrics_timeout', 'metrics_unavailable')
+
+    def _with_problem(self, data, status):
+        """Attach a correlated `problem` to a failure payload.
+
+        Monitoring states (metricsError, insights' error, scrapeHint) are codes
+        the dashboard explains, so their text becomes the safe message. Any
+        other 5xx is operator-facing (kubectl, GitHub, provisioning): its
+        `error` keeps the actionable text the console shows, and the same text
+        is logged, redacted, under the problem's error_id."""
+        metrics_route = self._norm_path() in self.METRICS_ROUTES
+        field = 'metricsError' if data.get('metricsError') else (
+            'error' if metrics_route and status < 500 and data.get('error') else None)
+        if field:
+            code = data[field] if data[field] in self.METRICS_CODES else 'metrics_unavailable'
+            detail = problem('controller', code)
+            return dict(data, problem=detail, **{field: detail['error']})
+        if data.get('scrapeHint'):
+            detail = problem('controller', 'metrics_not_reporting')
+            return dict(data, problem=detail, scrapeHint=detail['error'])
+        if status >= 500 and data.get('error'):
+            detail = problem('controller', 'metrics_unavailable' if metrics_route else 'internal_error',
+                             exc_info=sys.exc_info() if sys.exc_info()[0] else None,
+                             detail=data['error'])
+            return dict(data, problem=detail)
+        return data
+
     def send_json(self, data, status=200):
+        if isinstance(data, dict) and 'problem' not in data:
+            data = self._with_problem(data, status)
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header('Content-type', 'application/json')
@@ -2421,7 +2510,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # SPA) hung up before we finished writing. There's nothing to
             # recover, and letting it propagate crashes the handler thread with
             # a noisy traceback, so swallow it.
-            pass
+            self._obs_aborted = True
 
     def read_json_body(self):
         n = int(self.headers.get('Content-Length', 0))
@@ -2502,18 +2591,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not tok:
             return False
         if hmac.compare_digest(tok, self_serve_token_for(user)):
-            sys.stderr.write(
+            legacy_log('controller',
                 f'[controller] self-serve auth user={user} mode=per-workspace '
                 f'path={self.path}\n')
             return True
         if SELF_SERVE_ALLOW_SHARED_TOKEN and hmac.compare_digest(tok, SELF_SERVE_TOKEN):
-            sys.stderr.write(
+            legacy_log('controller',
                 f'[controller] self-serve auth user={user} mode=SHARED-LEGACY '
                 f'path={self.path} — this workspace still holds the master '
                 f'token; re-seed its namespace (ensure-workspace-namespace.sh) '
                 f'and set SELF_SERVE_ALLOW_SHARED_TOKEN=false\n')
             return True
-        sys.stderr.write(
+        legacy_log('controller',
             f'[controller] self-serve auth REJECTED user={user} path={self.path}\n')
         return False
 
@@ -2557,7 +2646,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(decorate_with_updates(cached_list_workspaces()))
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/admin/token':
@@ -2587,7 +2676,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except LookupError:
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] self version {user}: {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] self version {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/insights':
@@ -2597,7 +2686,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(compute_insights())
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/capacity/summary':
@@ -2660,7 +2749,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except LookupError:
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/provision/config':
@@ -2727,7 +2816,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except GithubError as exc:
             self.send_json({'error': f'github lookup failed: {exc}'}, 502)
         except (ProvisionError, KubectlError) as exc:
-            sys.stderr.write(f'[controller] provision failed: {exc}\n')
+            legacy_log('controller', f'[controller] provision failed: {exc}\n')
             self.send_json({'error': str(exc)[:200]}, 502)
 
     def do_POST(self):
@@ -2785,7 +2874,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] set resources {user}: {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] set resources {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, 'user': user, 'limits': result['limits'],
@@ -2814,7 +2903,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] update {user}: {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] update {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, **result})
@@ -2842,7 +2931,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                sys.stderr.write(f'[controller] restart {user}: {exc}: {exc.stderr}\n')
+                legacy_log('controller', f'[controller] restart {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, **result})
@@ -2866,7 +2955,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             return
         except KubectlError as exc:
-            sys.stderr.write(f'[controller] scale {user}={replicas}: {exc}: {exc.stderr}\n')
+            legacy_log('controller', f'[controller] scale {user}={replicas}: {exc}: {exc.stderr}\n')
             self.send_json({'error': str(exc)}, 502)
             return
         self.send_json({'ok': True, 'user': user, 'desiredReplicas': replicas})
@@ -2904,11 +2993,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    print(f'[controller] namespace={NAMESPACE} prefix={WORKSPACE_PREFIX!r} '
+    if os.environ.get('CONTROLLER_METRICS_ENABLED', '').lower() == 'true':
+        port = int(os.environ.get('CONTROLLER_METRICS_PORT', '9091'))
+        if port in (PORT, SELF_SERVE_PORT):
+            raise ValueError('metrics port must be separate from admin/self-serve ports')
+        metrics_httpd = http.server.ThreadingHTTPServer(('0.0.0.0', port), MetricsHandler)
+        threading.Thread(target=metrics_httpd.serve_forever, daemon=True).start()
+
+    legacy_log('controller', f'[controller] namespace={NAMESPACE} prefix={WORKSPACE_PREFIX!r} '
           f'trusted_proxy={TRUSTED_PROXY} admins={sorted(ADMIN_USERS) or "(proxy-gated)"}',
           file=sys.stderr)
     if DEV_TOKEN:
-        print('[controller] WARNING: CONTROLLER_DEV_TOKEN set — bearer-token auth bypass '
+        legacy_log('controller', '[controller] WARNING: CONTROLLER_DEV_TOKEN set — bearer-token auth bypass '
               'is enabled. Local dev only.', file=sys.stderr)
     # Restricted self-serve listener (token-gated, no header trust) on a
     # separate port so workspace pods can self-update without ever being able
@@ -2918,19 +3014,19 @@ def main():
         self_httpd.restricted = True
         t = threading.Thread(target=self_httpd.serve_forever, daemon=True)
         t.start()
-        print(f'[controller] self-serve listening on 0.0.0.0:{SELF_SERVE_PORT} '
+        legacy_log('controller', f'[controller] self-serve listening on 0.0.0.0:{SELF_SERVE_PORT} '
               f'(per-workspace tokens)', file=sys.stderr)
         if SELF_SERVE_ALLOW_SHARED_TOKEN:
-            print('[controller] WARNING: SELF_SERVE_ALLOW_SHARED_TOKEN is on — the '
+            legacy_log('controller', '[controller] WARNING: SELF_SERVE_ALLOW_SHARED_TOKEN is on — the '
                   'legacy shared master token is still accepted for ANY workspace. '
                   'Re-seed each workspace namespace with its derived token '
                   '(ensure-workspace-namespace.sh), then set it to "false".',
                   file=sys.stderr)
     else:
-        print('[controller] self-serve disabled (SELF_SERVE_TOKEN unset)', file=sys.stderr)
+        legacy_log('controller', '[controller] self-serve disabled (SELF_SERVE_TOKEN unset)', file=sys.stderr)
 
     httpd = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
-    print(f'[controller] listening on 0.0.0.0:{PORT}', file=sys.stderr)
+    legacy_log('controller', f'[controller] listening on 0.0.0.0:{PORT}', file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

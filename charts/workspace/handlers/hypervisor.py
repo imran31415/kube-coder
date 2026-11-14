@@ -37,6 +37,7 @@ tests monkeypatch on the server module. Reading them through the bound module
 is what keeps a patched value visible, exactly as it was when these bodies
 read the globals directly.
 """
+from observability_logging import legacy_log
 
 import json
 import re
@@ -108,7 +109,7 @@ class HypervisorRoutes:
                     seen.add(c['name'])
                     out.append({**c, 'kind': 'command'})
             except Exception as e:
-                print(f'[hypervisor] command discovery failed: {e}',
+                legacy_log('workspace', f'[hypervisor] command discovery failed: {e}',
                       file=sys.stderr)
         # Invocable skills the registry already tracks, filtered to those Claude
         # can actually run (systems includes 'claude').
@@ -128,7 +129,7 @@ class HypervisorRoutes:
                         'scope': r.scope,
                     })
             except Exception as e:
-                print(f'[hypervisor] skill picker snapshot failed: {e}',
+                legacy_log('workspace', f'[hypervisor] skill picker snapshot failed: {e}',
                       file=sys.stderr)
         out.sort(key=lambda c: c['name'])
         return out
