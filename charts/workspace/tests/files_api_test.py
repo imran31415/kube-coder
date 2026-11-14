@@ -652,9 +652,26 @@ class UploadStorageTests(_Base):
                    'X-Dest-Path: uploads%2Fcut\r\n'
                    'X-Filename: a.bin\r\n'
                    'Content-Length: 4096\r\n\r\n').encode() + b'partial'
-        with socket.create_connection(('127.0.0.1', self.port), timeout=5) as sock:
-            sock.sendall(request)
+        # Wait for the server to ADMIT the upload before checking it was
+        # cleaned up. Checking straight after close() races the handler
+        # thread: nothing is reserved yet, so the loop below exits at once,
+        # the test passes without testing anything, and the reservation taken
+        # a millisecond later lands in the assertions or in the next test.
+        admitted = []
+        real_reserve = upload_storage.reserve
+
+        def spy(*args, **kwargs):
+            reservation = real_reserve(*args, **kwargs)
+            admitted.append(reservation)
+            return reservation
+
         deadline = time.time() + 5
+        with mock.patch.object(upload_storage, 'reserve', spy):
+            with socket.create_connection(('127.0.0.1', self.port), timeout=5) as sock:
+                sock.sendall(request)
+            while not admitted and time.time() < deadline:
+                time.sleep(0.005)
+        self.assertEqual(len(admitted), 1, 'the server never admitted the upload')
         while (upload_storage._live or self._home_tree()) and time.time() < deadline:
             time.sleep(0.02)
         self.assertEqual(self._home_tree(), [])

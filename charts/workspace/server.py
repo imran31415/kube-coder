@@ -3,6 +3,7 @@ from observability_logging import legacy_log
 from observability_http import ObservedHTTP
 from observability_metrics import ProcessCounters, REGISTRY
 from observability_logging import problem
+import metrics_listener
 import http.server
 import html
 import subprocess
@@ -1570,7 +1571,19 @@ class PrometheusMetricsCollector:
             '0 when its source was unavailable or errored — a 0 here means the '
             "section's other metrics are missing, not that they are zero.",
             [({'section': s}, up.get(s, 0)) for s in cls.SECTIONS])
-        return exp.render() + REGISTRY.exposition()
+        return exp.render()
+
+    @classmethod
+    def scrape(cls):
+        """What a scrape receives: the product exposition above, then this
+        process's HTTP telemetry (observability_metrics.REGISTRY, #869).
+
+        Kept out of render() on purpose. render() is the product vocabulary
+        pinned by prometheus_metrics_test.CardinalityTests (a fixed label set,
+        well under 100 series); the HTTP families are histograms by route,
+        bounded by the RouteTable rather than by that budget, and have their
+        own cardinality tests (HttpTelemetryCardinalityTests)."""
+        return cls.render() + REGISTRY.exposition()
 
     # ── tokens (#574 classes, the figures #581 is blocked on) ─────────────
 
@@ -13758,7 +13771,8 @@ class AppsManager:
 
     # Ports the workspace itself owns. Hidden from the auto-list and
     # refused by the proxy even if the user tries to pin them.
-    INTERNAL_PORTS = frozenset({22, 2376, 5900, 6080, 6081, 7681, 8080})
+    INTERNAL_PORTS = frozenset({22, 2376, 5900, 6080, 6081, 7681, 8080}
+                               | {p for p in [metrics_listener.configured_port()] if p})
 
     # Bind addresses we accept as "on loopback". 0.0.0.0 / :: are
     # "all interfaces" which includes loopback, so anything bound that
@@ -16060,57 +16074,6 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
             self.path = '/'
             self._bearer_only = True
 
-    def check_metrics_auth(self):
-        """Auth gate for GET /metrics/prometheus ONLY.
-
-        Not the JSON /metrics twin, and never /api/*. The exposition is a
-        bounded, flat document with a fixed label vocabulary; the JSON endpoint
-        returns nested objects and top-N lists that a scraper has no use for.
-        Confining the wider credential to the one path a scrape actually needs
-        is the whole point of having a second credential at all.
-
-        Accepts everything `check_claude_auth` accepts, plus one extra
-        credential: KC_METRICS_SCRAPE_TOKEN, a metrics-only bearer token that
-        exists so a Prometheus scrape never has to be handed the Claude Task
-        API token (#581).
-
-        Why a second credential rather than reusing the existing one:
-
-        * The Task API token is read/write over the whole API — the same string
-          that would scrape a counter can create and kill tasks. A scraper
-          needs neither.
-        * It is self-minted onto the PVC at runtime (`get_or_create_token`), so
-          it is not a Kubernetes Secret and a ServiceMonitor/PodMonitor cannot
-          reference it. The Prometheus Operator resolves a monitor's credential
-          Secret from the monitor's OWN namespace, so the credential has to be
-          something the chart can put there.
-        * `POST /api/claude/auth/token/regenerate` would silently break every
-          future scrape.
-
-        The scrape token is provisioned the other way round: derived per
-        workspace by ensure-workspace-namespace.sh as
-        HMAC-SHA256(master, "kc-metrics-scrape/<user>"), written to a Secret in
-        the workspace's own namespace, and mounted here as an env var. The
-        master never enters a tenant namespace, so a token read out of one
-        workspace scrapes that workspace alone — the same property the
-        self-serve token derivation exists to give (controller.py:
-        self_serve_token_for; security review July 2026, finding 2).
-
-        Read from the environment on every call rather than cached at import:
-        the Secret can be rotated by a restart, and a stale module-level copy
-        would keep accepting a withdrawn credential.
-        """
-        if self.check_claude_auth():
-            return True
-        expected = os.environ.get('KC_METRICS_SCRAPE_TOKEN', '').strip()
-        if not expected:
-            return False
-        auth_header = self.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return False
-        return secrets.compare_digest(auth_header[7:].strip(), expected)
-
-
     def check_claude_auth(self, allow_none_mode=True):
         """Returns True if request is authenticated via OAuth2 headers OR valid bearer token.
 
@@ -17735,6 +17698,15 @@ if __name__ == "__main__":
     legacy_log('workspace', "  GET    /api/skills/stats                 - Counts by system/scope")
     legacy_log('workspace', "  POST   /api/skills/_scan                 - Force rescan")
     legacy_log('workspace', "  POST   /api/skills/{name}/sync           - Install skill into other harnesses")
+
+    # Metrics-only listener for Prometheus (#869): its own port, its own
+    # credential, one path. The NetworkPolicy opens only this port to the
+    # monitoring namespace, never 6080 — see metrics_listener.py for why.
+    metrics_port = metrics_listener.configured_port()
+    if metrics_port is not None and _PROMETHEUS_AVAILABLE:
+        if metrics_port == 6080:
+            raise SystemExit('KC_METRICS_PORT must not be the dashboard/API port 6080')
+        metrics_listener.start(PrometheusMetricsCollector.scrape, metrics_port)
 
     with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()

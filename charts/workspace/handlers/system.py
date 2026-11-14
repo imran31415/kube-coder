@@ -193,18 +193,19 @@ class SystemRoutes:
 
         Same auth gate as the JSON endpoint — it reports the same underlying
         facts, so anything that could read it there can read it here. A
-        Prometheus scrape authenticates with the workspace's Claude Task API
-        token as a Bearer credential (`authorization` / `bearerTokenSecret` in
-        a ServiceMonitor).
+        Prometheus scrape does NOT come here: it uses the metrics-only listener
+        (metrics_listener.py, KC_METRICS_PORT) with the per-workspace scrape
+        token, so the NetworkPolicy never has to open 6080 to the monitoring
+        namespace (#869).
         """
-        if not self.check_metrics_auth():
+        if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
         if not handlers.server._PROMETHEUS_AVAILABLE:
             self.send_json({'error': 'prometheus exposition unavailable'}, 503)
             return
         try:
-            body = handlers.server.PrometheusMetricsCollector.render().encode('utf-8')
+            body = handlers.server.PrometheusMetricsCollector.scrape().encode('utf-8')
         except Exception as e:
             # render() already isolates each section, so reaching here means the
             # document itself could not be built — serve nothing rather than a
