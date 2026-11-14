@@ -4,6 +4,8 @@
 
 Repo: https://github.com/imran31415/kube-coder
 
+> **Apple silicon + macOS 26?** You can skip Docker Desktop and minikube entirely and use Apple's `container` instead: [Run kube-coder on a Mac with Apple's `container`](getting-started-apple-container-macos.md) (`make local LOCAL_DRIVER=apple`, experimental).
+
 ---
 
 ## What you're building
