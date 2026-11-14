@@ -18,9 +18,9 @@ Stdlib only — no third-party deps, so it runs on the unmodified coder image.
 """
 from observability_logging import legacy_log
 import functools
-from observability_http import ObservedHTTP, MetricsHandler, RequestDeadlineExceeded, remaining_timeout
+from observability_http import ObservedHTTP, MetricsHandler, RequestDeadlineExceeded, remaining_timeout, without_deadline
 from observability_metrics import REGISTRY
-from observability_logging import problem
+from observability_logging import event_every, problem, safe_text
 import base64
 import concurrent.futures
 import contextvars
@@ -29,6 +29,7 @@ import hashlib
 import http.server
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -149,6 +150,15 @@ class KubectlError(RuntimeError):
         self.stderr = stderr
 
 
+def _kubectl_timeout_message(args, timeout):
+    """Say which limit ran out: kubectl's own, or what was left of the
+    request's read budget (a shorter, different number)."""
+    if timeout < KUBECTL_TIMEOUT:
+        return (f'kubectl {args[0]} stopped after {timeout:.1f}s: the request ran out '
+                f'of its time budget (kubectl limit is {KUBECTL_TIMEOUT}s)')
+    return f'kubectl {args[0]} timed out after {KUBECTL_TIMEOUT}s'
+
+
 def _kubectl_json(args, _attempts=2, namespace=None):
     """Run `kubectl <args> -o json -n <ns>` and parse stdout.
 
@@ -162,12 +172,13 @@ def _kubectl_json(args, _attempts=2, namespace=None):
     cmd = ['kubectl', *args, '-n', namespace or NAMESPACE, '-o', 'json']
     last = None
     for attempt in range(_attempts):
+        timeout = remaining_timeout(KUBECTL_TIMEOUT)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=remaining_timeout(KUBECTL_TIMEOUT))
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             raise KubectlError('kubectl not found on PATH')
         except subprocess.TimeoutExpired:
-            last = KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
+            last = KubectlError(_kubectl_timeout_message(args, timeout))
         else:
             if proc.returncode == 0:
                 try:
@@ -188,13 +199,14 @@ def _kubectl_run(args, namespace=None, input=None):
     mutations (scale/patch) pass the workspace's resolved namespace (#103).
     `input` is fed to stdin, for an `apply -f -`."""
     cmd = ['kubectl', *args, '-n', namespace or NAMESPACE]
+    timeout = remaining_timeout(KUBECTL_TIMEOUT)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=remaining_timeout(KUBECTL_TIMEOUT),
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               input=input)
     except FileNotFoundError:
         raise KubectlError('kubectl not found on PATH')
     except subprocess.TimeoutExpired:
-        raise KubectlError(f'kubectl timed out after {KUBECTL_TIMEOUT}s')
+        raise KubectlError(_kubectl_timeout_message(args, timeout))
     if proc.returncode != 0:
         raise KubectlError(f'kubectl {args[0]} failed', proc.stderr.strip())
     return proc.stdout.strip()
@@ -462,7 +474,9 @@ def cached_list_workspaces(force=False):
         # Re-check under the lock: a concurrent caller may have just refreshed.
         if not force and c['data'] is not None and time.time() - c['ts'] < LIST_CACHE_TTL:
             return c['data']
-        c['data'] = list_workspaces()
+        # Shared by every caller, so never bounded by the one request that
+        # happened to miss: see observability_http.without_deadline.
+        c['data'] = without_deadline(list_workspaces)
         c['ts'] = time.time()
         return c['data']
 
@@ -1026,6 +1040,15 @@ class PromError(RuntimeError):
         super().__init__(message)
 
 
+def _prom_failed(code, reason):
+    """Raise the code the dashboard explains, after logging the reason it
+    can't show (unreachable host, HTTP status, query error). Once a minute at
+    most: every open dashboard polls several queries, and an outage would
+    otherwise log each of them on each poll."""
+    event_every(60, 'controller', 'prometheus_query_failed', logging.WARNING,
+                code=code, detail=safe_text(reason))
+    return PromError(code)
+
 
 def parse_cpu(q):
     """Kubernetes CPU quantity -> cores. '2'->2.0, '500m'->0.5."""
@@ -1061,9 +1084,12 @@ def _prom_get(path, params):
         with urllib.request.urlopen(url, timeout=remaining_timeout(PROM_TIMEOUT)) as resp:
             data = json.load(resp)
     except (OSError, ValueError, RequestDeadlineExceeded) as exc:  # URLError/HTTPError/timeout subclass OSError
-        raise PromError('metrics_timeout' if isinstance(exc, (TimeoutError, RequestDeadlineExceeded)) or isinstance(getattr(exc, 'reason', None), TimeoutError) else 'metrics_unavailable') from exc
+        timed_out = isinstance(exc, (TimeoutError, RequestDeadlineExceeded)) or isinstance(getattr(exc, 'reason', None), TimeoutError)
+        raise _prom_failed('metrics_timeout' if timed_out else 'metrics_unavailable',
+                           f'prometheus {path}: {type(exc).__name__}: {exc}') from exc
     if not isinstance(data, dict) or data.get('status') != 'success' or not isinstance(data.get('data'), dict) or not isinstance(data['data'].get('result'), list):
-        raise PromError('metrics_unavailable')
+        reason = data.get('error') if isinstance(data, dict) else None
+        raise _prom_failed('metrics_unavailable', f'prometheus {path}: {reason or "unexpected response"}')
     return data['data']
 
 
@@ -2366,8 +2392,12 @@ def build_job_manifest(slug):
 
 def _kubectl_apply(manifest):
     cmd = ['kubectl', 'apply', '-n', NAMESPACE, '-f', '-']
-    proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
-                          text=True, timeout=remaining_timeout(KUBECTL_TIMEOUT))
+    timeout = remaining_timeout(KUBECTL_TIMEOUT)
+    try:
+        proc = subprocess.run(cmd, input=json.dumps(manifest), capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise KubectlError(_kubectl_timeout_message(['apply'], timeout))
     if proc.returncode != 0:
         raise KubectlError('kubectl apply failed', proc.stderr.strip())
     return proc.stdout.strip()
@@ -2436,17 +2466,37 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
 
     # ----- helpers (mirror server.py) -----
 
+    METRICS_ROUTES = ('/api/insights', '/api/capacity', '/api/capacity/summary', '/api/spend')
+    METRICS_CODES = ('metrics_disabled', 'metrics_timeout', 'metrics_unavailable')
+
+    def _with_problem(self, data, status):
+        """Attach a correlated `problem` to a failure payload.
+
+        Monitoring states (metricsError, insights' error, scrapeHint) are codes
+        the dashboard explains, so their text becomes the safe message. Any
+        other 5xx is operator-facing (kubectl, GitHub, provisioning): its
+        `error` keeps the actionable text the console shows, and the same text
+        is logged, redacted, under the problem's error_id."""
+        metrics_route = self._norm_path() in self.METRICS_ROUTES
+        field = 'metricsError' if data.get('metricsError') else (
+            'error' if metrics_route and status < 500 and data.get('error') else None)
+        if field:
+            code = data[field] if data[field] in self.METRICS_CODES else 'metrics_unavailable'
+            detail = problem('controller', code)
+            return dict(data, problem=detail, **{field: detail['error']})
+        if data.get('scrapeHint'):
+            detail = problem('controller', 'metrics_not_reporting')
+            return dict(data, problem=detail, scrapeHint=detail['error'])
+        if status >= 500 and data.get('error'):
+            detail = problem('controller', 'metrics_unavailable' if metrics_route else 'internal_error',
+                             exc_info=sys.exc_info() if sys.exc_info()[0] else None,
+                             detail=data['error'])
+            return dict(data, problem=detail)
+        return data
+
     def send_json(self, data, status=200):
-        if isinstance(data, dict):
-            failure = data.get('metricsError') or data.get('error')
-            if status >= 500 or data.get('metricsError') or (self._norm_path() == '/api/insights' and failure):
-                code = failure if failure in ('metrics_disabled', 'metrics_timeout', 'metrics_unavailable') else ('metrics_unavailable' if data.get('metricsError') or self._norm_path() in ('/api/insights', '/api/capacity', '/api/capacity/summary', '/api/spend') else 'internal_error')
-                detail = problem('controller', code, exc_info=sys.exc_info() if sys.exc_info()[0] else None)
-                data = dict(data, problem=detail)
-                data['metricsError' if 'metricsError' in data else 'error'] = detail['error']
-            elif data.get('scrapeHint'):
-                data = dict(data, problem=problem('controller', 'metrics_not_reporting'))
-                data['scrapeHint'] = data['problem']['error']
+        if isinstance(data, dict) and 'problem' not in data:
+            data = self._with_problem(data, status)
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header('Content-type', 'application/json')

@@ -43,7 +43,7 @@ class HistogramTest(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(8) as pool:
             list(pool.map(record, range(1000)))
         text = reg.exposition()
-        self.assertIn('status="200"} 1000', text)
+        self.assertIn('status="2xx"} 1000', text)
         self.assertIn('kubecoder_http_request_duration_seconds_count{listener="workspace",method="GET",route="fixed",service="workspace"} 1000', text)
 
     def test_operation_submitted_is_not_completed(self):

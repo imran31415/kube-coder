@@ -20,6 +20,11 @@ EXACT_ROUTES = frozenset(('/', '/health', '/healthz', '/livez', '/metrics', '/me
 WORKSPACE_ROUTE = re.compile(r'^/api/(self/)?workspaces/[^/]+(?:/(metrics|start|stop|restart|update|version|resources))?$')
 
 
+#: Every path no route template claims. One series, however many distinct
+#: paths, ids or probes arrive.
+OTHER_ROUTE = 'other'
+
+
 def route_identity(path):
     path = urlsplit(path).path
     if path.startswith('/oauth/'):
@@ -29,11 +34,24 @@ def route_identity(path):
     match = WORKSPACE_ROUTE.fullmatch(path)
     if match:
         return '/api/' + (match[1] or '') + 'workspaces/:user' + ('/' + match[2] if match[2] else '')
-    return 'unmatched'
+    return OTHER_ROUTE
 
 
 class RequestDeadlineExceeded(RuntimeError):
     """Unlike socket TimeoutError, this must reach the safe JSON error boundary."""
+
+
+def without_deadline(fn, *args, **kwargs):
+    """Run `fn` outside the calling request's budget, keeping its log context.
+
+    For work whose result is shared by every caller (a process-wide cache
+    refresh): whichever request happens to miss the cache must not cut that
+    refresh short with its own leftover time, or one late request fails the
+    refresh for all of them and reports it as a timeout."""
+    def run():
+        DEADLINE.set(None)
+        return fn(*args, **kwargs)
+    return contextvars.copy_context().run(run)
 
 
 def remaining_timeout(default):
@@ -42,7 +60,7 @@ def remaining_timeout(default):
         return default
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise RequestDeadlineExceeded('request budget exhausted')
+        raise RequestDeadlineExceeded('request time budget used up before this upstream call')
     return min(default, remaining)
 
 
@@ -55,7 +73,7 @@ class ObservedHTTP:
         self._obs_headers = False
         self._obs_kind = 'request'
         self._obs_active = False
-        self._obs_route = 'unmatched'
+        self._obs_route = OTHER_ROUTE
         self._obs_aborted = False
         self._obs_request_id = uuid.uuid4().hex
         token = CONTEXT.set({'request_id': self._obs_request_id})

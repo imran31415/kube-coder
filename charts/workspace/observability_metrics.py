@@ -33,6 +33,15 @@ class ProcessCounters:
         return cls.get(name).get(tuple(sorted((labels or {}).items())), 0)
 
 
+def status_class(status):
+    """`2xx`..`5xx`: five values instead of one series per distinct code."""
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        return 'other'
+    return f'{status // 100}xx' if 100 <= status <= 599 else 'other'
+
+
 class Registry:
     def __init__(self):
         self._lock = threading.Lock()
@@ -59,7 +68,7 @@ class Registry:
     def request(self, service, listener, route, method, status, kind, elapsed, aborted=False):
         with self._lock:
             if status is not None:
-                self._counts[(service, listener, route, method, str(status))] += 1
+                self._counts[(service, listener, route, method, status_class(status))] += 1
             if aborted:
                 self._aborted[(service, listener, kind)] += 1
             if kind == 'request' and status is not None:
@@ -89,7 +98,7 @@ class Registry:
         def samples(values, names):
             return [(dict(zip(names, k)), v) for k, v in sorted(values.items())]
         labels = ('service', 'listener', 'route', 'method')
-        out.counter('kubecoder_http_requests_total', 'HTTP final responses.', samples(counts, (*labels, 'status')))
+        out.counter('kubecoder_http_requests_total', 'HTTP final responses by status class (2xx..5xx).', samples(counts, (*labels, 'status')))
         out.gauge('kubecoder_http_requests_in_flight', 'Active requests and streams.', samples(active, ('service', 'listener', 'kind')))
         out.counter('kubecoder_http_aborted_requests_total', 'Disconnected requests.', samples(aborted, ('service', 'listener', 'kind')))
         out.counter('kubecoder_controller_operations_total', 'Controller action outcomes; submitted is not completed.', samples(operations, ('operation', 'outcome')))
