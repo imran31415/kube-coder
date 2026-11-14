@@ -51,6 +51,11 @@ spec:
         summary: A workspace completion hook exhausted its retries
         description: Check the hook destination and credentials before retrying delivery.
         runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- if $rules.workspaceScrapeAlert }}
+    # Fires on ABSENCE, so it is only meaningful once every running workspace
+    # is scraped: each workspace's own chart values set
+    # metrics.podMonitor.enabled + metrics.scrapeSecretName. Off by default and
+    # separate from prometheusRule.enabled, which says nothing about that.
     - alert: WorkspaceMetricsUnavailable
       expr: >-
         (max by (namespace, pod) (kube_pod_status_phase{namespace=~{{ $rules.namespaceRegex | quote }},pod=~"ws-.*",phase="Running"}) == 1)
@@ -62,6 +67,7 @@ spec:
         summary: A running workspace is not reporting metrics
         description: Check PodMonitor selection, its Secret and the monitoring NetworkPolicy. Sleeping workspaces have no running pod.
         runbook_url: https://github.com/imran31415/kube-coder/blob/main/docs/platform-observability.md
+    {{- end }}
     - alert: WorkspaceMetricsCollectorFailed
       expr: min by (namespace, pod, section) (kubecoder_metrics_collector_up) == 0
       for: 5m

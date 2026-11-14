@@ -122,6 +122,14 @@ controller:
       enabled: false
       labels: {}
       namespaceRegex: "ws-.*"
+      # WorkspaceMetricsUnavailable fires for every RUNNING workspace that has
+      # no healthy scrape. Workspace scraping is configured per workspace, in
+      # the workspace chart (metrics.podMonitor.enabled + metrics.scrapeSecretName,
+      # both off by default), not by anything in this chart — so with this on
+      # and those off, it fires for every running workspace. Turn it on only
+      # once every workspace is scraped. The other rules stay silent without
+      # workspace scrapes (no series, no alert).
+      workspaceScrapeAlert: false
       memoryRatio: 0.9
       memoryFor: 5m
       diskWarningRatio: 0.85

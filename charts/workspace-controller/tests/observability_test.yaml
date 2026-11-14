@@ -57,11 +57,33 @@ tests:
       - equal:
           path: spec.ingress[0].ports[0].port
           value: 8080
-  - it: renders the complete optional rule group
+  # #869 review: the missing-scrape alert depends on the WORKSPACE chart's
+  # PodMonitor (off by default), not on anything here, so enabling the rule
+  # group alone must not page for every running workspace.
+  - it: leaves the missing-scrape alert out unless asked for separately
     template: templates/prometheus-rules.yaml
     set:
       controller.metrics.prometheusRule.enabled: true
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
+          count: 5
+      - notContains:
+          path: spec.groups[0].rules
+          content:
+            alert: WorkspaceMetricsUnavailable
+          any: true
+  - it: renders the complete optional rule group once workspace scraping is confirmed
+    template: templates/prometheus-rules.yaml
+    set:
+      controller.metrics.prometheusRule.enabled: true
+      controller.metrics.prometheusRule.workspaceScrapeAlert: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
           count: 6
+      - contains:
+          path: spec.groups[0].rules
+          content:
+            alert: WorkspaceMetricsUnavailable
+          any: true
