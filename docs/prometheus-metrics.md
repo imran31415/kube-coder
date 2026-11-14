@@ -15,35 +15,30 @@ scrape config, so the separate path costs nothing.
 
 ## Scraping it
 
-The endpoint uses the same auth gate as the JSON `/metrics`: the workspace's
-Claude Task API token, as a Bearer credential.
+Prometheus scrapes a **separate, metrics-only listener**, not the dashboard
+port. Setting the workspace chart's `metrics.scrapeSecretName` starts it on
+`metrics.port` (default `6082`, container port name `metrics`). It serves
+`GET /metrics/prometheus` and nothing else, and accepts only the workspace's
+metrics scrape token (`KC_METRICS_SCRAPE_TOKEN`, a per-workspace HMAC
+derivation of the controller's `kc-metrics-scrape` master). The chart's
+PodMonitor (`metrics.podMonitor.enabled`) scrapes that port with that token,
+and the NetworkPolicy admits the Prometheus pod to that port alone.
+
+Port 6080 is never opened to Prometheus: it is the whole dashboard and Task
+API, and in oauth2 mode it trusts identity headers from whatever reaches it
+directly. The full operator setup is in
+[platform-observability.md](platform-observability.md).
+
+For an ad-hoc look from inside the pod, the 6080 path still answers the
+workspace's Claude Task API token, as before:
 
 ```bash
 TOKEN=$(cat /home/dev/.claude-tasks/.api-token)
 curl -H "Authorization: Bearer $TOKEN" localhost:6080/metrics/prometheus
 ```
 
-With the Prometheus Operator:
-
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: kube-coder-workspace
-spec:
-  selector:
-    matchLabels: { app: workspace }        # your workspace Service labels
-  endpoints:
-    - port: http                            # the 6080 port
-      path: /metrics/prometheus
-      interval: 30s
-      authorization:
-        credentials:
-          # one Secret per workspace — the token is per-workspace state on the
-          # PVC, not a cluster-wide credential
-          name: <workspace>-claude-api-token
-          key: token
-```
+Both return the same document: these product metrics plus the process's HTTP
+telemetry (`kubecoder_http_*`).
 
 ## Fleet rollup in the controller
 
@@ -55,15 +50,13 @@ that is stopped still contributes its history.
 
 Two things this depends on, and neither is automatic:
 
-1. **Something has to scrape the workspaces.** The chart ships no ServiceMonitor
-   (the endpoint is authenticated with a per-workspace token that lives on the
-   PVC, not in a Secret, so a generic one would not work) — use the
-   ServiceMonitor above, one Secret per workspace. Until then `/api/spend`
-   reports `scrapeHint` and the console says no workspace is exporting spend
-   metrics, rather than showing a total of zero.
+1. **Something has to scrape the workspaces.** Workspace scraping is off by
+   default; enable it per workspace as described in *Scraping it* above. Until
+   then `/api/spend` reports `scrapeHint` and the console says no workspace
+   metrics have been received, rather than showing a total of zero.
 2. **`PROMETHEUS_URL` has to be set on the controller.** Unset, `_prom_get`
-   already raises `metrics disabled`, which surfaces as `metricsError` and reads
-   in the console as "spend metrics require Prometheus".
+   raises `metrics_disabled`, which surfaces as `metricsError` and reads in the
+   console as "Monitoring is not configured".
 
 Because these are gauges, the controller computes a window's growth as
 `x - (x offset <window>)` and clamps the result at zero — see *Why almost
