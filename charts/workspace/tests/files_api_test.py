@@ -652,11 +652,20 @@ class UploadStorageTests(_Base):
                    'X-Dest-Path: uploads%2Fcut\r\n'
                    'X-Filename: a.bin\r\n'
                    'Content-Length: 4096\r\n\r\n').encode() + b'partial'
+        # Half-close so the server reads EOF mid-body, then wait for its reply:
+        # the reservation is released before the response is sent. Polling
+        # instead raced the handler thread, which could reserve only after the
+        # poll had already seen nothing live.
         with socket.create_connection(('127.0.0.1', self.port), timeout=5) as sock:
             sock.sendall(request)
-        deadline = time.time() + 5
-        while (upload_storage._live or self._home_tree()) and time.time() < deadline:
-            time.sleep(0.02)
+            sock.shutdown(socket.SHUT_WR)
+            reply = b''
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                reply += chunk
+        self.assertIn(b' 400 ', reply.split(b'\r\n', 1)[0])
         self.assertEqual(self._home_tree(), [])
         self.assertFalse(upload_storage._live)
 
