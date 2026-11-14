@@ -798,17 +798,38 @@ controller-dev: ## Run controller.py locally (KUBECONFIG listing; dev bearer tok
 	python3 $(WC_DIR)/controller.py
 
 # =============================================================================
-# Local development — run kube-coder on a local single-node cluster (minikube)
+# Local development — run kube-coder on a local single-node cluster
 # =============================================================================
-# No cloud dependencies: a locally-built image loaded into minikube, plain HTTP,
-# http basic auth, and the cluster-default storage class. Every command targets
-# the minikube context EXPLICITLY (--context / --kube-context) so these never
-# touch a real/remote cluster. Full guide: docs/local-development.md
+# No cloud dependencies: a locally-built image the cluster can run without a
+# registry, plain HTTP, http basic auth, and the cluster-default storage class.
+# Every command targets the local cluster's context EXPLICITLY (--context /
+# --kube-context) so these never touch a real/remote cluster.
+# Full guide: docs/local-development.md
 #
 #   make local          # one-shot: start cluster, build+load image, deploy
 #   make local-forward   # port-forward the ingress to localhost:8080 (blocking)
 #   make local-info      # print the /etc/hosts line, URL, and credentials
 #   make local-down      # remove the workspace (DELETE=1 also deletes the cluster)
+#
+# Two cluster backends (#879), picked with LOCAL_DRIVER:
+#
+#   LOCAL_DRIVER=minikube  (default) Docker Desktop (or any docker) + minikube.
+#                          Works on Intel/Apple-silicon Macs and Linux.
+#   LOCAL_DRIVER=apple     Apple's `container` (https://github.com/apple/container)
+#                          `container cluster` — a kind-based cluster in a
+#                          lightweight VM. macOS 26 + Apple silicon only; no
+#                          Docker Desktop, no minikube.
+#
+# Pass the same LOCAL_DRIVER to EVERY local-* target (or export it), e.g.
+#   make local LOCAL_DRIVER=apple
+#   make local-build local-deploy LOCAL_DRIVER=apple
+# The cluster is named `kube-coder` with either driver and both write a
+# `kube-coder` kubeconfig context, so kubectl/helm calls are identical.
+
+LOCAL_DRIVER      ?= minikube
+ifeq ($(filter $(LOCAL_DRIVER),minikube apple),)
+$(error LOCAL_DRIVER must be 'minikube' or 'apple' (got '$(LOCAL_DRIVER)'))
+endif
 
 LOCAL_PROFILE     := kube-coder
 LOCAL_IMAGE       := kube-coder:local
@@ -824,62 +845,140 @@ LOCAL_RELEASE     := local-workspace
 LOCAL_NS          := ws-local
 # Host arch -> docker platform. Native arm64 on Apple Silicon avoids emulation.
 LOCAL_ARCH        := $(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-# Bind every kubectl/helm call to the minikube context, never the current one.
+# Bind every kubectl/helm call to the local cluster's context, never the
+# current one. minikube names it after the profile; `container cluster`
+# names it after --name. Both are $(LOCAL_PROFILE).
 LOCAL_KUBECTL     := kubectl --context $(LOCAL_PROFILE)
 LOCAL_HELM        := helm --kube-context $(LOCAL_PROFILE)
+# Cluster size. minikube takes 6g, `container` takes 6g too (both accept the
+# suffix), so one pair of knobs drives either driver.
+LOCAL_CPUS        ?= 4
+LOCAL_MEMORY      ?= 6g
 
-local: local-up local-build local-secret local-deploy local-info ## Local one-shot: start minikube, build+load image, deploy, print access info
+# --- apple driver: pinned add-on manifests --------------------------------
+# kind clusters (which `container cluster` is) have no minikube-style addons,
+# so the apple driver applies the upstream manifests itself. Pinned so a
+# release upstream can't change what `make local-up` installs underneath you.
+LOCAL_APPLE_INGRESS_NGINX_VERSION ?= controller-v1.15.1
+LOCAL_APPLE_METRICS_SERVER_VERSION ?= v0.9.1
+LOCAL_APPLE_CALICO_VERSION ?= v3.32.4
+LOCAL_APPLE_LOCAL_PATH_VERSION ?= v0.0.37
+LOCAL_APPLE_INGRESS_URL      := https://raw.githubusercontent.com/kubernetes/ingress-nginx/$(LOCAL_APPLE_INGRESS_NGINX_VERSION)/deploy/static/provider/kind/deploy.yaml
+LOCAL_APPLE_METRICS_URL      := https://github.com/kubernetes-sigs/metrics-server/releases/download/$(LOCAL_APPLE_METRICS_SERVER_VERSION)/components.yaml
+LOCAL_APPLE_CALICO_URL       := https://raw.githubusercontent.com/projectcalico/calico/$(LOCAL_APPLE_CALICO_VERSION)/manifests/calico.yaml
+LOCAL_APPLE_LOCAL_PATH_URL   := https://raw.githubusercontent.com/rancher/local-path-provisioner/$(LOCAL_APPLE_LOCAL_PATH_VERSION)/deploy/local-path-storage.yaml
+LOCAL_APPLE_CNI_FILE         := /tmp/kc-local-calico.yaml
 
-# NetworkPolicy enforcement: minikube's DEFAULT CNI accepts every
-# NetworkPolicy object and enforces NONE of them. Nothing errors, nothing warns
-# — `kubectl get networkpolicy` lists them and traffic they forbid flows
-# anyway. So any test of a NetworkPolicy on a default local cluster passes
-# without proving anything.
+local: local-up local-build local-secret local-deploy local-info ## Local one-shot: start the cluster (LOCAL_DRIVER=minikube|apple), build+load image, deploy, print access info
+
+# NetworkPolicy enforcement: the DEFAULT CNI of both drivers (minikube's
+# bridge, kind's kindnet) accepts every NetworkPolicy object and enforces
+# NONE of them. Nothing errors, nothing warns — `kubectl get networkpolicy`
+# lists them and traffic they forbid flows anyway. So any test of a
+# NetworkPolicy on a default local cluster passes without proving anything.
 #
 # Set LOCAL_CNI=calico to get a cluster that actually enforces them. Required
 # for the keeper's isolation checks (#728: the workspace pod may reach the
 # keeper's control port and nothing else). Costs a little start-up time and
-# memory, which is why it is not the default.
+# memory, which is why it is not the default. With LOCAL_DRIVER=apple,
+# LOCAL_CNI may also be a path to any plain CNI manifest (`container cluster
+# create --cni` takes a kubectl-apply-able YAML, not a Helm chart).
 #
 #   make local-up LOCAL_CNI=calico
 LOCAL_CNI ?=
 
-local-up: ## Start the local minikube cluster + nginx ingress (LOCAL_CNI=calico to enforce NetworkPolicy)
+local-up: ## Start the local cluster + nginx ingress (LOCAL_DRIVER=minikube|apple; LOCAL_CNI=calico to enforce NetworkPolicy)
+ifeq ($(LOCAL_DRIVER),apple)
+	@command -v container >/dev/null || { echo "ERROR: Apple 'container' not found. It needs macOS 26 on Apple silicon: https://github.com/apple/container/releases (or LOCAL_DRIVER=minikube)"; exit 1; }
+	@[ "$$(uname -s)/$$(uname -m)" = "Darwin/arm64" ] || { echo "ERROR: LOCAL_DRIVER=apple needs macOS on Apple silicon (this is $$(uname -s)/$$(uname -m)). Use LOCAL_DRIVER=minikube."; exit 1; }
+	@container system status >/dev/null 2>&1 || { echo "Starting the container system service..."; container system start; }
+	@if container cluster list -q 2>/dev/null | grep -qx '$(LOCAL_PROFILE)'; then \
+		echo "Cluster '$(LOCAL_PROFILE)' already exists — reusing it."; \
+		echo "  (If it is stopped — e.g. after 'container system stop' or a reboot — Apple's"; \
+		echo "   only supported recovery is delete + re-create, which DESTROYS the workspace"; \
+		echo "   PVC. Back up /home/dev first: docs/local-development.md#apple-container-macos)"; \
+	else \
+		cni=""; \
+		case "$(LOCAL_CNI)" in \
+			"") ;; \
+			calico) echo "Downloading Calico $(LOCAL_APPLE_CALICO_VERSION) manifest..."; \
+				curl -fsSL -o $(LOCAL_APPLE_CNI_FILE) "$(LOCAL_APPLE_CALICO_URL)" || exit 1; \
+				cni="--cni $(LOCAL_APPLE_CNI_FILE)" ;; \
+			*) [ -f "$(LOCAL_CNI)" ] || { echo "ERROR: LOCAL_CNI must be 'calico' or a path to a CNI manifest"; exit 1; }; \
+				cni="--cni $(LOCAL_CNI)" ;; \
+		esac; \
+		echo "Creating container cluster '$(LOCAL_PROFILE)' ($(LOCAL_CPUS) CPU / $(LOCAL_MEMORY))..."; \
+		container cluster create --name $(LOCAL_PROFILE) --cpus $(LOCAL_CPUS) --memory $(LOCAL_MEMORY) \
+			--shared-image-store $$cni || exit 1; \
+	fi
+	@$(LOCAL_KUBECTL) get nodes >/dev/null || { echo "ERROR: no kubeconfig context '$(LOCAL_PROFILE)' or the cluster is not reachable. Check 'container cluster list' and 'kubectl config get-contexts'."; exit 1; }
+	# The workspace PVC names no storageClass, so it needs a default one.
+	# kind's node image normally provides `standard` (local-path); install the
+	# upstream local-path provisioner only if this cluster has no default.
+	@if $(LOCAL_KUBECTL) get storageclass -o jsonpath='{range .items[*]}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}' | grep -qx true; then \
+		echo "Default StorageClass present."; \
+	else \
+		echo "No default StorageClass — installing local-path-provisioner $(LOCAL_APPLE_LOCAL_PATH_VERSION)..."; \
+		$(LOCAL_KUBECTL) apply -f "$(LOCAL_APPLE_LOCAL_PATH_URL)" && \
+		$(LOCAL_KUBECTL) patch storageclass local-path \
+			-p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'; \
+	fi
+	# kind has no ingress addon: apply ingress-nginx's kind manifest instead.
+	$(LOCAL_KUBECTL) apply -f "$(LOCAL_APPLE_INGRESS_URL)"
+	# metrics-server for `kubectl top` (the keeper's idle-RSS budget, #728).
+	# kind kubelets serve self-signed certs, hence --kubelet-insecure-tls.
+	$(LOCAL_KUBECTL) apply -f "$(LOCAL_APPLE_METRICS_URL)"
+	@$(LOCAL_KUBECTL) -n kube-system get deployment metrics-server -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- --kubelet-insecure-tls || \
+		$(LOCAL_KUBECTL) -n kube-system patch deployment metrics-server --type=json \
+			-p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+	@echo "Waiting for the ingress controller to be ready..."
+	$(LOCAL_KUBECTL) -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=180s
+else
 	@command -v minikube >/dev/null || { echo "ERROR: minikube not found. Install it: 'brew install minikube' (macOS) or https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
-	minikube start -p $(LOCAL_PROFILE) --driver=docker --cpus=4 --memory=6g \
+	minikube start -p $(LOCAL_PROFILE) --driver=docker --cpus=$(LOCAL_CPUS) --memory=$(LOCAL_MEMORY) \
 		$(if $(LOCAL_CNI),--cni=$(LOCAL_CNI),)
 	minikube addons enable ingress -p $(LOCAL_PROFILE)
 	# The keeper's idle-RSS budget (#728 is ≤ 20 MiB) is checked with
 	# `kubectl top`, which needs this.
 	minikube addons enable metrics-server -p $(LOCAL_PROFILE)
 	@echo "Waiting for the ingress controller to be ready..."
+endif
 	$(LOCAL_KUBECTL) -n ingress-nginx wait --for=condition=ready pod \
 		-l app.kubernetes.io/component=controller --timeout=180s
 	@if [ -z "$(LOCAL_CNI)" ]; then \
 		echo ""; \
-		echo "NOTE: this cluster uses minikube's default CNI, which IGNORES NetworkPolicy."; \
+		echo "NOTE: this cluster uses the driver's default CNI, which IGNORES NetworkPolicy."; \
 		echo "      Any NetworkPolicy assertion here passes without being enforced."; \
 		echo "      For the real thing: make local-down DELETE=1 && make local-up LOCAL_CNI=calico"; \
 	fi
 
-keeper-build-local: ## Build the always-on keeper image inside minikube (#728)
-	@echo "Building $(LOCAL_KEEPER_IMAGE) inside minikube..."
-	# Same reasoning as local-build: the node's own builder, no host buildx.
-	minikube image build -t $(LOCAL_KEEPER_IMAGE) -f keeper/Dockerfile -p $(LOCAL_PROFILE) .
+# How an image gets into the cluster without a registry:
+#   minikube: `minikube image build` builds INSIDE the node. Not host
+#     `docker buildx ... --load`: on Docker Desktop the docker-container
+#     buildx driver reliably hangs the CLI *after* the image is written (the
+#     same post-build hang scripts/buildx-push.sh wraps for `--push`) —
+#     `--load` and `-o type=docker,dest=…` both wedge `make`. The node's own
+#     builder has no host buildx, no hang, and no separate image-load copy.
+#   apple: `container build` into the Mac's local image store, which the
+#     cluster reads directly because it was created with --shared-image-store.
+#     Native arm64, no Rosetta.
+# Both honor .dockerignore.
+ifeq ($(LOCAL_DRIVER),apple)
+local_image_build = container build -t $(1) -f $(2) .
+else
+local_image_build = minikube image build -t $(1) -f $(2) -p $(LOCAL_PROFILE) .
+endif
+
+keeper-build-local: ## Build the always-on keeper image for the local cluster (#728)
+	@echo "Building $(LOCAL_KEEPER_IMAGE) for the $(LOCAL_DRIVER) cluster..."
+	$(call local_image_build,$(LOCAL_KEEPER_IMAGE),keeper/Dockerfile)
 	@echo ""
 	@echo "Deploy it with:"
-	@echo "  make local-deploy KEEPER=1"
+	@echo "  make local-deploy KEEPER=1$(if $(filter apple,$(LOCAL_DRIVER)), LOCAL_DRIVER=apple,)"
 
-local-build: ## Build the workspace image for your host arch directly inside minikube
-	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH) inside minikube..."
-	# Build INSIDE the minikube node rather than host `docker buildx ... --load`.
-	# On Docker Desktop the docker-container buildx driver reliably hangs the
-	# CLI *after* the image is written (the same post-build hang
-	# scripts/buildx-push.sh wraps for `--push`) — `--load` and
-	# `-o type=docker,dest=…` both wedge `make`. `minikube image build` uses the
-	# node's own builder: no host buildx, no hang, and no separate image-load
-	# copy (the image lands straight in the cluster). Honors .dockerignore.
-	minikube image build -t $(LOCAL_IMAGE) -f devlaptop/Dockerfile -p $(LOCAL_PROFILE) .
+local-build: ## Build the workspace image for your host arch, straight into the local cluster
+	@echo "Building $(LOCAL_IMAGE) for linux/$(LOCAL_ARCH) for the $(LOCAL_DRIVER) cluster..."
+	$(call local_image_build,$(LOCAL_IMAGE),devlaptop/Dockerfile)
 
 local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the local cluster
 	$(LOCAL_KUBECTL) create namespace $(LOCAL_NS) --dry-run=client -o yaml | $(LOCAL_KUBECTL) apply -f -
@@ -889,19 +988,37 @@ local-secret: ## Create the namespace + basic-auth secret (admin/admin) in the l
 	@rm -f /tmp/kc-local-htpasswd
 	@echo "basic-auth secret '$(LOCAL_AUTH_SECRET)' ready (user: $(LOCAL_AUTH_USER) / pass: $(LOCAL_AUTH_PASS))"
 
+# Pull policy for the locally-built images.
+#   minikube: the overlay's IfNotPresent for the workspace (the image is
+#     already in the node) and Never for the keeper.
+#   apple: Always. With --shared-image-store the node prefers the Mac's local
+#     image over any registry for every policy, but under IfNotPresent/Never
+#     a node that already has `kube-coder:local` keeps its OLD copy after a
+#     rebuild of the same tag — the rollout restart below would silently
+#     reuse the stale image. Always makes the kubelet re-resolve the tag
+#     against the local store on every pod start.
+ifeq ($(LOCAL_DRIVER),apple)
+LOCAL_PULL_POLICY_FLAGS := --set image.pullPolicy=Always
+LOCAL_KEEPER_PULL_POLICY := Always
+else
+LOCAL_PULL_POLICY_FLAGS :=
+LOCAL_KEEPER_PULL_POLICY := Never
+endif
+
 # KEEPER=1 turns the always-on keeper on (#728), using the image
 # `make keeper-build-local` put in the node. Off by default, so the ordinary
 # local flow is unchanged.
-local_keeper_flags = $(if $(KEEPER),--set keeper.enabled=true --set keeper.sleep.enabled=true --set keeper.image=$(LOCAL_KEEPER_IMAGE) --set keeper.imagePullPolicy=Never,)
+local_keeper_flags = $(if $(KEEPER),--set keeper.enabled=true --set keeper.sleep.enabled=true --set keeper.image=$(LOCAL_KEEPER_IMAGE) --set keeper.imagePullPolicy=$(LOCAL_KEEPER_PULL_POLICY),)
 
 local-deploy: ## Deploy base-infrastructure + the workspace to the local cluster (KEEPER=1 for #728)
 	$(LOCAL_HELM) upgrade base-infrastructure ./charts/base-infrastructure \
 		--namespace $(LOCAL_NS) --set namespace=$(LOCAL_NS) --install --wait --timeout 3m
 	$(LOCAL_HELM) upgrade $(LOCAL_RELEASE) ./charts/workspace \
-		-f $(LOCAL_VALUES) --namespace $(LOCAL_NS) $(local_keeper_flags) --install --wait --timeout 5m
+		-f $(LOCAL_VALUES) --namespace $(LOCAL_NS) $(LOCAL_PULL_POLICY_FLAGS) $(local_keeper_flags) --install --wait --timeout 5m
 	# Force a rollout so a freshly `local-build`-loaded image is picked up:
 	# the tag (kube-coder:local) doesn't change, so helm sees no diff and the
-	# pod would otherwise keep the old image even though minikube reloaded it.
+	# pod would otherwise keep the old image even though the cluster has the
+	# new one.
 	$(LOCAL_KUBECTL) -n $(LOCAL_NS) rollout restart deployment/ws-local
 	$(LOCAL_KUBECTL) -n $(LOCAL_NS) rollout status deployment/ws-local --timeout=180s
 
@@ -911,7 +1028,7 @@ local-forward: ## Port-forward the local ingress controller to localhost:8080 (b
 
 local-info: ## Print local access details (/etc/hosts line, URL, credentials)
 	@echo ""
-	@echo "=== kube-coder local access ==="
+	@echo "=== kube-coder local access ($(LOCAL_DRIVER)) ==="
 	@echo "1. Map the host once (needs sudo):"
 	@echo "     echo '127.0.0.1  $(LOCAL_HOST)' | sudo tee -a /etc/hosts"
 	@echo "2. Forward the ingress (keep this running in a terminal):"
@@ -922,7 +1039,11 @@ local-info: ## Print local access details (/etc/hosts line, URL, credentials)
 	@echo "Logs:  $(LOCAL_KUBECTL) -n $(LOCAL_NS) logs -f deploy/ws-local -c ide"
 	@echo "Shell: $(LOCAL_KUBECTL) -n $(LOCAL_NS) exec -it deploy/ws-local -c ide -- bash"
 
-local-down: ## Remove the local workspace (add DELETE=1 to also delete the minikube cluster)
+local-down: ## Remove the local workspace (add DELETE=1 to also delete the cluster)
 	-$(LOCAL_HELM) uninstall $(LOCAL_RELEASE) -n $(LOCAL_NS)
 	-$(LOCAL_HELM) uninstall base-infrastructure -n $(LOCAL_NS)
+ifeq ($(LOCAL_DRIVER),apple)
+	@if [ "$(DELETE)" = "1" ]; then echo "Deleting container cluster $(LOCAL_PROFILE) (this destroys the workspace PVC)..."; container cluster delete --name $(LOCAL_PROFILE); else echo "Cluster kept. Run 'make local-down DELETE=1 LOCAL_DRIVER=apple' to delete the container cluster."; fi
+else
 	@if [ "$(DELETE)" = "1" ]; then echo "Deleting minikube profile $(LOCAL_PROFILE)..."; minikube delete -p $(LOCAL_PROFILE); else echo "Cluster kept. Run 'make local-down DELETE=1' to delete the minikube profile."; fi
+endif

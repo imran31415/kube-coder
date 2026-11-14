@@ -32,6 +32,7 @@ kube-coder runs two ways — pick the one that fits:
 
 > **📖 Follow-along walkthroughs:**
 > - [Getting started on a MacBook with minikube](docs/getting-started-minikube-macos.md) — clean laptop → local dashboard
+> - [Running on Apple's `container` (Apple silicon, macOS 26)](docs/getting-started-apple-container-macos.md) — no Docker Desktop or minikube, `make local LOCAL_DRIVER=apple` (experimental)
 > - [Deploying on Kubernetes (multi-tenant, OAuth + TLS)](docs/deploy-on-kubernetes.md) — cluster → per-user workspace
 
 ### Option A — Local (minikube)
