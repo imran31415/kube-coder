@@ -335,7 +335,7 @@ def _owners_for(dep):
                              namespace=key[0])
     except KubectlError as exc:
         legacy_log('controller', f'[controller] cannot read who stopped {key[0]}/{key[1]}, so it shows '
-              f'as stopped: {type(exc).__name__} {type(exc).__name__}'.rstrip(), file=sys.stderr)
+              f'as stopped: {exc} {exc.stderr}'.rstrip(), file=sys.stderr)
         return None
     full_meta = full.get('metadata', {})
     result = _replicas_owners(full_meta.get('managedFields'))
@@ -644,7 +644,7 @@ def set_workspace_resources(user, cpu_limit, mem_limit, persist=True):
             persisted = gitops_update_resources(user, limits)
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
-            legacy_log('controller', f'[controller] gitops resource update {user} failed: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] gitops resource update {user} failed: {exc}\n')
     invalidate_workspaces_cache()
     return {'user': user, 'limits': limits, 'persisted': persisted, 'persistError': persist_error}
 
@@ -773,7 +773,7 @@ def latest_version(force=False):
         if parse_version(tag):
             _latest_cache['version'] = tag
     except GithubError as exc:
-        legacy_log('controller', f'[controller] latest_version lookup failed: {type(exc).__name__}\n')
+        legacy_log('controller', f'[controller] latest_version lookup failed: {exc}\n')
     _latest_cache['ts'] = now
     return _latest_cache['version']
 
@@ -943,7 +943,7 @@ def set_workspace_image(user, target_version=None, persist=True):
             persisted = gitops_update_image_tag(user, new_tag)
         except (ProvisionError, GithubError) as exc:
             persist_error = str(exc)
-            legacy_log('controller', f'[controller] gitops image update {user}->{new_tag} failed: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] gitops image update {user}->{new_tag} failed: {exc}\n')
     # Config reconcile — the crux of a real "update". The live image patch above
     # rolls the pod, but the pod runs server.py (and every other script) from the
     # Helm-rendered ConfigMaps, which a bare `kubectl patch` NEVER refreshes. So
@@ -963,7 +963,7 @@ def set_workspace_image(user, target_version=None, persist=True):
             reconcile = 'launched'
         except (KubectlError, ProvisionError) as exc:
             reconcile = 'failed'
-            legacy_log('controller', f'[controller] update {user}: config reconcile Job failed: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] update {user}: config reconcile Job failed: {exc}\n')
     return {
         'user': user,
         'fromVersion': current_ver,
@@ -2228,7 +2228,7 @@ def gitops_config_exists(slug):
         return True
     except GithubError as exc:
         if getattr(exc, 'status', None) != 404:
-            legacy_log('controller', f'[controller] gitops_config_exists({slug}) check failed: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] gitops_config_exists({slug}) check failed: {exc}\n')
         return False
 
 
@@ -2596,7 +2596,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(decorate_with_updates(cached_list_workspaces()))
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/admin/token':
@@ -2626,7 +2626,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             except LookupError:
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] self version {user}: {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] self version {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/insights':
@@ -2636,7 +2636,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             try:
                 self.send_json(compute_insights())
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/capacity/summary':
@@ -2699,7 +2699,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             except LookupError:
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
             return
         if path == '/api/provision/config':
@@ -2766,7 +2766,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
         except GithubError as exc:
             self.send_json({'error': f'github lookup failed: {exc}'}, 502)
         except (ProvisionError, KubectlError) as exc:
-            legacy_log('controller', f'[controller] provision failed: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] provision failed: {exc}\n')
             self.send_json({'error': str(exc)[:200]}, 502)
 
     def do_POST(self):
@@ -2824,7 +2824,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] set resources {user}: {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] set resources {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, 'user': user, 'limits': result['limits'],
@@ -2853,7 +2853,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] update {user}: {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] update {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, **result})
@@ -2881,7 +2881,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
                 self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
                 return
             except KubectlError as exc:
-                legacy_log('controller', f'[controller] restart {user}: {type(exc).__name__}: {type(exc).__name__}\n')
+                legacy_log('controller', f'[controller] restart {user}: {exc}: {exc.stderr}\n')
                 self.send_json({'error': str(exc)}, 502)
                 return
             self.send_json({'ok': True, **result})
@@ -2905,7 +2905,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': f'no workspace {WORKSPACE_PREFIX}{user}'}, 404)
             return
         except KubectlError as exc:
-            legacy_log('controller', f'[controller] scale {user}={replicas}: {type(exc).__name__}: {type(exc).__name__}\n')
+            legacy_log('controller', f'[controller] scale {user}={replicas}: {exc}: {exc.stderr}\n')
             self.send_json({'error': str(exc)}, 502)
             return
         self.send_json({'ok': True, 'user': user, 'desiredReplicas': replicas})

@@ -123,7 +123,7 @@ class FeedRoutes:
                 return
             push_notify.PushTokenStore.register(token, platform, self._memory_actor(), workspace_host)
         except Exception as e:
-            legacy_log('workspace', f'[push] register failed: {type(e).__name__}', file=sys.stderr)
+            legacy_log('workspace', f'[push] register failed: {e}', file=sys.stderr)
             self.send_json({'error': 'could not store token'}, 500)
             return
         self.send_json({'ok': True}, 201)
@@ -149,7 +149,7 @@ class FeedRoutes:
         try:
             push_notify.PushTokenStore.unregister(token)
         except Exception as e:
-            legacy_log('workspace', f'[push] unregister failed: {type(e).__name__}', file=sys.stderr)
+            legacy_log('workspace', f'[push] unregister failed: {e}', file=sys.stderr)
             self.send_json({'error': 'could not remove token'}, 500)
             return
         self.send_json({'ok': True})

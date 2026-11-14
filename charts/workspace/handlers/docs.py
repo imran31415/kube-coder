@@ -33,7 +33,7 @@ class DocsRoutes:
             manifest = handlers.server.DocsManager.load_manifest()
             self.send_json(manifest)
         except Exception as e:
-            legacy_log('workspace', f'[docs] manifest error: {type(e).__name__}', file=sys.stderr)
+            legacy_log('workspace', f'[docs] manifest error: {e}', file=sys.stderr)
             self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     def handle_docs_page(self, page_id):
@@ -46,7 +46,7 @@ class DocsRoutes:
         except KeyError:
             self.send_json({'error': f'Unknown doc page: {page_id}'}, 404)
         except Exception as e:
-            legacy_log('workspace', f'[docs] page {page_id} error: {type(e).__name__}', file=sys.stderr)
+            legacy_log('workspace', f'[docs] page {page_id} error: {e}', file=sys.stderr)
             self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     def handle_docs_search(self, query):
@@ -64,7 +64,7 @@ class DocsRoutes:
             results = handlers.server.DocsManager.search(q, limit=limit)
             self.send_json({'q': q, 'results': results})
         except Exception as e:
-            legacy_log('workspace', f'[docs] search {q!r} error: {type(e).__name__}', file=sys.stderr)
+            legacy_log('workspace', f'[docs] search {q!r} error: {e}', file=sys.stderr)
             self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
 

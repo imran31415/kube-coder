@@ -109,7 +109,7 @@ class HypervisorRoutes:
                     seen.add(c['name'])
                     out.append({**c, 'kind': 'command'})
             except Exception as e:
-                legacy_log('workspace', f'[hypervisor] command discovery failed: {type(e).__name__}',
+                legacy_log('workspace', f'[hypervisor] command discovery failed: {e}',
                       file=sys.stderr)
         # Invocable skills the registry already tracks, filtered to those Claude
         # can actually run (systems includes 'claude').
@@ -129,7 +129,7 @@ class HypervisorRoutes:
                         'scope': r.scope,
                     })
             except Exception as e:
-                legacy_log('workspace', f'[hypervisor] skill picker snapshot failed: {type(e).__name__}',
+                legacy_log('workspace', f'[hypervisor] skill picker snapshot failed: {e}',
                       file=sys.stderr)
         out.sort(key=lambda c: c['name'])
         return out

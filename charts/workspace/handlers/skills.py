@@ -57,7 +57,7 @@ class SkillsRoutes:
             try:
                 handlers.server.SkillsSyncer.trigger_sync()
             except Exception as e:
-                legacy_log('workspace', f'[skills] refresh failed: {type(e).__name__}', file=sys.stderr)
+                legacy_log('workspace', f'[skills] refresh failed: {e}', file=sys.stderr)
         records = handlers.server.SkillsSyncer.snapshot()
         system = (query.get('system') or [None])[0]
         scope = (query.get('scope') or [None])[0]
