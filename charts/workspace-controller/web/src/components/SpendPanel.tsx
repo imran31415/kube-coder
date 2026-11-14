@@ -52,7 +52,9 @@ export function SpendPanel() {
     >
       <ResourceStatus {...resource} />
 
-      {open && (!resource.problem || resource.updatedAt) && (
+      {/* Spend is Prometheus-only: with metricsError its figures are absent,
+          not zero, so none are drawn (other panels keep their kubectl data). */}
+      {open && !spend.metricsError && (
         <>
           <div class="spend-total">
             <span class="spend-total-val">{fmtTokens(spend.fleet.window.total)}</span>

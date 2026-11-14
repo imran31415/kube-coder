@@ -1,6 +1,7 @@
 /**
- * Typed fetch wrapper with read deadlines and cancellation. Preserves auth: prepend /oauth
- * to /api/* (so the oauth2 cookie attaches), and on a confirmed 401
+ * Typed fetch wrapper with read deadlines and cancellation. Preserves the
+ * dashboard's auth behavior (charts/workspace/web): prepend /oauth to /api/*
+ * (so the oauth2 cookie attaches), and on a 401 or the "auth expired" symptom
  * bounce the page to /oauth2/start.
  *
  * For local dev a Bearer token from localStorage['kc.devToken'] is attached
@@ -71,6 +72,15 @@ function redirectToSignIn(): void {
   window.location.href = `/oauth2/start?rd=${rd}`;
 }
 
+function isAuthExpiredError(e: unknown): boolean {
+  // Browser fetch raises TypeError when it tries to follow a cross-origin
+  // redirect with credentials (oauth2-proxy 302 → github.com/login/...).
+  // No status code reaches us — only a generic "Failed to fetch".
+  if (!(e instanceof TypeError)) return false;
+  const msg = (e.message || '').toLowerCase();
+  return msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('load failed');
+}
+
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {
   const { body, query, headers, signal, timeoutMs, ...rest } = opts;
   const controller = new AbortController();
@@ -98,7 +108,9 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
       throw new ApiError('Session expired. Redirecting to sign in.', 401, null);
     }
     const isJson = (res.headers.get('Content-Type') || '').includes('application/json');
-    const parsed: unknown = isJson ? await res.json() : await res.text();
+    // An empty or malformed JSON body must not turn a real status (502, 504…)
+    // into a network error: parse tolerantly and keep res.status.
+    const parsed: unknown = isJson ? await res.json().catch(() => null) : await res.text();
     if (!res.ok) {
       const data = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
       throw new ApiError(typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`, res.status, parsed);
@@ -117,6 +129,13 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
     return await Promise.race([request(), interrupted]);
   } catch (error) {
     if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+    // An expired oauth2 session surfaces as this TypeError, not a 401: the
+    // proxy's 302 to the identity provider is cross-origin, so fetch refuses
+    // it. Send the user to sign in, as the dashboard does (once per page load).
+    if (isAuthExpiredError(error) && url.startsWith('/oauth/')) {
+      redirectToSignIn();
+      throw new ApiError('Session expired. Redirecting to sign in.', 401, null);
+    }
     throw new ApiError("Can't reach the server.", 0, null, 'network_error');
   } finally {
     clearTimeout(timer);

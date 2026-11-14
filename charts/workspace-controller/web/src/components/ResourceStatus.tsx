@@ -5,10 +5,12 @@ interface Props {
   problem: Problem | null;
   refreshing: boolean;
   updatedAt: number | null;
+  /** The data on screen is an earlier reading, kept because this one failed. */
+  stale?: boolean;
   retry: () => void;
 }
 
-export function ResourceStatus({ problem, refreshing, updatedAt, retry }: Props) {
+export function ResourceStatus({ problem, refreshing, updatedAt, stale, retry }: Props) {
   const [copied, setCopied] = useState(false);
   const [selectable, setSelectable] = useState(false);
   const reference = problem?.error_id || problem?.request_id;
@@ -21,7 +23,7 @@ export function ResourceStatus({ problem, refreshing, updatedAt, retry }: Props)
   const setup = ['metrics_disabled', 'metrics_not_reporting'].includes(problem.code);
   return <div class="resource-status" role="status" aria-live="polite">
     <div class="resource-status-message">{problem.error}</div>
-    {updatedAt && <div class="resource-status-meta">Showing previous data · Updated {new Date(updatedAt).toLocaleTimeString()}</div>}
+    {stale && updatedAt && <div class="resource-status-meta">Showing previous data · Updated {new Date(updatedAt).toLocaleTimeString()}</div>}
     <div class="resource-status-actions">
       {(problem.retryable || setup) && <button type="button" class="chip" disabled={refreshing} onClick={retry}>
         {refreshing ? 'Retrying…' : setup ? 'Check again' : 'Retry'}

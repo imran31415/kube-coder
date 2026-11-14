@@ -5,9 +5,13 @@ import { navigate } from '../router';
 
 const ICON: Record<string, string> = { critical: '⛔', warn: '⚠', info: 'ℹ' };
 
-/** Polls every minute; failed refreshes retain explicitly marked previous data. */
+/** Polls every minute; failed refreshes retain explicitly marked previous data.
+ *  The first read can fail transiently right after a controller restart (cold
+ *  kubectl discovery cache, several endpoints firing at once on page load), so
+ *  it is retried quietly every 2 s, up to 3 times, before an error shows. */
 export function InsightsBar() {
-  const resource = usePollingResource('insights', signal => getInsights(signal), 60000);
+  const resource = usePollingResource('insights', signal => getInsights(signal), 60000,
+    { coldRetries: 3, coldRetryMs: 2000 });
   const adv = resource.data?.advisories ?? [];
   if (!resource.data || adv.length === 0) return <div class="insights">
     <ResourceStatus {...resource} />
