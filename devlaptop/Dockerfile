@@ -492,6 +492,39 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm -rf "/tmp/${RW_ASSET}" /tmp/ripwire.sha256 "/tmp/ripwire-${RW_NUM}-linux-${RW_ARCH}" \
     && ripwire --version
 
+# Install herdr — a terminal multiplexer for coding agents (Apache-2.0,
+# https://herdr.dev), so a user can run it in the workspace terminal from the
+# web dashboard, the mobile app and the desktop app alike: all three open the
+# same pod terminal, so shipping the binary here reaches them with no client
+# change (#834). It is a single static binary with no runtime deps, and it only
+# runs when a user types `herdr` — nothing starts it at boot. Its config and
+# session state live on the PVC; start.sh links the ephemeral /home/ubuntu
+# copies onto /home/dev so they survive a pod restart.
+#
+# The release ships bare per-arch binaries and no checksum file, so — like
+# code-server above — the per-arch SHA-256 is pinned from GitHub's release API
+# (`assets[].digest`) and the download is `sha256sum -c`'d before install. The
+# digests are arch-specific and must move with HERDR_VERSION: Renovate's
+# postUpgradeTask runs scripts/renovate/herdr-sha.mjs to re-pin them; run it by
+# hand after a manual bump. `herdr update` cannot replace a root-owned binary,
+# so the version a workspace runs is the one pinned here.
+# renovate: datasource=github-releases depName=herdrdev/herdr
+ARG HERDR_VERSION=v0.9.5
+ARG HERDR_SHA256_AMD64=14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d
+ARG HERDR_SHA256_ARM64=17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) HERDR_ARCH=x86_64;  HERDR_SHA256="$HERDR_SHA256_AMD64" ;; \
+         arm64) HERDR_ARCH=aarch64; HERDR_SHA256="$HERDR_SHA256_ARM64" ;; \
+         *) echo "FATAL: no pinned herdr sha256 for arch $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/herdrdev/herdr/releases/download/${HERDR_VERSION}/herdr-linux-${HERDR_ARCH}" -o /tmp/herdr \
+    && echo "${HERDR_SHA256}  /tmp/herdr" | sha256sum -c - \
+    && install -m 0755 /tmp/herdr /usr/local/bin/herdr \
+    && rm -f /tmp/herdr \
+    && herdr --version | grep -qx "herdr ${HERDR_VERSION#v}" \
+    && herdr --version
+
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \

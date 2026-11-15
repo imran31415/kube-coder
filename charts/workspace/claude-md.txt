@@ -236,6 +236,34 @@ committed AND never gets to report. Three habits, in order of value:
 - SSH keys persist in `/home/ubuntu/.ssh` (symlinked to the PVC — `~/.ssh` is a *different*, non-persistent directory when `$HOME` is `/home/dev`). Generate with: `ssh-keygen -t ed25519 -f /home/ubuntu/.ssh/id_ed25519`
 - To check what's running: `curl localhost:6080/health`
 
+## herdr — agent terminal multiplexer
+
+`herdr` ([herdr.dev](https://herdr.dev/docs/), pinned in the image) runs several
+agents side by side in one terminal, with a sidebar showing which ones are
+working, blocked or done. It runs in any dashboard terminal. The web dashboard,
+the mobile app and the desktop app all open the same pod terminal, so it works
+the same way in each. Guide: `/home/dev/kube-coder/docs/in-app/herdr.md`.
+
+- **Start or reattach:** `herdr`. Detaching or closing the tab leaves its server
+  and panes running, and `herdr` reattaches. `herdr server stop` ends the session.
+- **Keys:** the dashboard terminal is a tmux session, and tmux owns `Ctrl+B`,
+  which is also herdr's prefix. Press **`Ctrl+B Ctrl+B`** for herdr's prefix,
+  because tmux passes the second press through. Detach is **`Ctrl+B Ctrl+B q`**,
+  split right `Ctrl+B Ctrl+B v`, split down `Ctrl+B Ctrl+B -`. Outside tmux a
+  single `Ctrl+B` works, as in herdr's docs. herdr is mouse-first, so on a phone
+  tap instead. **menu → detach** in the sidebar (**switch → detach** on a narrow
+  screen) detaches without a key.
+- **Persistence:** config, saved layout and logs live in `/home/dev/.config/herdr`,
+  detection state in `/home/dev/.local/state/herdr`, and herdr's worktrees in
+  `/home/dev/.herdr`. All three are on the PVC, and boot links the
+  `/home/ubuntu` paths to them. A pod restart still ends the processes in its
+  panes. The next `herdr` restores workspaces, tabs, panes and their folders.
+- **Leave it to the user:** Builds and sub-agents still run in plain tmux. Only
+  start or drive herdr when the user asks. `herdr integration install <agent>`
+  edits that agent's own config (Claude Code hooks, for example), so it is
+  opt-in. `herdr update` cannot replace the image's root-owned binary; the
+  version comes from the image.
+
 ## kube-coder Source (this workspace's blueprint)
 
 The infrastructure that runs this workspace lives at

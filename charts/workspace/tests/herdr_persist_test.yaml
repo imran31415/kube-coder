@@ -1,0 +1,28 @@
+suite: herdr state persistence (#834)
+# herdr keeps its config, saved session layout and sockets under $HOME, and the
+# terminals run with HOME=/home/ubuntu (ephemeral). start.sh links herdr's
+# three state directories onto the PVC. Behavioural coverage (fresh boot,
+# second boot, pod restart, migrating a stray real directory) runs the real
+# lines in tests/herdr_test.py; these assertions prove the wiring survives
+# the configmap's tpl rendering.
+templates:
+  - templates/workspace-entrypoint-configmap.yaml
+values:
+  - test-values.yaml
+tests:
+  - it: links every herdr state directory from the ephemeral home onto the PVC
+    asserts:
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'for herdr_dir in \.config/herdr \.local/state/herdr \.herdr; do'
+      - matchRegex:
+          path: data["start.sh"]
+          pattern: 'link_cred_dir "/home/ubuntu/\$herdr_dir" "/home/dev/\$herdr_dir"'
+
+  - it: never starts herdr at boot
+    asserts:
+      # herdr only runs when a user types it; a boot-time server would be one
+      # more process in every pod and would race the user's own session.
+      - notMatchRegex:
+          path: data["start.sh"]
+          pattern: '(?m)^\s*(exec\s+|nohup\s+|setsid\s+)?(/usr/local/bin/)?herdr\b'

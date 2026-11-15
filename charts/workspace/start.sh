@@ -177,6 +177,24 @@ persist_cred .npmrc           file   # npm / yarn registry tokens
 persist_cred .git-credentials file   # git credential.helper store (non-GitHub HTTPS)
 persist_cred .config/.wrangler dir   # wrangler / Cloudflare Workers auth
 
+# herdr (#834), the agent terminal multiplexer baked into the image, keeps all
+# of its own state under $HOME: config.toml, the saved session layout
+# (session.json + session-snapshots/), logs and its sockets in ~/.config/herdr;
+# agent-detection state in ~/.local/state/herdr; and the git worktrees it
+# creates in ~/.herdr. The terminals run with HOME=/home/ubuntu, which is
+# rebuilt on every pod restart, so link those three paths onto the same paths
+# on the PVC. With HOME=/home/dev (hooks, the Hypervisor, some tmux servers)
+# they are already the real directories, so both homes share one herdr server
+# and one saved session. This is not credential data, so it lives at the
+# ordinary /home/dev location rather than in .credentials; link_cred_dir is
+# reused because its migrate-then-park step is exactly what a stray real
+# directory here needs. The targets must exist up front: herdr cannot create
+# its directory through a dangling symlink. Directories only. herdr itself
+# never runs at boot; it starts when a user types `herdr`.
+for herdr_dir in .config/herdr .local/state/herdr .herdr; do
+  link_cred_dir "/home/ubuntu/$herdr_dir" "/home/dev/$herdr_dir"
+done
+
 # Interactive shells (ttyd, code-server, SSH) run with HOME=/home/ubuntu,
 # which is rebuilt from skel on every pod restart — so rc-file edits and
 # PATH entries made there don't survive (issue #334). Re-assert env hooks

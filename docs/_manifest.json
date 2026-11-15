@@ -58,6 +58,7 @@
       "pages": [
         { "id": "files", "title": "Files", "file": "in-app/files.md", "summary": "Files tab tour, upload limits, where data lives, the persistence model." },
         { "id": "browser", "title": "Browser & VNC", "file": "in-app/browser.md", "summary": "Headless Firefox/Chrome on the virtual display, the VNC viewer, kiosk mode." },
+        { "id": "herdr", "title": "herdr (agent multiplexer)", "file": "in-app/herdr.md", "summary": "Run several agents side by side in the workspace terminal with herdr, from web, mobile or desktop. Covers start, detach and reattach, why the prefix is Ctrl+B Ctrl+B inside the tmux-backed terminal, what survives a pod restart, and why agent integrations are opt-in." },
         { "id": "devcontainer", "title": "devcontainer.json", "file": "devcontainer.md", "summary": "Read the environment file your repo already carries — ports, extensions, settings, env and lifecycle commands applied inside the workspace pod, plus an honest account of what features/image/build cannot do here and why." }
       ]
     },
