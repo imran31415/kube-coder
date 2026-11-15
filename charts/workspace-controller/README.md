@@ -27,6 +27,10 @@ any of them, and view per-workspace usage metrics. Deployed **once per namespace
 - **Usage metrics** — an expandable mini dashboard per row plus a detail page
   (`#/w/<user>`) with a 1h/6h/24h/7d selector showing CPU, memory, disk, network,
   uptime, and a rough cost estimate, sourced from the in-cluster Prometheus.
+- **Grafana dashboards** (opt-in, `grafanaDashboards.enabled`) — "kube-coder /
+  Fleet" and "kube-coder / Workspace" as sidecar-labelled ConfigMaps for an
+  existing Grafana, or `make grafana` for a standalone one. See
+  [`docs/grafana.md`](../../docs/grafana.md).
 - **Cluster capacity** — a top-level rollup (`GET /api/capacity`) showing how
   workspace usage stacks against node allocatable capacity, cluster-wide and
   per-node, with a history chart so you can spot a previous spike or see how

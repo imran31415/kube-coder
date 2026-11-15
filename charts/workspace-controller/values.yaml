@@ -147,6 +147,27 @@ controller:
       memGbHour: "0.0041"
       storageGbMonth: "0.10"
 
+# Grafana dashboards for the kube-coder metrics: "kube-coder / Fleet" and
+# "kube-coder / Workspace" (charts/workspace-controller/dashboards/*.json).
+# Emits one ConfigMap per dashboard carrying the label a Grafana dashboard
+# sidecar watches for — kube-prometheus-stack's Grafana and the upstream
+# grafana chart both default to `grafana_dashboard: "1"`. Nothing here installs
+# Grafana; `make grafana` installs a standalone one if your cluster has none.
+# Off by default. See docs/grafana.md.
+grafanaDashboards:
+  enabled: false
+  # Namespace for the ConfigMaps. Empty => this chart's namespace. A sidecar
+  # watching only its own namespace (searchNamespace unset) needs Grafana's.
+  namespace: ""
+  # Must match the sidecar's `label` / `labelValue`.
+  label: grafana_dashboard
+  labelValue: "1"
+  # Puts both dashboards in a "kube-coder" folder when the sidecar sets
+  # folderAnnotation: grafana_folder (the `make grafana` values do). Ignored
+  # otherwise — the dashboards land in the General folder.
+  annotations:
+    grafana_folder: kube-coder
+
 ingress:
   className: nginx
   tls:

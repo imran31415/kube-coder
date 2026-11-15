@@ -1,0 +1,51 @@
+suite: grafana dashboards are opt-in labelled ConfigMaps
+templates:
+  - templates/grafana-dashboards.yaml
+tests:
+  - it: emits nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: emits one ConfigMap per dashboard file
+    set:
+      grafanaDashboards.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: ConfigMap
+  - it: carries the default sidecar label and folder annotation
+    set:
+      grafanaDashboards.enabled: true
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: kube-coder-fleet-dashboard
+      - equal:
+          path: metadata.namespace
+          value: coder
+      - equal:
+          path: metadata.labels.grafana_dashboard
+          value: "1"
+      - equal:
+          path: metadata.annotations.grafana_folder
+          value: kube-coder
+      - exists:
+          path: data["kube-coder-fleet.json"]
+  - it: honours a custom label, value and namespace
+    set:
+      grafanaDashboards.enabled: true
+      grafanaDashboards.namespace: monitoring
+      grafanaDashboards.label: my_dashboards
+      grafanaDashboards.labelValue: "yes"
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: monitoring
+      - equal:
+          path: metadata.labels.my_dashboards
+          value: "yes"
+      - notExists:
+          path: metadata.labels.grafana_dashboard

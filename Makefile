@@ -797,6 +797,42 @@ controller-dev: ## Run controller.py locally (KUBECONFIG listing; dev bearer tok
 	TRUSTED_PROXY=false \
 	python3 $(WC_DIR)/controller.py
 
+# Grafana for the kube-coder metrics (docs/grafana.md). The dashboards ship in
+# the controller chart (grafanaDashboards.enabled); these targets only matter on
+# a cluster with NO Grafana — they install the upstream grafana chart, already
+# wired to a Prometheus datasource and to pick those dashboards up. Install it
+# in the controller's namespace (the default) so its namespaced sidecar sees
+# the dashboard ConfigMaps.
+.PHONY: grafana grafana-forward grafana-password grafana-uninstall
+GRAFANA_RELEASE ?= kube-coder-grafana
+GRAFANA_NAMESPACE ?= $(NAMESPACE)
+GRAFANA_PROMETHEUS_URL ?= http://prometheus-kube-prometheus-prometheus.default.svc:9090
+# renovate: datasource=helm depName=grafana registryUrl=https://grafana.github.io/helm-charts
+GRAFANA_CHART_VERSION ?= 10.5.15
+
+grafana: ## Install a standalone Grafana with the kube-coder dashboards (GRAFANA_PROMETHEUS_URL=..., GRAFANA_NAMESPACE=...)
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update >/dev/null
+	helm upgrade $(GRAFANA_RELEASE) grafana/grafana \
+		--version $(GRAFANA_CHART_VERSION) \
+		-f $(WC_DIR)/grafana/standalone-values.yaml \
+		--set-string env.PROMETHEUS_URL=$(GRAFANA_PROMETHEUS_URL) \
+		--namespace $(GRAFANA_NAMESPACE) --create-namespace \
+		--install --wait --timeout 5m
+	@echo ""
+	@echo "Grafana is up. Dashboards appear once the workspace-controller chart runs with"
+	@echo "grafanaDashboards.enabled=true in namespace $(GRAFANA_NAMESPACE) (grafanaDashboards.namespace)."
+	@echo "  make grafana-password   # admin password"
+	@echo "  make grafana-forward    # then open http://localhost:3000 (user: admin)"
+
+grafana-forward: ## Port-forward the standalone Grafana to localhost:3000
+	kubectl port-forward -n $(GRAFANA_NAMESPACE) svc/$(GRAFANA_RELEASE) 3000:80
+
+grafana-password: ## Print the standalone Grafana admin password
+	@kubectl get secret -n $(GRAFANA_NAMESPACE) $(GRAFANA_RELEASE) -o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+grafana-uninstall: ## Remove the standalone Grafana (dashboards stay with the controller chart)
+	helm uninstall $(GRAFANA_RELEASE) --namespace $(GRAFANA_NAMESPACE)
+
 # =============================================================================
 # Local development — run kube-coder on a local single-node cluster (minikube)
 # =============================================================================

@@ -35,6 +35,14 @@
     },
     {
       "customType": "regex",
+      "description": "Upstream grafana chart pinned in the Makefile for `make grafana` (standalone Grafana with the kube-coder dashboards).",
+      "managerFilePatterns": ["Makefile"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) registryUrl=(?<registryUrl>\\S+)\\n\\S+ \\?= (?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
       "description": "Kaniko builder image pinned in Helm values and the controller's generated values template.",
       "managerFilePatterns": [
         "charts/base-infrastructure/values.yaml",
