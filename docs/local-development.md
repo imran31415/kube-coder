@@ -12,7 +12,12 @@ pushing it anywhere. [kind](https://kind.sigs.k8s.io/) and
 [k3d](https://k3d.io/) work too — see [Other local clusters](#other-local-clusters).
 
 The whole flow is wrapped in `make local-*` targets that talk **only** to the
-minikube context, so they can't touch a remote cluster.
+local cluster's context, so they can't touch a remote cluster.
+
+> **On an Apple-silicon Mac with macOS 26?** The same targets can run on
+> Apple's `container` instead of Docker Desktop + minikube:
+> `make local LOCAL_DRIVER=apple`. See [Apple `container` (macOS)](#apple-container-macos)
+> and the [step-by-step guide](getting-started-apple-container-macos.md).
 
 ---
 
@@ -112,7 +117,7 @@ and is safe to commit (no secrets). The local-specific choices:
 | Setting | Local value | vs. cloud default |
 |---------|-------------|-------------------|
 | `image.repository` / `tag` | `kube-coder:local` | DO registry image |
-| `image.pullPolicy` | `IfNotPresent` | `Always` |
+| `image.pullPolicy` | `IfNotPresent` (`Always` with `LOCAL_DRIVER=apple`) | `Always` |
 | `image.pullSecretName` | _empty_ | `regcred` |
 | `ingress.tls.enabled` | `false` | `true` (cert-manager + Let's Encrypt) |
 | `ingress.auth.type` | `basic` | `oauth2` / `basic` |
@@ -238,13 +243,53 @@ make local-down DELETE=1     # also delete the minikube profile entirely
 | `http://kube-coder.local:8080` won't resolve | Add the `/etc/hosts` line (`127.0.0.1 kube-coder.local`) and make sure `make local-forward` is running. |
 | 401 / auth prompt loops | Credentials are `admin` / `admin` (or whatever you set via `LOCAL_AUTH_*`). Re-run `make local-secret` if you changed them. |
 | Pod stuck `ContainerCreating` | Usually the PVC or the `kaniko-wrapper` ConfigMap — confirm `make local-deploy` installed `base-infrastructure`. |
+| `ImagePullBackOff` with `LOCAL_DRIVER=apple` | The cluster must be created with `--shared-image-store` (`make local-up LOCAL_DRIVER=apple` does this; it can't be added later) and `container image list` must show `kube-coder:local`. See the [Apple guide](getting-started-apple-container-macos.md#troubleshooting). |
 | minikube won't start / OOMs | Raise Docker Desktop's memory, or lower it: `make local-up` then `minikube start -p kube-coder --memory=4g`. |
+
+---
+
+## Apple `container` (macOS)
+
+On Apple silicon with macOS 26, `LOCAL_DRIVER=apple` swaps minikube for
+[Apple's `container`](https://github.com/apple/container) (#879). There's no
+Docker Desktop and no minikube. The chart, the overlay and the targets are
+the same:
+
+```bash
+brew install container kubectl helm
+container system start
+make local LOCAL_DRIVER=apple          # or: export LOCAL_DRIVER=apple
+```
+
+| Step | minikube (default) | `LOCAL_DRIVER=apple` |
+|---|---|---|
+| cluster | `minikube start -p kube-coder --driver=docker` | `container cluster create --name kube-coder --shared-image-store` |
+| image | `minikube image build` (inside the node) | `container build` (Mac image store, which the cluster reads) |
+| ingress | `minikube addons enable ingress` | ingress-nginx **kind** manifest (pinned) |
+| metrics | `minikube addons enable metrics-server` | metrics-server manifest + `--kubelet-insecure-tls` |
+| storage | minikube hostpath | kind's default; local-path-provisioner if none is default |
+| enforced NetworkPolicy | `LOCAL_CNI=calico` → `--cni=calico` | `LOCAL_CNI=calico` → pinned Calico manifest via `--cni` (or `LOCAL_CNI=./cni.yaml`) |
+| pull policy | overlay's `IfNotPresent` | `Always`, so a rebuilt `:local` tag is picked up |
+| delete | `minikube delete -p kube-coder` | `container cluster delete --name kube-coder` |
+
+Pass the same `LOCAL_DRIVER` to every `local-*` target. Size the cluster with
+`LOCAL_CPUS` / `LOCAL_MEMORY` (default `4` / `6g`, used by both drivers).
+Add-on versions are pinned in the Makefile (`LOCAL_APPLE_*_VERSION`).
+
+> ⚠️ Apple's documented recovery for a **stopped** cluster (after
+> `container system stop` or a reboot) is delete + re-create, which
+> **destroys the workspace PVC**. Back up `/home/dev` first. See the
+> [Apple guide](getting-started-apple-container-macos.md#tear-it-down).
+
+This path is **experimental** and not yet verified on hardware. The guide has a
+smoke checklist and the open questions.
 
 ---
 
 ## Other local clusters
 
-The chart is cluster-agnostic; only the `make local-*` wrappers assume minikube.
+The chart is cluster-agnostic; only the `make local-*` wrappers assume minikube
+(or Apple `container`, above).
 To use a different tool, replicate the four steps against it:
 
 - **kind:** create the cluster, install `ingress-nginx`
