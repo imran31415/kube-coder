@@ -1,0 +1,74 @@
+# Values for the UPSTREAM grafana chart (https://grafana.github.io/helm-charts),
+# used by `make grafana` to stand up a Grafana that already shows the kube-coder
+# dashboards. Only for clusters with no Grafana: if you run kube-prometheus-
+# stack, enable `grafanaDashboards` in the workspace-controller chart instead
+# and its Grafana picks the dashboards up. See docs/grafana.md.
+#
+# Grafana itself is maintained upstream; this file only configures it.
+
+# Watch for dashboards in this namespace only, with a Role rather than a
+# ClusterRole. Install Grafana in the controller's namespace (the `make grafana`
+# default) so the controller chart's dashboard ConfigMaps are in reach.
+rbac:
+  namespaced: true
+
+sidecar:
+  dashboards:
+    enabled: true
+    # Matches workspace-controller's grafanaDashboards.label / labelValue.
+    label: grafana_dashboard
+    labelValue: "1"
+    # Matches grafanaDashboards.annotations: puts them in a "kube-coder" folder.
+    folderAnnotation: grafana_folder
+    provider:
+      foldersFromFilesStructure: true
+  datasources:
+    enabled: false
+
+# The dashboards select their Prometheus through a `datasource` variable, so
+# any Prometheus datasource works; this provisions one as the default. Grafana
+# expands $PROMETHEUS_URL from the environment when it reads the file.
+env:
+  PROMETHEUS_URL: ""  # set by `make grafana` (GRAFANA_PROMETHEUS_URL)
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: $PROMETHEUS_URL
+        isDefault: true
+        editable: false
+
+# Dashboards and the datasource are provisioned from ConfigMaps on every start,
+# so there is nothing on disk worth keeping. Turn this on if you also save
+# hand-made dashboards in this Grafana.
+persistence:
+  enabled: false
+
+grafana.ini:
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+  users:
+    allow_sign_up: false
+  auth.anonymous:
+    enabled: false
+
+# Admin password is generated into the <release> Secret (key admin-password).
+# No Ingress by default: reach it with port-forward, or set `ingress` here and
+# put your SSO in front of it. Never expose it without authentication.
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+testFramework:
+  enabled: false

@@ -6,3 +6,4 @@ web/
 .DS_Store
 __pycache__/
 *.pyc
+grafana/

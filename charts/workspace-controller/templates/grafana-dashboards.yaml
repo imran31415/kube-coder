@@ -1,0 +1,34 @@
+{{- /*
+Grafana dashboards for the kube-coder metrics (#869), one ConfigMap per
+dashboards/*.json file. The JSON files are the source of truth: edit a
+dashboard in Grafana, export it ("Export for sharing externally" OFF), and
+replace the file.
+
+Nothing here installs Grafana. A Grafana dashboard sidecar (kube-prometheus-
+stack's, or the upstream grafana chart's `sidecar.dashboards`) picks these up by
+label; `make grafana` installs a standalone one already configured to.
+*/ -}}
+{{- with .Values.grafanaDashboards }}
+{{- if .enabled }}
+{{- $ns := .namespace | default $.Values.namespace }}
+{{- range $path, $_ := $.Files.Glob "dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-dashboard
+  namespace: {{ $ns }}
+  labels:
+    {{- include "wc.labels" $ | nindent 4 }}
+    {{ $.Values.grafanaDashboards.label }}: {{ $.Values.grafanaDashboards.labelValue | quote }}
+  {{- with $.Values.grafanaDashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

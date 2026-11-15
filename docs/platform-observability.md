@@ -5,6 +5,10 @@ The cluster operator owns Prometheus, log collection, retention, Alertmanager
 routes and notification delivery. No collector or notification service is
 installed by these charts. Monitors and alert rules are disabled by default.
 
+Once metrics are flowing, [grafana.md](grafana.md) adds ready-made Fleet and
+Workspace dashboards, either to the Grafana you already run or to a standalone
+one installed with `make grafana`.
+
 ## Enable collection
 
 Prerequisites, all operator-owned:
