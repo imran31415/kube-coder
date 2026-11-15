@@ -32,7 +32,9 @@ env:
 jobs:
   rust-tests:
     name: Rust unit tests
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moved to Ubuntu 26.04, which
+    # ships no libwebkit2gtk-4.1-dev (apt: "Unable to locate package").
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -138,7 +140,8 @@ jobs:
       matrix:
         include:
           - name: linux
-            os: ubuntu-latest
+            # Not ubuntu-latest (26.04 has no libwebkit2gtk-4.1-dev); see rust-tests.
+            os: ubuntu-24.04
             bundles: deb,appimage
             args: ''
             out: desktop/src-tauri/target/release/bundle
