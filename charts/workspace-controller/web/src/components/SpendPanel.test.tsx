@@ -73,7 +73,7 @@ describe('SpendPanel', () => {
       Promise.resolve(sample({ metricsError: 'metrics disabled (PROMETHEUS_URL unset)' }));
     render(<SpendPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/Spend metrics require Prometheus/)).toBeInTheDocument(),
+      expect(screen.getByText(/Monitoring is not configured/)).toBeInTheDocument(),
     );
     // The numbers are absent, not zero — so none of them are rendered.
     expect(screen.queryByText('Cache read')).not.toBeInTheDocument();
@@ -90,7 +90,7 @@ describe('SpendPanel', () => {
       );
     render(<SpendPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/No workspace is exporting spend metrics/)).toBeInTheDocument(),
+      expect(screen.getByText(/No workspace metrics received yet/)).toBeInTheDocument(),
     );
   });
 
@@ -98,7 +98,7 @@ describe('SpendPanel', () => {
     respond = () => Promise.reject(new Error('boom'));
     render(<SpendPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/Couldn't load agent spend: boom/)).toBeInTheDocument(),
+      expect(screen.getByText(/Couldn't load metrics. Try again./)).toBeInTheDocument(),
     );
   });
 

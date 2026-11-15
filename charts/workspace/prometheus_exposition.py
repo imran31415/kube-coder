@@ -148,6 +148,7 @@ class Exposition:
         # (name, type, escaped help, [(rendered labels, rendered value)])
         self._families: List[Tuple[str, str, str, List[Tuple[str, str]]]] = []
         self._names: set = set()
+        self._histograms = []
 
     def add(self, name: str, metric_type: str, help_text: str,
             samples: Iterable[Tuple[Optional[Mapping[str, Any]], Any]]) -> 'Exposition':
@@ -203,4 +204,38 @@ class Exposition:
             out.append(f'# TYPE {name} {metric_type}')
             for labels, value in samples:
                 out.append(f'{name}{labels} {value}')
+        for name, help_text, samples in self._histograms:
+            out.extend((f'# HELP {name} {help_text}', f'# TYPE {name} histogram'))
+            out.extend(samples)
         return ('\n'.join(out) + '\n') if out else ''
+
+    def histogram(self, name, help_text, samples):
+        """Render snapshots of (labels, [(upper_bound, cumulative_count)], sum).
+
+        The final bucket must be +Inf. Reserve generated names too, so another
+        family cannot accidentally emit the same series.
+        """
+        names = {name, name + '_bucket', name + '_sum', name + '_count'}
+        if not METRIC_NAME_RE.fullmatch(name) or names & self._names:
+            raise ExpositionError('invalid or duplicate histogram family')
+        rendered, seen = [], set()
+        for labels, buckets, total in samples:
+            labels = dict(labels or {})
+            key = render_labels(labels)
+            if 'le' in labels or key in seen:
+                raise ExpositionError('duplicate histogram labels or reserved le label')
+            seen.add(key)
+            previous, count = -math.inf, 0
+            for boundary, value in buckets:
+                if math.isnan(boundary) or boundary <= previous:
+                    raise ExpositionError('histogram boundaries must increase')
+                if not isinstance(value, int) or value < count:
+                    raise ExpositionError('histogram counts must be cumulative integers')
+                previous, count = boundary, value
+                rendered.append(f'{name}_bucket{render_labels({**labels, "le": format_value(boundary)})} {value}')
+            if previous != math.inf or not math.isfinite(total) or total < 0:
+                raise ExpositionError('histogram needs +Inf and a finite nonnegative sum')
+            rendered.extend((f'{name}_sum{key} {format_value(total)}', f'{name}_count{key} {count}'))
+        self._names.update(names)
+        self._histograms.append((name, escape_help(help_text), rendered))
+        return self

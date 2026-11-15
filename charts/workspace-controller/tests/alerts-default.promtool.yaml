@@ -1,0 +1,18 @@
+# Rules as rendered with only prometheusRule.enabled=true (the missing-scrape
+# alert is opt-in via workspaceScrapeAlert). Workspace scraping is off by
+# default in the workspace chart, so a running workspace with no scrape at all
+# is the normal state here and must not alert.
+rule_files: [default-rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: running but unscraped workspaces raise nothing by default
+    interval: 1m
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="ws-a",pod="ws-a-1",phase="Running"}'
+        values: '1x30'
+      - series: 'kube_pod_status_phase{namespace="ws-b",pod="ws-b-1",phase="Running"}'
+        values: '1x30'
+    promql_expr_test:
+      - expr: 'sum(ALERTS) or vector(0)'
+        eval_time: 25m
+        exp_samples: [{labels: '{}', value: 0}]

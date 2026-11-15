@@ -120,6 +120,7 @@ class RouteTable:
         if hit is None:
             return False
         route, args = hit
+        request._obs_route = route.handler
         for name, value in zip(route.sets, args):
             setattr(request, name, value)
         args = args[len(route.sets):]

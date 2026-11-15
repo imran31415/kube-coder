@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'preact/hooks';
-import { type ClusterHealthResponse, type HealthStatus, getCapacitySummary } from '../api/capacity';
+import { usePollingResource } from '../hooks/usePollingResource';
+import { ResourceStatus } from './ResourceStatus';
+import { type HealthStatus, getCapacitySummary } from '../api/capacity';
 import { navigate } from '../router';
 import { fmtPct } from '../format';
 
@@ -14,38 +15,17 @@ const LABEL: Record<HealthStatus, string> = {
  *  /api/capacity/summary (instant queries only), so it can poll without the
  *  heavy range-history/per-node/insights load that the full capacity view runs.
  *  Polls every 30s and keeps the last good reading through a transient failure
- *  so it never flickers. The whole card links through to the full drill-down. */
+ *  so it never flickers. A separate button opens the full drill-down. */
 export function HealthSummary() {
-  const [h, setH] = useState<ClusterHealthResponse | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const r = await getCapacitySummary();
-        if (!alive) return;
-        setH(r);
-        setErr(null);
-      } catch (e) {
-        if (alive && !h) setErr(e instanceof Error ? e.message : String(e));
-      }
-    }
-    void load();
-    const id = window.setInterval(() => void load(), 30000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const status: HealthStatus = h?.metricsError ? 'unknown' : (h?.status ?? 'unknown');
+  const resource = usePollingResource('health', signal => getCapacitySummary(signal), 30000);
+  const h = resource.data;
+  const err = resource.problem;
+  const status: HealthStatus = resource.problem ? 'unknown' : (h?.status ?? 'unknown');
   const c = h?.cluster ?? null;
   const open = () => navigate('/capacity');
 
   return (
-    <button class={`health health-${status}`} onClick={open} title="Open cluster resources">
+    <section class={`health health-${status}`} aria-label="Cluster health">
       <span class="health-main">
         <span class={`health-dot dot-${status}`} aria-hidden="true" />
         <span class="health-label">Cluster: {LABEL[status]}</span>
@@ -53,7 +33,7 @@ export function HealthSummary() {
       <span class="health-stats">
         {!h && !err && <span class="health-stat muted">Loading…</span>}
         {err && !h && <span class="health-stat muted">unavailable</span>}
-        {c && (
+        {c && (!resource.problem || resource.updatedAt) && (
           <>
             <span class="health-stat">CPU {fmtPct(c.cpu.clusterPct)}</span>
             <span class="health-stat">Mem {fmtPct(c.memory.clusterPct)}</span>
@@ -62,8 +42,9 @@ export function HealthSummary() {
             </span>
           </>
         )}
-        <span class="health-cta">Cluster resources →</span>
+        <button type="button" class="health-cta chip" onClick={open}>Cluster resources</button>
       </span>
-    </button>
+      <ResourceStatus {...resource} />
+    </section>
   );
 }

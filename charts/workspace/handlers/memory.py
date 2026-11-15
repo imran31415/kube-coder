@@ -33,6 +33,7 @@ domain (`handle_memory_list`, `handle_memory_neighbors`); PR 2 turned that
 into the table's `query=` column, and with this domain gone the two locals
 leave `do_GET` with it.
 """
+from observability_logging import legacy_log
 
 import json
 import re
@@ -72,7 +73,7 @@ class MemoryRoutes:
         if isinstance(e, handlers.server.MemError):
             self.send_json({'error': str(e), 'code': e.code}, 400)
             return
-        print(f'[memory] internal error: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[memory] internal error: {e}', file=sys.stderr)
         self.send_json({'error': str(e), 'code': 'internal'}, 500)
 
     def handle_memory_list(self, query):

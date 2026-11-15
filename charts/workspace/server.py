@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+from observability_logging import legacy_log
+from observability_http import ObservedHTTP
+from observability_metrics import ProcessCounters, REGISTRY
+from observability_logging import problem
+import metrics_listener
 import http.server
 import html
 import subprocess
@@ -204,7 +209,7 @@ except Exception as _mem_import_err:  # broken install shouldn't crash the serve
     EmbeddingWorker = None  # type: ignore
     MemError = MemNotFound = MemConflict = MemValidationError = Exception  # type: ignore
     _MEMORY_AVAILABLE = False
-    print(f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[memory] import failed: {_mem_import_err}', file=sys.stderr)
 
 # hypervisor_session: structured agent sessions backing the Hypervisor chat.
 # Same delivery as the memory package (copied next to server.py at /tmp/browser).
@@ -231,7 +236,7 @@ except Exception as _hv_import_err:  # broken install shouldn't crash the server
     hv_locate_session_log = None  # type: ignore
     HYPERVISOR_DIR = ''  # type: ignore
     _HYPERVISOR_AVAILABLE = False
-    print(f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[hypervisor] import failed: {_hv_import_err}', file=sys.stderr)
 
 # token_usage: token accounting shared with hypervisor_session (#574). Builds run
 # an interactive CLI in a tmux pane with no structured stream, so their spend is
@@ -243,7 +248,7 @@ try:
 except Exception as _tu_import_err:
     tu = None  # type: ignore
     _TOKEN_USAGE_AVAILABLE = False
-    print(f'[token-usage] import failed: {_tu_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[token-usage] import failed: {_tu_import_err}', file=sys.stderr)
 
 # gateway: the Conversation Gateway (issue #306) — chat with the Hypervisor from
 # outside the app over a channel (WhatsApp first). Channel-agnostic core here;
@@ -276,7 +281,7 @@ except Exception as _gw_import_err:  # broken install shouldn't crash the server
     gw_get_field_normalizer = None  # type: ignore
     LoopbackAdapter = None  # type: ignore
     _GATEWAY_AVAILABLE = False
-    print(f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[gateway] import failed: {_gw_import_err}', file=sys.stderr)
 
 # Board review cards over WhatsApp (#709 Part 4). Its own guard: it also needs
 # the boards package, and losing it must not take the chat gateway down.
@@ -284,7 +289,7 @@ try:
     import gateway_review
 except Exception as _gwr_import_err:  # pragma: no cover - broken install
     gateway_review = None  # type: ignore
-    print(f'[gateway] review cards unavailable: {_gwr_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[gateway] review cards unavailable: {_gwr_import_err}', file=sys.stderr)
 
 # Multi-harness skills subsystem (issue #187) — same colocated-package
 # convention as `memory`. Read-only surface over SKILL.md-style files
@@ -302,7 +307,7 @@ except Exception as _skills_import_err:  # broken install shouldn't crash the se
     SKILL_NAME_RE = None  # type: ignore
     discover_commands = None  # type: ignore
     _SKILLS_AVAILABLE = False
-    print(f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[skills] import failed: {_skills_import_err}', file=sys.stderr)
 
 # User-defined MCP servers (issue #353) — one canonical registry on the PVC,
 # fanned out to every MCP-capable assistant's native config (Claude, OpenCode,
@@ -313,7 +318,7 @@ try:
 except Exception as _mcp_reg_import_err:  # broken install shouldn't crash the server
     mcp_registry = None  # type: ignore
     _MCP_REGISTRY_AVAILABLE = False
-    print(f'[mcp-registry] import failed: {_mcp_reg_import_err}', file=sys.stderr)
+    legacy_log('workspace', f'[mcp-registry] import failed: {_mcp_reg_import_err}', file=sys.stderr)
 
 # Alert thresholds for metrics
 ALERT_THRESHOLDS = {
@@ -844,7 +849,7 @@ def get_gateway():
                     record_getter=BoardReviewManager.get,
                     decider=_gateway_review_decide)
                 gw.review_handler = _GATEWAY_REVIEW.handle_inbound
-            print('[gateway] conversation gateway ready (whatsapp + loopback preview)')
+            legacy_log('workspace', '[gateway] conversation gateway ready (whatsapp + loopback preview)')
         return _GATEWAY
 
 
@@ -885,7 +890,7 @@ def _gateway_review_notify(item):
         notifier = _GATEWAY_REVIEW
         return bool(notifier is not None and notifier.on_feed_item(item))
     except Exception as e:
-        print(f'[gateway-review] notify failed: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[gateway-review] notify failed: {e}', file=sys.stderr)
         return False
 
 
@@ -997,21 +1002,21 @@ def _public_demo_needs_ack():
 
 def _check_safety_invariants():
     if AUTH_MODE == 'none' and not READONLY_MODE:
-        print(
+        legacy_log('workspace',
             '[server.py] FATAL: AUTH_MODE=none requires READONLY_MODE=true. '
             'Refusing to start an unauthed, writable workspace.',
             file=sys.stderr,
         )
         sys.exit(2)
     if READONLY_MODE:
-        print('[server.py] READONLY_MODE active — mutating endpoints will 403.', file=sys.stderr)
+        legacy_log('workspace', '[server.py] READONLY_MODE active — mutating endpoints will 403.', file=sys.stderr)
     if AUTH_MODE == 'none':
-        print('[server.py] AUTH_MODE=none — check_claude_auth short-circuits to True.', file=sys.stderr)
+        legacy_log('workspace', '[server.py] AUTH_MODE=none — check_claude_auth short-circuits to True.', file=sys.stderr)
     if PUBLIC_FILE_ROOT:
-        print(f'[server.py] PUBLIC_FILE_ROOT={PUBLIC_FILE_ROOT!r} — public file reads '
+        legacy_log('workspace', f'[server.py] PUBLIC_FILE_ROOT={PUBLIC_FILE_ROOT!r} — public file reads '
               'are confined to this subdir of /home/dev.', file=sys.stderr)
     if _public_demo_needs_ack():
-        print(
+        legacy_log('workspace',
             '[server.py] WARNING: public-demo mode (AUTH_MODE=none + READONLY_MODE=true) '
             'is active. READONLY_MODE blocks writes but NOT reads: every readable file on '
             'this PVC — including dotfile credentials like .claude-tasks/.api-token, '
@@ -1023,7 +1028,7 @@ def _check_safety_invariants():
             file=sys.stderr,
         )
     if DEMO_SHOW_ALL:
-        print('[server.py] DEMO_SHOW_ALL=true — SPA renders mutation UI (still 403-gated).', file=sys.stderr)
+        legacy_log('workspace', '[server.py] DEMO_SHOW_ALL=true — SPA renders mutation UI (still 403-gated).', file=sys.stderr)
 _check_safety_invariants()
 
 # Strip ANSI escape sequences (CSI, OSC, single-char) from terminal output
@@ -1449,49 +1454,6 @@ class ProductMetricsCollector:
         }
 
 
-class ProcessCounters:
-    """Monotonic-by-construction counters for the life of this process (#105).
-
-    THE POINT OF THIS CLASS is that almost nothing else on this endpoint is
-    allowed to be a Prometheus counter. Every other figure the exposition
-    reports is recomputed from files on disk, and those files get pruned — so
-    the number can fall. Prometheus reads a fall as a counter *reset* and
-    credits the whole post-fall value as fresh increase, which turns a deleted
-    task into a spike in `rate()` that never happened. Anything recomputed from
-    disk is therefore a gauge; only what is incremented here, in memory, as the
-    event happens, is a counter.
-
-    A process restart zeroing these is fine and expected: that is the one
-    decrease Prometheus models correctly.
-
-    Thread-safe because completion hooks are delivered from daemon threads;
-    `d[k] += 1` is several bytecodes and two of them can interleave.
-    """
-
-    _lock = threading.Lock()
-    _values = {}
-
-    @classmethod
-    def inc(cls, name, labels=None, amount=1):
-        key = (name, tuple(sorted((labels or {}).items())))
-        with cls._lock:
-            cls._values[key] = cls._values.get(key, 0) + amount
-
-    @classmethod
-    def get(cls, name):
-        """`{labels_tuple: value}` for one counter — a snapshot, safe to read."""
-        with cls._lock:
-            return {k[1]: v for k, v in cls._values.items() if k[0] == name}
-
-    @classmethod
-    def value(cls, name, labels=None):
-        return cls.get(name).get(tuple(sorted((labels or {}).items())), 0)
-
-    # There is deliberately no reset(). A counter that anything can zero is not
-    # a counter, and a test that zeroes a process-wide registry races every
-    # other suite's in-flight delivery threads — tests assert on deltas.
-
-
 class PrometheusMetricsCollector:
     """The platform's own metrics, in Prometheus text exposition format (#105).
 
@@ -1583,7 +1545,7 @@ class PrometheusMetricsCollector:
         try:
             return ProjectsManager._scan_task_metas()
         except Exception as e:
-            print(f'[prom-metrics] task scan failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[prom-metrics] task scan failed: {e}', file=sys.stderr)
             return []
 
     @classmethod
@@ -1601,7 +1563,7 @@ class PrometheusMetricsCollector:
                 up[section] = 1 if fn(exp, metas) else 0
             except Exception as e:
                 up[section] = 0
-                print(f'[prom-metrics] section {section} failed: '
+                legacy_log('workspace', f'[prom-metrics] section {section} failed: '
                       f'{type(e).__name__}: {e}', file=sys.stderr)
         exp.gauge(
             cls.PREFIX + 'metrics_collector_up',
@@ -1610,6 +1572,18 @@ class PrometheusMetricsCollector:
             "section's other metrics are missing, not that they are zero.",
             [({'section': s}, up.get(s, 0)) for s in cls.SECTIONS])
         return exp.render()
+
+    @classmethod
+    def scrape(cls):
+        """What a scrape receives: the product exposition above, then this
+        process's HTTP telemetry (observability_metrics.REGISTRY, #869).
+
+        Kept out of render() on purpose. render() is the product vocabulary
+        pinned by prometheus_metrics_test.CardinalityTests (a fixed label set,
+        well under 100 series); the HTTP families are histograms by route,
+        bounded by the RouteTable rather than by that budget, and have their
+        own cardinality tests (HttpTelemetryCardinalityTests)."""
+        return cls.render() + REGISTRY.exposition()
 
     # ── tokens (#574 classes, the figures #581 is blocked on) ─────────────
 
@@ -1810,7 +1784,7 @@ class PrometheusMetricsCollector:
             try:
                 stats.append(BoardMetricsManager.for_board(board_id))
             except Exception as e:
-                print(f'[prom-metrics] board {board_id} failed: {e}',
+                legacy_log('workspace', f'[prom-metrics] board {board_id} failed: {e}',
                       file=sys.stderr)
 
         # Rank by activity so the cap sheds the least interesting boards, and
@@ -2323,7 +2297,7 @@ class ClaudeTaskManager:
                 try:
                     boot = devcontainer.boot_id() or ''
                 except Exception as e:   # pragma: no cover - defensive
-                    print(f'[tasks] boot_id unavailable: {e}', file=sys.stderr)
+                    legacy_log('workspace', f'[tasks] boot_id unavailable: {e}', file=sys.stderr)
             ClaudeTaskManager._boot_id = boot
         return ClaudeTaskManager._boot_id
 
@@ -2619,7 +2593,7 @@ class ClaudeTaskManager:
         target = WORKSPACE_DEFAULT_ASSISTANT
         if target not in ids:
             if target != 'claude':
-                print(
+                legacy_log('workspace',
                     f'[assistant] configured default {target!r} is not enabled '
                     f'(available: {sorted(ids)}); falling back to claude. '
                     'Check the assistant.default value and that its API key / '
@@ -2927,7 +2901,7 @@ class ClaudeTaskManager:
         if requested and requested in enabled:
             return requested
         if requested:
-            print(
+            legacy_log('workspace',
                 f'[assistant] requested assistant {requested!r} is not enabled '
                 f'(available: {sorted(enabled)}); falling back to the workspace '
                 'default.',
@@ -2936,7 +2910,7 @@ class ClaudeTaskManager:
         if default in enabled:
             return default
         if default != 'claude':
-            print(
+            legacy_log('workspace',
                 f'[assistant] configured default {default!r} is not enabled '
                 f'(available: {sorted(enabled)}); falling back to claude.',
                 file=sys.stderr)
@@ -3010,10 +2984,10 @@ class ClaudeTaskManager:
                                text=True, timeout=20)
             supported = '--session-id' in (r.stdout or '')
         except Exception as e:
-            print(f'[token-usage] claude --session-id probe failed: {e}',
+            legacy_log('workspace', f'[token-usage] claude --session-id probe failed: {e}',
                   file=sys.stderr)
         if not supported:
-            print('[token-usage] claude does not advertise --session-id; Build '
+            legacy_log('workspace', '[token-usage] claude does not advertise --session-id; Build '
                   'token usage will report as not-measured', file=sys.stderr)
         ClaudeTaskManager._CLAUDE_SESSION_ID_SUPPORTED = supported
         return supported
@@ -3041,10 +3015,10 @@ class ClaudeTaskManager:
                                text=True, timeout=20)
             supported = '--resume' in (r.stdout or '')
         except Exception as e:
-            print(f'[board-review] claude --resume probe failed: {e}',
+            legacy_log('workspace', f'[board-review] claude --resume probe failed: {e}',
                   file=sys.stderr)
         if not supported:
-            print('[board-review] claude does not advertise --resume; a sent-'
+            legacy_log('workspace', '[board-review] claude does not advertise --resume; a sent-'
                   'back board item will start a fresh build with its prior '
                   'context in the prompt', file=sys.stderr)
         ClaudeTaskManager._CLAUDE_RESUME_SUPPORTED = supported
@@ -3280,7 +3254,7 @@ class ClaudeTaskManager:
             try:
                 project_id = ProjectsManager.project_for_workdir(source_workdir)
             except Exception as e:  # attribution must never fail a task launch
-                print(f'[projects] workdir attribution failed: {e}', file=sys.stderr)
+                legacy_log('workspace', f'[projects] workdir attribution failed: {e}', file=sys.stderr)
                 project_id = ''
 
         # Per-project assistant/model/effort defaults (#483). Resolved AFTER the
@@ -3343,7 +3317,7 @@ class ClaudeTaskManager:
                     prompt or '', namespace_scope=_scope)
                 injection_block = MemoryManager.format_injection_block(injected_memories)
             except Exception as e:  # never fail task creation on memory errors
-                print(f'[memory] auto-inject failed: {e}', file=sys.stderr)
+                legacy_log('workspace', f'[memory] auto-inject failed: {e}', file=sys.stderr)
                 injected_memories = []
                 injection_block = ''
 
@@ -3462,7 +3436,7 @@ class ClaudeTaskManager:
                 workdir,
                 reject_api_key=ClaudeTaskManager._api_key_to_reject())
             if not trusted:
-                print(f'[ClaudeTaskManager] WARNING: folder-trust for {workdir} '
+                legacy_log('workspace', f'[ClaudeTaskManager] WARNING: folder-trust for {workdir} '
                       'is NOT recorded in Claude\'s config after retries — a '
                       'concurrent CLI is likely rewriting it; relying on the '
                       'post-launch trust-dialog watchdog (#800)',
@@ -3563,10 +3537,10 @@ class ClaudeTaskManager:
                     session_name, prompt_file, f'prompt-{task_id}',
                     expect_composer=(assistant == 'claude'))
             except Exception as e:
-                print(f"[ClaudeTaskManager] Failed to send prompt: {e}")
+                legacy_log('workspace', f"[ClaudeTaskManager] Failed to send prompt: {e}")
                 delivered = False
             if saw_dialog:
-                print(f'[ClaudeTaskManager] {task_id}: answered Claude\'s '
+                legacy_log('workspace', f'[ClaudeTaskManager] {task_id}: answered Claude\'s '
                       f'folder-trust dialog in {workdir}; prompt '
                       f'{"delivered" if delivered else "STILL UNDELIVERED"} (#800)',
                       file=sys.stderr)
@@ -3584,7 +3558,7 @@ class ClaudeTaskManager:
             try:
                 ClaudeTaskManager._atomic_update_meta(task_dir, record)
             except Exception as e:
-                print(f"[ClaudeTaskManager] prompt_delivered update failed: {e}",
+                legacy_log('workspace', f"[ClaudeTaskManager] prompt_delivered update failed: {e}",
                       file=sys.stderr)
 
         threading.Thread(target=send_prompt, daemon=True).start()
@@ -3624,7 +3598,7 @@ class ClaudeTaskManager:
         try:
             ClaudeTaskManager._atomic_update_meta(parent_dir, mutate)
         except Exception as e:
-            print(f'[ClaudeTaskManager] sub_task_id append failed: {e}',
+            legacy_log('workspace', f'[ClaudeTaskManager] sub_task_id append failed: {e}',
                   file=sys.stderr)
 
     @staticmethod
@@ -3804,7 +3778,7 @@ class ClaudeTaskManager:
                 ClaudeTaskManager._reconcile_status(meta, task_dir)
                 reconciled += 1
             except Exception as e:
-                print(f'[task-reconciler] reconcile {entry} failed: {e}',
+                legacy_log('workspace', f'[task-reconciler] reconcile {entry} failed: {e}',
                       file=sys.stderr)
         return reconciled
 
@@ -3875,7 +3849,7 @@ class ClaudeTaskManager:
                 f'prompt-{task_id}',
                 expect_composer=(meta.get('assistant') == 'claude'))
         except Exception as e:
-            print(f'[prompt-reaper] {task_id}: redelivery raised: {e}',
+            legacy_log('workspace', f'[prompt-reaper] {task_id}: redelivery raised: {e}',
                   file=sys.stderr)
             delivered, saw_dialog = False, False
         finally:
@@ -3894,9 +3868,9 @@ class ClaudeTaskManager:
         try:
             ClaudeTaskManager._atomic_update_meta(task_dir, record)
         except Exception as e:
-            print(f'[prompt-reaper] {task_id}: could not record redelivery: {e}',
+            legacy_log('workspace', f'[prompt-reaper] {task_id}: could not record redelivery: {e}',
                   file=sys.stderr)
-        print(f'[prompt-reaper] {task_id}: redelivery '
+        legacy_log('workspace', f'[prompt-reaper] {task_id}: redelivery '
               f'{"succeeded" if delivered else "failed"} (#813)',
               file=sys.stderr)
         return delivered
@@ -3919,7 +3893,7 @@ class ClaudeTaskManager:
             end_session=True)
         if not moved:
             return False
-        print(f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
+        legacy_log('workspace', f'[prompt-reaper] {task_id}: failed -- {reason} (#813)',
               file=sys.stderr)
         return True
 
@@ -3983,7 +3957,7 @@ class ClaudeTaskManager:
                 continue
             with ClaudeTaskManager._redelivering_lock:
                 ClaudeTaskManager._redelivering.add(task_id)
-            print(f'[prompt-reaper] {task_id}: idle with an undelivered prompt; '
+            legacy_log('workspace', f'[prompt-reaper] {task_id}: idle with an undelivered prompt; '
                   f'redelivery {updated["prompt_redelivery_attempts"]}/'
                   f'{ClaudeTaskManager.PROMPT_REAP_RETRIES} (#813)',
                   file=sys.stderr)
@@ -4331,7 +4305,7 @@ class ClaudeTaskManager:
             try:
                 cls._end_session(updated, task_id)
             except Exception as e:
-                print(f'[task-lifecycle] {task_id}: kill failed: {e}',
+                legacy_log('workspace', f'[task-lifecycle] {task_id}: kill failed: {e}',
                       file=sys.stderr)
         cls._after_transition(updated, task_dir, task_id, to, fire_hook,
                               session_was_gone=not end_session)
@@ -4369,7 +4343,7 @@ class ClaudeTaskManager:
             try:
                 effect()
             except Exception as e:
-                print(f'[task-lifecycle] {task_id}: side effect of {to} '
+                legacy_log('workspace', f'[task-lifecycle] {task_id}: side effect of {to} '
                       f'failed: {type(e).__name__}: {e}', file=sys.stderr)
 
     @staticmethod
@@ -4494,7 +4468,7 @@ class ClaudeTaskManager:
                 finally:
                     fcntl.flock(lockf, fcntl.LOCK_UN)
         except (OSError, json.JSONDecodeError) as e:
-            print(f'[ClaudeTaskManager] trust-seed for {workdir} failed: {e}',
+            legacy_log('workspace', f'[ClaudeTaskManager] trust-seed for {workdir} failed: {e}',
                   file=sys.stderr)
             return False
 
@@ -4553,7 +4527,7 @@ class ClaudeTaskManager:
             if ClaudeTaskManager._trust_accepted(workdir, config_path=config_path):
                 return True
             if attempt + 1 < max(1, tries):
-                print(f'[ClaudeTaskManager] trust seed for {workdir} did not '
+                legacy_log('workspace', f'[ClaudeTaskManager] trust seed for {workdir} did not '
                       f'stick (attempt {attempt + 1}) — re-seeding',
                       file=sys.stderr)
                 time.sleep(delay)
@@ -5054,7 +5028,7 @@ class ClaudeTaskManager:
                     capture_output=True, text=True, check=True,
                 )
             except subprocess.CalledProcessError as e:
-                print(f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
+                legacy_log('workspace', f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
                 ClaudeTaskManager._delete_buffer(buf_name)
                 reason = f'tmux refused the paste: {e}'
                 continue
@@ -5073,7 +5047,7 @@ class ClaudeTaskManager:
                     break
                 # The box is still empty at the deadline, so this paste really
                 # was dropped rather than late — paste it again (#288).
-                print(f'[ClaudeTaskManager] {session_name}: pasted prompt never '
+                legacy_log('workspace', f'[ClaudeTaskManager] {session_name}: pasted prompt never '
                       f'appeared in the input box after '
                       f'{attempt + 1}/{attempts} attempt(s) (#805)',
                       file=sys.stderr)
@@ -5095,7 +5069,7 @@ class ClaudeTaskManager:
             reason = ('the prompt is in the input box but Enter never '
                       'submitted it')
             break
-        print(f'[ClaudeTaskManager] {session_name}: PROMPT NOT DELIVERED — '
+        legacy_log('workspace', f'[ClaudeTaskManager] {session_name}: PROMPT NOT DELIVERED — '
               f'{reason} (#805)', file=sys.stderr)
         return False
 
@@ -5399,7 +5373,7 @@ class ClaudeTaskManager:
                 # per-task labels are unbounded cardinality.
                 ProcessCounters.inc(PrometheusMetricsCollector.HOOK_COUNTER,
                                     {'outcome': 'delivered'})
-                print(f'[completion-hook] task={task_id} -> {url} ({status}) attempt {attempt}')
+                legacy_log('workspace', f'[completion-hook] task={task_id} -> {url} ({status}) attempt {attempt}')
                 return
             except urllib.error.HTTPError as e:
                 last_err = f'HTTP {e.code}'
@@ -5415,7 +5389,7 @@ class ClaudeTaskManager:
         })
         ProcessCounters.inc(PrometheusMetricsCollector.HOOK_COUNTER,
                             {'outcome': 'failed'})
-        print(f'[completion-hook] task={task_id} -> {url} FAILED after {attempts}: {last_err}',
+        legacy_log('workspace', f'[completion-hook] task={task_id} -> {url} FAILED after {attempts}: {last_err}',
               file=sys.stderr)
 
     @staticmethod
@@ -5432,7 +5406,7 @@ class ClaudeTaskManager:
         url, body, headers = ClaudeTaskManager._build_hook_request(meta)
         if url is None:
             if meta.get('response_url'):
-                print(f'[completion-hook] task={meta.get("task_id")} skipped: '
+                legacy_log('workspace', f'[completion-hook] task={meta.get("task_id")} skipped: '
                       'unsafe URL scheme', file=sys.stderr)
             return
         threading.Thread(
@@ -5563,7 +5537,7 @@ class ClaudeTaskManager:
         except Exception as e:
             # Ingestion is measurement; a failure here must cost the Build
             # nothing. Log and move on.
-            print(f'[token-usage] build ingest failed for '
+            legacy_log('workspace', f'[token-usage] build ingest failed for '
                   f'{meta.get("task_id")}: {type(e).__name__}: {e}',
                   file=sys.stderr)
             return None
@@ -5659,7 +5633,7 @@ class ClaudeTaskManager:
         try:
             return 'question' if parse_screen_prompt(screen) else 'idle'
         except Exception as e:
-            print(f'[ClaudeTaskManager] prompt parse failed: {e}',
+            legacy_log('workspace', f'[ClaudeTaskManager] prompt parse failed: {e}',
                   file=sys.stderr)
             return 'idle'
 
@@ -5689,7 +5663,7 @@ class ClaudeTaskManager:
         try:
             updated = cls._atomic_update_meta(task_dir, mutate)
         except Exception as e:
-            print(f'[ClaudeTaskManager] waiting_reason update failed: {e}',
+            legacy_log('workspace', f'[ClaudeTaskManager] waiting_reason update failed: {e}',
                   file=sys.stderr)
             return
         cls._adopt_meta(meta, updated)
@@ -5731,7 +5705,7 @@ class ClaudeTaskManager:
         try:
             updated = ClaudeTaskManager._atomic_update_meta(task_dir, mutate)
         except Exception as e:
-            print(f'[ClaudeTaskManager] trust-stall flag update failed: {e}',
+            legacy_log('workspace', f'[ClaudeTaskManager] trust-stall flag update failed: {e}',
                   file=sys.stderr)
             return
         if updated is None:
@@ -5754,7 +5728,7 @@ class ClaudeTaskManager:
         # the Build is live; runs once unthrottled after it goes terminal so the
         # final figure includes the last turn, then stops for good.
         ClaudeTaskManager.ingest_usage(meta, task_dir)
-        
+
         # If task is already finished, no need to check further
         if current_status not in task_status.LIVE_STATUSES:
             return
@@ -5769,7 +5743,7 @@ class ClaudeTaskManager:
             ['tmux', 'has-session', '-t', session_name],
             capture_output=True, text=True,
         )
-        
+
         # If tmux session is gone, the task is over — but HOW it ended is only
         # knowable from the boot stamp (#792). Same boot ⇒ this process watched
         # the session go away, so the CLI exited: `completed`. Different boot ⇒
@@ -5792,7 +5766,7 @@ class ClaudeTaskManager:
                 fields={'termination_reason': 'pod_restart'} if wiped else None)
             ClaudeTaskManager._adopt_meta(meta, updated)
             return
-        
+
         # Session is alive. Adopt it into this boot if it predates us (#792):
         # task.json may have been written by an older image that never stamped
         # a boot, or by a process whose /tmp marker was unreadable. Stamping it
@@ -6161,7 +6135,7 @@ class WorktreeManager:
         try:
             worktrees.rollback(info, wt_root=cls.root())
         except Exception as e:      # the launch already failed; say why, once
-            print(f'[worktrees] rollback of {info.get("path")} failed: {e}',
+            legacy_log('workspace', f'[worktrees] rollback of {info.get("path")} failed: {e}',
                   file=sys.stderr)
 
     @classmethod
@@ -6230,7 +6204,7 @@ class WorktreeManager:
             try:
                 cls.snapshot_now(task_id)
             except Exception as e:
-                print(f'[worktrees] snapshot {task_id} failed: {e}',
+                legacy_log('workspace', f'[worktrees] snapshot {task_id} failed: {e}',
                       file=sys.stderr)
             return
         with cls._snap_lock:
@@ -6253,7 +6227,7 @@ class WorktreeManager:
                 try:
                     cls.snapshot_now(task_id)
                 except Exception as e:
-                    print(f'[worktrees] snapshot {task_id} failed: {e}',
+                    legacy_log('workspace', f'[worktrees] snapshot {task_id} failed: {e}',
                           file=sys.stderr)
 
     # ── one Build's worktree ───────────────────────────────────────────────
@@ -6723,7 +6697,7 @@ class ProjectsManager:
         try:
             cfg = ProjectsManager.get_project(project_id)
         except Exception as e:  # pragma: no cover - defensive
-            print(f'[projects] defaults lookup failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[projects] defaults lookup failed: {e}', file=sys.stderr)
             return empty
         if not cfg:
             return empty
@@ -7643,7 +7617,7 @@ class FeedManager:
                 }
                 FeedManager._append(item)
         except Exception as e:  # pragma: no cover - defensive
-            print(f'[feed] emit failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[feed] emit failed: {e}', file=sys.stderr)
             return None
         try:
             EventBroker.publish('feed.item', {'id': item['id'], 'kind': kind,
@@ -8411,7 +8385,7 @@ def _push_triggers_to_keeper():
             CronManager.CRONS_DIR,
             PageWatchManager.PAGE_WATCHES_DIR)
     except Exception as e:
-        print(f'[keeper-push] could not start a trigger push: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[keeper-push] could not start a trigger push: {e}', file=sys.stderr)
 
 
 class WebhookManager:
@@ -8670,7 +8644,7 @@ class WebhookManager:
             hint = ('a Board run webhook is never open'
                     if TriggerBoardRuns.action_of(cfg) == 'board_run'
                     else 'set one, or KC_ALLOW_UNSIGNED_WEBHOOKS=1 to allow')
-            print(
+            legacy_log('workspace',
                 f"[webhook] rejecting unsigned POST to webhook "
                 f"'{cfg.get('id', '?')}' — no hmac_secret configured "
                 f"({hint})",
@@ -9812,7 +9786,7 @@ class BoardRunsManager:
                     # are reaped rather than abandoned mid-flight.
                     flag.clear()
         except Exception as e:      # a driver crash must not strand the run
-            print(f'[board-run] {run_id} driver failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-run] {run_id} driver failed: {e}', file=sys.stderr)
             cls._finish(run_id, 'interrupted', f'driver error: {e}')
         finally:
             with cls._lock:
@@ -10046,7 +10020,7 @@ class BoardRunsManager:
         if same_item and (idle or unreachable):
             ClaudeTaskManager.delete_task(owner)
             cls._set_item(run['id'], row['id'], superseded_task_id=owner)
-            print(f'[board-run] {cfg["id"]}/{row["id"]}: ended idle Build '
+            legacy_log('workspace', f'[board-run] {cfg["id"]}/{row["id"]}: ended idle Build '
                   f'{owner} to reuse its worktree', file=sys.stderr)
 
     #: Attempts at delivering a follow-up into a live pane before giving up.
@@ -10093,7 +10067,7 @@ class BoardRunsManager:
             if attempt + 1 < BoardRunsManager.RESUME_FOLLOWUP_ATTEMPTS:
                 time.sleep(BoardRunsManager.RESUME_FOLLOWUP_BACKOFF)
         if last:
-            print(f'[board-review] follow-up to {task_id} failed: {last}',
+            legacy_log('workspace', f'[board-review] follow-up to {task_id} failed: {last}',
                   file=sys.stderr)
         return ''
 
@@ -10320,10 +10294,10 @@ class BoardRunsManager:
             boards.store.JsonRecord(os.path.join(
                 BoardsManager.boards_dir(), '.run-start-reservations')).write({})
             if reclaimed:
-                print(f'[board-run] marked {len(reclaimed)} interrupted run(s) '
+                legacy_log('workspace', f'[board-run] marked {len(reclaimed)} interrupted run(s) '
                       f'from a previous process')
         except Exception as e:
-            print(f'[board-run] orphan sweep failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-run] orphan sweep failed: {e}', file=sys.stderr)
 
 
 class BoardReviewManager:
@@ -10395,7 +10369,7 @@ class BoardReviewManager:
                 'run_id': record.get('run_id') or '',
             })
         except Exception as e:
-            print(f'[board-review] ledger append failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-review] ledger append failed: {e}', file=sys.stderr)
 
     # ── who is allowed to write directly ───────────────────────────────────
 
@@ -10495,7 +10469,7 @@ class BoardReviewManager:
                 record['task_id'] = task_id
                 record['updated_at'] = time.time()
                 if changed:
-                    print(f'[board-review] {cfg["id"]}/{item["id"]}: superseded '
+                    legacy_log('workspace', f'[board-review] {cfg["id"]}/{item["id"]}: superseded '
                           f'proposals from run {prior} — run {run_id} is '
                           f'working this item now', file=sys.stderr)
 
@@ -10639,10 +10613,10 @@ class BoardReviewManager:
                 cfg, item, action, {'body': body},
                 limiter=BoardsManager.limiter_for(cfg))
             if err:
-                print(f'[board-review] ask_on_source failed: {err}',
+                legacy_log('workspace', f'[board-review] ask_on_source failed: {err}',
                       file=sys.stderr)
         except Exception as e:
-            print(f'[board-review] ask_on_source raised: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-review] ask_on_source raised: {e}', file=sys.stderr)
         return cls.get(cfg['id'], record['item_id']) or record
 
     @classmethod
@@ -10692,7 +10666,7 @@ class BoardReviewManager:
                         'label': record.get('item_title') or 'Open item'}],
             )
         except Exception as e:      # a feed failure must not lose the report
-            print(f'[board-review] feed emit failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-review] feed emit failed: {e}', file=sys.stderr)
 
     @classmethod
     def notify_done(cls, board_id, item_id, *, row=None):
@@ -10750,7 +10724,7 @@ class BoardReviewManager:
                 FeedManager.mark_unread(item['id'])
             return item
         except Exception as e:                  # pragma: no cover - defensive
-            print(f'[board-review] done notice failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-review] done notice failed: {e}', file=sys.stderr)
             return None
 
     # ── approving ──────────────────────────────────────────────────────────
@@ -11084,7 +11058,7 @@ class BoardReviewManager:
                 },
                 origin='send_back', resume=resume, allow_concurrent=True)
         except Exception as e:                  # pragma: no cover - defensive
-            print(f'[board-review] resume dispatch raised: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-review] resume dispatch raised: {e}', file=sys.stderr)
             return {'dispatched': False,
                     'detail': f'could not re-dispatch this item: {e}'}
         if err:
@@ -12129,9 +12103,9 @@ class CronManager:
                     mgr._apply_k8s(cfg)
                     fixed += 1
                 except Exception as e:
-                    print(f'[cron-reconcile] {name}: {e}', file=sys.stderr)
+                    legacy_log('workspace', f'[cron-reconcile] {name}: {e}', file=sys.stderr)
         if fixed:
-            print(f'[cron-reconcile] re-pointed {fixed} of {checked} scheduled '
+            legacy_log('workspace', f'[cron-reconcile] re-pointed {fixed} of {checked} scheduled '
                   f'trigger(s) at {want}')
         return fixed
 
@@ -12361,12 +12335,12 @@ class CronManager:
             try:
                 _write_atomic(cfg)
             except Exception as rollback_err:
-                print(
+                legacy_log('workspace',
                     f'[cron] rotate-token ROLLBACK FAILED for {cron_id}: {rollback_err}; '
                     f'disk has new token but k8s Secret still has the old one',
                     file=sys.stderr,
                 )
-            print(f'[cron] rotate-token kubectl apply failed for {cron_id}: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[cron] rotate-token kubectl apply failed for {cron_id}: {e}', file=sys.stderr)
             return None, None
         return cfg, new_token
 
@@ -13797,7 +13771,8 @@ class AppsManager:
 
     # Ports the workspace itself owns. Hidden from the auto-list and
     # refused by the proxy even if the user tries to pin them.
-    INTERNAL_PORTS = frozenset({22, 2376, 5900, 6080, 6081, 7681, 8080})
+    INTERNAL_PORTS = frozenset({22, 2376, 5900, 6080, 6081, 7681, 8080}
+                               | {p for p in [metrics_listener.configured_port()] if p})
 
     # Bind addresses we accept as "on loopback". 0.0.0.0 / :: are
     # "all interfaces" which includes loopback, so anything bound that
@@ -14177,9 +14152,9 @@ class AppsManager:
         if error == cls._container_lookup_error:
             return
         if error:
-            print(f'[apps] {error}', file=sys.stderr, flush=True)
+            legacy_log('workspace', f'[apps] {error}', file=sys.stderr, flush=True)
         else:
-            print('[apps] docker ps is answering again', file=sys.stderr,
+            legacy_log('workspace', '[apps] docker ps is answering again', file=sys.stderr,
                   flush=True)
         cls._container_lookup_error = error
 
@@ -14647,7 +14622,7 @@ class DevcontainerManager:
                 return {}
             return dict(parsed.get('env') or {})
         except Exception as e:
-            print(f'[devcontainer] env lookup failed for {workdir}: {e}',
+            legacy_log('workspace', f'[devcontainer] env lookup failed for {workdir}: {e}',
                   file=sys.stderr)
             return {}
 
@@ -14827,7 +14802,7 @@ class DevcontainerManager:
                     if result.get('status') not in ('ok', 'none'):
                         break
             except Exception as e:      # a worker crash must not wedge the lock
-                print(f'[devcontainer] hook run failed for {workdir}: {e}',
+                legacy_log('workspace', f'[devcontainer] hook run failed for {workdir}: {e}',
                       file=sys.stderr)
             finally:
                 with cls._lock:
@@ -15002,10 +14977,10 @@ class DevcontainerManager:
             try:
                 out = cls.boot_pass()
                 if out.get('ran'):
-                    print(f'[devcontainer] boot pass ran postStart for '
+                    legacy_log('workspace', f'[devcontainer] boot pass ran postStart for '
                           f'{len(out["ran"])} workdir(s)')
             except Exception as e:
-                print(f'[devcontainer] boot pass failed: {e}', file=sys.stderr)
+                legacy_log('workspace', f'[devcontainer] boot pass failed: {e}', file=sys.stderr)
 
         threading.Thread(target=_later, daemon=True,
                          name='devcontainer-boot').start()
@@ -15413,7 +15388,7 @@ def missioncontrol_queue():
                 if card:
                     cards.append(card)
         except Exception as e:
-            print(f'[missioncontrol] thread listing failed: {e}',
+            legacy_log('workspace', f'[missioncontrol] thread listing failed: {e}',
                   file=sys.stderr)
 
     # Lineage: resolve children shallowly from sub_task_ids.
@@ -15707,7 +15682,7 @@ def build_publisher():
     return _PUBLISHER
 
 
-class BrowserHandler(app_routes.AppRoutes,
+class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
                      board_handoff_routes.BoardHandoffRoutes,
                      board_routes.BoardRoutes,
                      devcontainer_routes.DevcontainerRoutes,
@@ -16047,7 +16022,7 @@ class BrowserHandler(app_routes.AppRoutes,
                 and self.headers.get('Remote-User', ''):
             return True
         return False
-    
+
     # --- Claude Task API helpers ---
 
     @staticmethod
@@ -16664,7 +16639,9 @@ class BrowserHandler(app_routes.AppRoutes,
 
         # Manual access log so an admin can see the 101 in pod logs.
         try:
-            self.log_message('"GET %s HTTP/1.1" 101 -', self.path)
+            self._obs_status = 101
+            self.observe_kind('proxy')
+            self._obs_headers = True
         except Exception:
             pass
 
@@ -17035,7 +17012,7 @@ class BrowserHandler(app_routes.AppRoutes,
         if value.startswith('/') and not value.startswith(prefix + '/') and value != prefix:
             return prefix + value
         return value
-    
+
     def do_POST(self):
         self._consume_bearer_marker()
         if self._readonly_block():
@@ -17043,7 +17020,7 @@ class BrowserHandler(app_routes.AppRoutes,
         try:
             # Handle both /api/* and /browser/api/* and /oauth/browser/api/* paths
             path = self._strip_route_prefix(self.path)
-            
+
             # The Applications surface: pin a port, and the legacy browser
             # launchers. The pin route has to precede the app-proxy dispatcher
             # below or the proxy swallows it; the launchers used to sit after
@@ -17133,23 +17110,23 @@ class BrowserHandler(app_routes.AppRoutes,
             self.send_client_error(str(e), 400)
         except Exception as e:
             self.send_error_response(f'Server error: {str(e)}')
-    
+
     def send_success_response(self, message):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(message.encode())
-    
+
     def send_error_response(self, message):
-        error_id = uuid.uuid4().hex[:12]
-        import traceback
-        traceback.print_exc()
-        print(f'[error_id={error_id}] {message}', file=sys.stderr)
-        body = json.dumps({'error': 'internal error', 'error_id': error_id})
+        detail = problem('workspace', exc_info=sys.exc_info())
+        detail['error'] = 'internal error'
+        body = json.dumps(detail).encode()
         self.send_response(500)
         self.send_header('Content-type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(body.encode())
+        self.wfile.write(body)
+
     def send_client_error(self, message, status_code=400):
         body = json.dumps({'error': message})
         self.send_response(status_code)
@@ -17238,7 +17215,7 @@ class TaskReconciler:
                     cls._last_reconciled = ClaudeTaskManager.reconcile_running()
                     cls._last_run_at = time.time()
                 except Exception as e:
-                    print(f'[task-reconciler] pass failed: {e}', file=sys.stderr)
+                    legacy_log('workspace', f'[task-reconciler] pass failed: {e}', file=sys.stderr)
                 cls._stop_event.wait(interval_seconds)
 
         t = threading.Thread(target=_loop, name='task-reconciler', daemon=True)
@@ -17279,7 +17256,7 @@ class PromptReaper:
                     cls._last_result = ClaudeTaskManager.reap_undelivered()
                     cls._last_run_at = time.time()
                 except Exception as e:
-                    print(f'[prompt-reaper] pass failed: {e}', file=sys.stderr)
+                    legacy_log('workspace', f'[prompt-reaper] pass failed: {e}', file=sys.stderr)
                 cls._stop_event.wait(interval_seconds)
 
         t = threading.Thread(target=_loop, name='prompt-reaper', daemon=True)
@@ -17329,7 +17306,7 @@ class WorktreeSweeper:
                     cls._last_error = ''
                 except Exception as e:
                     cls._last_error = str(e)
-                    print(f'[worktrees] sweep failed: {e}', file=sys.stderr)
+                    legacy_log('workspace', f'[worktrees] sweep failed: {e}', file=sys.stderr)
                 cls._stop_event.wait(interval_seconds)
 
         t = threading.Thread(target=_loop, name='worktree-sweeper', daemon=True)
@@ -17371,10 +17348,10 @@ if __name__ == "__main__":
     # token is read back, never rotated.
     try:
         ClaudeTaskManager.get_or_create_token()
-        print('[tasks] bearer token ready at '
+        legacy_log('workspace', '[tasks] bearer token ready at '
               f'{ClaudeTaskManager.TOKEN_FILE}')
     except Exception as e:
-        print(f'[tasks] token materialization failed: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[tasks] token materialization failed: {e}', file=sys.stderr)
 
     # Tell the always-on keeper what it cannot find out for itself (#728 step
     # 4): the hash of the token above, and which trigger ids exist. It has to
@@ -17390,10 +17367,10 @@ if __name__ == "__main__":
             CronManager.CRONS_DIR,
             PageWatchManager.PAGE_WATCHES_DIR)
         if keeper_push.KeeperPush.enabled():
-            print(f'[keeper-push] telling {keeper_push.KeeperPush.control_url()} '
+            legacy_log('workspace', f'[keeper-push] telling {keeper_push.KeeperPush.control_url()} '
                   'the trigger ids and the token hash')
     except Exception as e:
-        print(f'[keeper-push] boot push failed to start: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[keeper-push] boot push failed to start: {e}', file=sys.stderr)
 
     # Re-point any CronJob whose receiver URL has changed (#728 step 4b).
     # Turning the keeper on moves where a cron fire has to go, and the CronJobs
@@ -17403,7 +17380,7 @@ if __name__ == "__main__":
     try:
         CronManager.reconcile_internal_url()
     except Exception as e:
-        print(f'[cron-reconcile] failed: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[cron-reconcile] failed: {e}', file=sys.stderr)
 
     # Initialize the persistent-memory subsystem (runs migrations, opens DB).
     # Failure here is non-fatal: the rest of the server keeps working, and
@@ -17411,18 +17388,18 @@ if __name__ == "__main__":
     if _MEMORY_AVAILABLE:
         try:
             _mem_store = MemoryManager.store()
-            print(f'[memory] initialized at {_mem_store.db_path}')
+            legacy_log('workspace', f'[memory] initialized at {_mem_store.db_path}')
         except Exception as e:
-            print(f'[memory] init failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[memory] init failed: {e}', file=sys.stderr)
         # Start background sync of Claude Code's native auto-memory files
         # (~/.claude/projects/*/memory/*.md) into the SQLite store so they
         # appear in the dashboard alongside dashboard- and MCP-authored
         # entries. One-way, idempotent, skips unchanged via mtime tag.
         try:
             ClaudeMemorySyncer.start(interval_seconds=60)
-            print('[memory] claude-auto-memory syncer started (60s)')
+            legacy_log('workspace', '[memory] claude-auto-memory syncer started (60s)')
         except Exception as e:
-            print(f'[memory] syncer start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[memory] syncer start failed: {e}', file=sys.stderr)
 
         # Start the Phase-2 embedding worker: drains embeddings_pending into
         # the vec_memories table so search() can fuse keyword + semantic hits.
@@ -17434,12 +17411,12 @@ if __name__ == "__main__":
             _embed_interval = 30
         try:
             if EmbeddingWorker.start(interval_seconds=_embed_interval):
-                print(f'[memory] embedding worker started ({_embed_interval}s)')
+                legacy_log('workspace', f'[memory] embedding worker started ({_embed_interval}s)')
             else:
-                print('[memory] embedding worker disabled '
+                legacy_log('workspace', '[memory] embedding worker disabled '
                       '(no provider or sqlite-vec unavailable)')
         except Exception as e:
-            print(f'[memory] embedding worker start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[memory] embedding worker start failed: {e}', file=sys.stderr)
 
         # Optional periodic GC (#107): hard-purge soft-deleted memories older
         # than KC_MEMORY_GC_DAYS and VACUUM, so tombstones don't accumulate
@@ -17460,17 +17437,17 @@ if __name__ == "__main__":
                     try:
                         res = MemoryManager.purge_deleted(older_than_days=days)
                         if res.get('purged_memories'):
-                            print(f"[memory] gc purged {res['purged_memories']} "
+                            legacy_log('workspace', f"[memory] gc purged {res['purged_memories']} "
                                   f"reclaimed {res['bytes_reclaimed']}B")
                     except Exception as e:
-                        print(f'[memory] gc pass failed: {e}', file=sys.stderr)
+                        legacy_log('workspace', f'[memory] gc pass failed: {e}', file=sys.stderr)
                     time.sleep(interval_s)
 
             t = threading.Thread(
                 target=_gc_loop, args=(_gc_days, _gc_interval_h * 3600),
                 name='memory-gc', daemon=True)
             t.start()
-            print(f'[memory] periodic GC started '
+            legacy_log('workspace', f'[memory] periodic GC started '
                   f'(>{_gc_days}d every {_gc_interval_h}h)')
 
     # Multi-harness skills scanner (issue #187): keeps an in-memory snapshot
@@ -17485,9 +17462,9 @@ if __name__ == "__main__":
         try:
             SkillsSyncer.start(interval_seconds=_skills_interval,
                                publish=EventBroker.publish)
-            print(f'[skills] multi-harness skills syncer started ({_skills_interval}s)')
+            legacy_log('workspace', f'[skills] multi-harness skills syncer started ({_skills_interval}s)')
         except Exception as e:
-            print(f'[skills] syncer start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[skills] syncer start failed: {e}', file=sys.stderr)
 
     # Hypervisor chat GC (#260): chats are soft-deleted (thread.json stamped
     # with deleted_at) so an accidental delete can be restored from "Recently
@@ -17511,17 +17488,17 @@ if __name__ == "__main__":
                     try:
                         res = HypervisorSession.purge_deleted(older_than_days=days)
                         if res.get('purged'):
-                            print(f"[hypervisor] gc purged {res['purged']} "
+                            legacy_log('workspace', f"[hypervisor] gc purged {res['purged']} "
                                   f"deleted chat(s)")
                     except Exception as e:
-                        print(f'[hypervisor] gc pass failed: {e}', file=sys.stderr)
+                        legacy_log('workspace', f'[hypervisor] gc pass failed: {e}', file=sys.stderr)
                     time.sleep(interval_s)
 
             t = threading.Thread(
                 target=_hv_gc_loop, args=(_hv_gc_days, _hv_gc_interval_h * 3600),
                 name='hypervisor-gc', daemon=True)
             t.start()
-            print(f'[hypervisor] periodic GC started '
+            legacy_log('workspace', f'[hypervisor] periodic GC started '
                   f'(>{_hv_gc_days}d every {_hv_gc_interval_h}h)')
 
     # Conversation Gateway (issue #306): build the gateway + install its
@@ -17531,9 +17508,9 @@ if __name__ == "__main__":
     if _GATEWAY_AVAILABLE and _HYPERVISOR_AVAILABLE:
         try:
             if get_gateway() is not None:
-                print('[gateway] turn-complete observer installed')
+                legacy_log('workspace', '[gateway] turn-complete observer installed')
         except Exception as e:
-            print(f'[gateway] startup init failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[gateway] startup init failed: {e}', file=sys.stderr)
 
     # Stale-running repair (issue #462): a server death mid-turn kills the
     # turn's CLI process (and any background Workflow run it was waiting on)
@@ -17545,10 +17522,10 @@ if __name__ == "__main__":
         try:
             _repaired = hv_reconcile_stale_running()
             if _repaired:
-                print(f'[hypervisor] repaired {len(_repaired)} thread(s) '
+                legacy_log('workspace', f'[hypervisor] repaired {len(_repaired)} thread(s) '
                       f'stuck running after restart: {", ".join(_repaired)}')
         except Exception as e:
-            print(f'[hypervisor] stale-running repair failed: {e}',
+            legacy_log('workspace', f'[hypervisor] stale-running repair failed: {e}',
                   file=sys.stderr)
 
     # Cross-turn watchers (issue #402): the server process owns the poll loop,
@@ -17579,9 +17556,9 @@ if __name__ == "__main__":
             hv_watchers.set_board_run_provider(BoardRunsManager.get)
             hv_watchers.set_ports_provider(_hv_watch_listening_ports)
             hv_watchers.start()
-            print('[hypervisor] cross-turn watcher loop started')
+            legacy_log('workspace', '[hypervisor] cross-turn watcher loop started')
         except Exception as e:
-            print(f'[hypervisor] watcher start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[hypervisor] watcher start failed: {e}', file=sys.stderr)
 
     build_publisher().start()
 
@@ -17594,9 +17571,9 @@ if __name__ == "__main__":
         _reconcile_interval = 10
     try:
         TaskReconciler.start(interval_seconds=_reconcile_interval)
-        print(f'[tasks] background reconciler started ({_reconcile_interval}s)')
+        legacy_log('workspace', f'[tasks] background reconciler started ({_reconcile_interval}s)')
     except Exception as e:
-        print(f'[tasks] reconciler start failed: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[tasks] reconciler start failed: {e}', file=sys.stderr)
 
     # Undelivered-prompt reaper (#813): re-delivers, then fails, Builds that
     # sit idle with a prompt the delivery path never landed, so they cannot
@@ -17606,9 +17583,9 @@ if __name__ == "__main__":
             'KC_PROMPT_REAPER_INTERVAL_S', 30, minimum=5)
         try:
             PromptReaper.start(interval_seconds=_reaper_interval)
-            print(f'[tasks] prompt reaper started ({_reaper_interval}s)')
+            legacy_log('workspace', f'[tasks] prompt reaper started ({_reaper_interval}s)')
         except Exception as e:
-            print(f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
 
     # Isolated-worktree cleanup (#701). Removes only what holds nothing: a
     # worktree whose Build finished without changing anything, or one whose
@@ -17621,9 +17598,9 @@ if __name__ == "__main__":
             _wt_interval = 600
         try:
             WorktreeSweeper.start(interval_seconds=max(60, _wt_interval))
-            print(f'[worktrees] sweeper started ({max(60, _wt_interval)}s)')
+            legacy_log('workspace', f'[worktrees] sweeper started ({max(60, _wt_interval)}s)')
         except Exception as e:
-            print(f'[worktrees] sweeper start failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[worktrees] sweeper start failed: {e}', file=sys.stderr)
 
     # Board run orphan sweep (#588 Phase 4). A run whose process died is
     # DEFINITIVELY stale at boot — no worker of a previous process can still be
@@ -17637,7 +17614,7 @@ if __name__ == "__main__":
             if approval_auth.enabled():
                 board_handoff_routes.manager().recover()
         except Exception as e:
-            print(f'[board-run] boot sweep failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[board-run] boot sweep failed: {e}', file=sys.stderr)
 
     # Security scans (#726). The manager reaches the event bus, the feed and
     # the apps list through callables handed over here rather than by importing
@@ -17663,10 +17640,10 @@ if __name__ == "__main__":
             )
             reclaimed = scans.ScansManager.start()
             if reclaimed:
-                print(f'[scan] boot sweep settled {len(reclaimed)} scan(s) '
+                legacy_log('workspace', f'[scan] boot sweep settled {len(reclaimed)} scan(s) '
                       f'left running by a previous process')
         except Exception as e:
-            print(f'[scan] boot sweep failed: {e}', file=sys.stderr)
+            legacy_log('workspace', f'[scan] boot sweep failed: {e}', file=sys.stderr)
 
     # devcontainer postStart pass (#594). A daemon thread from here rather than
     # a separate python3 invocation in start.sh, so it shares this process's
@@ -17678,49 +17655,58 @@ if __name__ == "__main__":
     # just re-trigger what broke it.
     try:
         if DevcontainerManager.start_boot_pass():
-            print('[devcontainer] postStart boot pass scheduled')
+            legacy_log('workspace', '[devcontainer] postStart boot pass scheduled')
     except Exception as e:
-        print(f'[devcontainer] boot pass schedule failed: {e}', file=sys.stderr)
+        legacy_log('workspace', f'[devcontainer] boot pass schedule failed: {e}', file=sys.stderr)
 
-    print("Starting Browser API Server on port 6080...")
-    print("Available endpoints:")
-    print("  GET  /           - Browser interface")
-    print("  POST /api/launch-chrome - Launch Chrome")
-    print("  POST /api/open-localhost - Open localhost:8080 in Chrome")
-    print("  POST /api/test-chrome   - Test Chrome installation")
-    print("  POST /api/launch-firefox - Launch Chrome (legacy endpoint)")
-    print("  POST /api/test-firefox   - Test Chrome (legacy endpoint)")
-    print("  --- Claude Task API ---")
-    print("  POST /api/claude/tasks              - Create new task")
-    print("  POST /api/claude/tasks/terminal     - Create plain-bash terminal task")
-    print("  GET  /api/claude/tasks              - List all tasks")
-    print("  GET  /api/claude/tasks/{id}         - Get task detail + output")
-    print("  GET  /api/claude/tasks/{id}/output  - Get raw output")
-    print("  GET  /api/claude/tasks/{id}/worktree - Isolated worktree status (#701)")
-    print("  GET  /api/worktrees                 - All isolated worktrees")
-    print("  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
-    print("  POST /api/claude/tasks/{id}/rename  - Rename a task")
-    print("  DELETE /api/claude/tasks/{id}       - Kill a running task")
-    print("  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
-    print("  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
-    print("  GET  /api/claude/assistants         - List enabled assistants")
-    print("  GET  /api/hypervisor/config         - Hypervisor chat config")
-    print("  *    /api/hypervisor/threads[/{id}]  - Hypervisor chat threads")
-    print("  --- Memory API (Phase 1) ---")
-    print("  GET    /api/memory                       - List/search memories")
-    print("  POST   /api/memory                       - Upsert a memory")
-    print("  GET    /api/memory/{ns}/{key}            - Get one memory")
-    print("  DELETE /api/memory/{ns}/{key}            - Soft-delete a memory")
-    print("  GET    /api/memory/{ns}/{key}/history    - Revisions")
-    print("  GET    /api/memory/{ns}/{key}/refs       - Access log")
-    print("  GET    /api/memory/{ns}/{key}/neighbors  - Graph walk")
-    print("  POST   /api/memory/{ns}/{key}/relations  - Create relation")
-    print("  GET    /api/memory/stats                 - Counts + health")
-    print("  GET    /api/skills                       - List skills (all harnesses)")
-    print("  GET    /api/skills/{name}                - One skill (+divergent variants)")
-    print("  GET    /api/skills/stats                 - Counts by system/scope")
-    print("  POST   /api/skills/_scan                 - Force rescan")
-    print("  POST   /api/skills/{name}/sync           - Install skill into other harnesses")
+    legacy_log('workspace', "Starting Browser API Server on port 6080...")
+    legacy_log('workspace', "Available endpoints:")
+    legacy_log('workspace', "  GET  /           - Browser interface")
+    legacy_log('workspace', "  POST /api/launch-chrome - Launch Chrome")
+    legacy_log('workspace', "  POST /api/open-localhost - Open localhost:8080 in Chrome")
+    legacy_log('workspace', "  POST /api/test-chrome   - Test Chrome installation")
+    legacy_log('workspace', "  POST /api/launch-firefox - Launch Chrome (legacy endpoint)")
+    legacy_log('workspace', "  POST /api/test-firefox   - Test Chrome (legacy endpoint)")
+    legacy_log('workspace', "  --- Claude Task API ---")
+    legacy_log('workspace', "  POST /api/claude/tasks              - Create new task")
+    legacy_log('workspace', "  POST /api/claude/tasks/terminal     - Create plain-bash terminal task")
+    legacy_log('workspace', "  GET  /api/claude/tasks              - List all tasks")
+    legacy_log('workspace', "  GET  /api/claude/tasks/{id}         - Get task detail + output")
+    legacy_log('workspace', "  GET  /api/claude/tasks/{id}/output  - Get raw output")
+    legacy_log('workspace', "  GET  /api/claude/tasks/{id}/worktree - Isolated worktree status (#701)")
+    legacy_log('workspace', "  GET  /api/worktrees                 - All isolated worktrees")
+    legacy_log('workspace', "  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    legacy_log('workspace', "  POST /api/claude/tasks/{id}/rename  - Rename a task")
+    legacy_log('workspace', "  DELETE /api/claude/tasks/{id}       - Kill a running task")
+    legacy_log('workspace', "  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
+    legacy_log('workspace', "  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")
+    legacy_log('workspace', "  GET  /api/claude/assistants         - List enabled assistants")
+    legacy_log('workspace', "  GET  /api/hypervisor/config         - Hypervisor chat config")
+    legacy_log('workspace', "  *    /api/hypervisor/threads[/{id}]  - Hypervisor chat threads")
+    legacy_log('workspace', "  --- Memory API (Phase 1) ---")
+    legacy_log('workspace', "  GET    /api/memory                       - List/search memories")
+    legacy_log('workspace', "  POST   /api/memory                       - Upsert a memory")
+    legacy_log('workspace', "  GET    /api/memory/{ns}/{key}            - Get one memory")
+    legacy_log('workspace', "  DELETE /api/memory/{ns}/{key}            - Soft-delete a memory")
+    legacy_log('workspace', "  GET    /api/memory/{ns}/{key}/history    - Revisions")
+    legacy_log('workspace', "  GET    /api/memory/{ns}/{key}/refs       - Access log")
+    legacy_log('workspace', "  GET    /api/memory/{ns}/{key}/neighbors  - Graph walk")
+    legacy_log('workspace', "  POST   /api/memory/{ns}/{key}/relations  - Create relation")
+    legacy_log('workspace', "  GET    /api/memory/stats                 - Counts + health")
+    legacy_log('workspace', "  GET    /api/skills                       - List skills (all harnesses)")
+    legacy_log('workspace', "  GET    /api/skills/{name}                - One skill (+divergent variants)")
+    legacy_log('workspace', "  GET    /api/skills/stats                 - Counts by system/scope")
+    legacy_log('workspace', "  POST   /api/skills/_scan                 - Force rescan")
+    legacy_log('workspace', "  POST   /api/skills/{name}/sync           - Install skill into other harnesses")
+
+    # Metrics-only listener for Prometheus (#869): its own port, its own
+    # credential, one path. The NetworkPolicy opens only this port to the
+    # monitoring namespace, never 6080 — see metrics_listener.py for why.
+    metrics_port = metrics_listener.configured_port()
+    if metrics_port is not None and _PROMETHEUS_AVAILABLE:
+        if metrics_port == 6080:
+            raise SystemExit('KC_METRICS_PORT must not be the dashboard/API port 6080')
+        metrics_listener.start(PrometheusMetricsCollector.scrape, metrics_port)
 
     with http.server.ThreadingHTTPServer(("", 6080), BrowserHandler) as httpd:
         httpd.serve_forever()

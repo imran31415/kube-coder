@@ -60,14 +60,14 @@ describe('CapacityPanel', () => {
     respond = () => Promise.resolve(sample({ metricsError: 'prometheus unreachable' }));
     render(<CapacityPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/Live metrics unavailable: prometheus unreachable/)).toBeInTheDocument(),
+      expect(screen.getByText(/Monitoring is temporarily unavailable/)).toBeInTheDocument(),
     );
   });
 
   it('shows an error state when the request fails and there is no prior data', async () => {
     respond = () => Promise.reject(new Error('boom'));
     render(<CapacityPanel />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load capacity: boom/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Couldn't load metrics. Try again./)).toBeInTheDocument());
   });
 
   it('renders an "unknown capacity" state when allocatable is absent', async () => {

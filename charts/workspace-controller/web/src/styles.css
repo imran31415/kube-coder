@@ -1420,3 +1420,14 @@ body {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/* Inline recovery shares the existing panel palette and never covers content. */
+.resource-status { flex-basis: 100%; padding: .85rem 1rem; margin: .5rem 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); text-align: left; }
+.resource-status-message { font-size: .9rem; color: var(--text); }
+.resource-status-meta { margin-top: .3rem; font-size: .8rem; color: var(--muted); }
+.resource-status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: .65rem; }
+.resource-status details { margin-top: .65rem; font-size: .8rem; color: var(--muted); }
+.resource-status summary { cursor: pointer; }
+.resource-status button:focus-visible, .health button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.resource-reference { user-select: all; overflow-wrap: anywhere; }
+.health { flex-wrap: wrap; }

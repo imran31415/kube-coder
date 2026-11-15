@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'preact/hooks';
-import { type CapacityResponse, type NodeCapacity, getCapacity } from '../api/capacity';
+import { usePollingResource } from '../hooks/usePollingResource';
+import { ResourceStatus } from './ResourceStatus';
+import { useState } from 'preact/hooks';
+import { type NodeCapacity, getCapacity } from '../api/capacity';
 import { CapacityBar } from './CapacityBar';
 import { CapacityChart } from './CapacityChart';
 import { fmtBytes, fmtCores, fmtPct } from '../format';
@@ -15,53 +17,14 @@ const RANGES: [string, number][] = [
  *  drives the history window. Loads on mount and keeps the last good data
  *  through a transient poll failure so the panel never flickers to empty. */
 export function CapacityPanel() {
-  const [cap, setCap] = useState<CapacityResponse | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [range, setRange] = useState(3600);
   const [res, setRes] = useState<'cpu' | 'memory'>('cpu');
   const [open, setOpen] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const r = await getCapacity(range);
-        if (!alive) return;
-        setCap(r);
-        setErr(null);
-      } catch (e) {
-        if (alive && !cap) setErr(e instanceof Error ? e.message : String(e));
-      }
-    }
-    void load();
-    const id = window.setInterval(() => void load(), 15000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  const resource = usePollingResource(`capacity:${range}`, signal => getCapacity(range, signal), 15000);
+  const cap = resource.data;
 
-  if (err && !cap) {
-    return (
-      <section class="cap">
-        <div class="cap-hd">
-          <h2>Cluster capacity</h2>
-        </div>
-        <div class="panel-msg err">Couldn't load capacity: {err}</div>
-      </section>
-    );
-  }
-  if (!cap) {
-    return (
-      <section class="cap">
-        <div class="cap-hd">
-          <h2>Cluster capacity</h2>
-        </div>
-        <div class="panel-msg">Loading capacity…</div>
-      </section>
-    );
-  }
+  if (!cap) return <section class="cap"><div class="cap-hd"><h2>Cluster capacity</h2></div><ResourceStatus {...resource} /></section>;
 
   const c = cap.cluster;
   const fmt = res === 'cpu' ? fmtCores : fmtBytes;
@@ -92,11 +55,9 @@ export function CapacityPanel() {
         </div>
       </div>
 
-      {cap.metricsError && (
-        <div class="panel-msg err">Live metrics unavailable: {cap.metricsError}</div>
-      )}
+      <ResourceStatus {...resource} />
 
-      {open && c && (
+      {open && c && (!resource.problem || resource.updatedAt) && (
         <>
           <div class="cap-summary">
             <div class="cap-metric">

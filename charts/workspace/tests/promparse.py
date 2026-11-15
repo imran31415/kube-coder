@@ -230,7 +230,12 @@ def parse(text: str) -> Parsed:
 def assert_valid(text: str, prefix: Optional[str] = None) -> Parsed:
     """Parse, then enforce this repo's conventions on top of the format."""
     parsed = parse(text)
-    for name in parsed.names():
+    for sample_name in parsed.names():
+        name = sample_name
+        for suffix in ('_bucket', '_sum', '_count'):
+            if name.endswith(suffix) and parsed.types.get(name[:-len(suffix)]) == 'histogram':
+                name = name[:-len(suffix)]
+                break
         if name not in parsed.types:
             raise ParseError(f'{name!r} has samples but no # TYPE')
         if name not in parsed.helps:
