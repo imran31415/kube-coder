@@ -41,7 +41,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USERS_REPO="${USERS_REPO:-${KC_USERS_REPO:-}}"
 if [ -z "$USERS_REPO" ]; then
   USERS_REPO="$(awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $2; exit}' \
-    "$ROOT/users-private/_controller/values.yaml" 2>/dev/null || true)"
+    "$ROOT/users-private/_controller/values.yaml" "$ROOT/.users/users-private/_controller/values.yaml" 2>/dev/null || true)"
 fi
 
 # --- Pretty output. Plain ASCII markers so this works in any TTY. -------------

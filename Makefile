@@ -184,9 +184,15 @@ new-user: ## Scaffold a private workspace (USER=<name>); generates values.yaml +
 # controller's provisioner also pushes to. Kept out of this public Makefile:
 # resolved from the gitignored controller values, or override with KC_USERS_REPO.
 USERS_DIR := .users
+# workspace-controller config, resolved like a workspace's: a local
+# users-private/_controller/ override wins, else the GitOps checkout's copy.
+# Secrets resolve separately, so values can live in GitOps while secrets/
+# stays local.
+CONTROLLER_VALUES := $(firstword $(wildcard users-private/_controller/values.yaml $(USERS_DIR)/users-private/_controller/values.yaml))
+CONTROLLER_SECRETS_DIR := $(firstword $(wildcard users-private/_controller/secrets $(USERS_DIR)/users-private/_controller/secrets))
 USERS_REPO ?= $(KC_USERS_REPO)
 ifeq ($(USERS_REPO),)
-USERS_REPO := $(shell awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $$2; exit}' users-private/_controller/values.yaml 2>/dev/null)
+USERS_REPO := $(shell awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $$2; exit}' $(CONTROLLER_VALUES) 2>/dev/null)
 endif
 
 users-sync: ## Clone/pull the GitOps workspace-config repo into .users/ (set KC_USERS_REPO or _controller provision.gitops.repo)
@@ -732,15 +738,16 @@ release: ## Cut a release (VERSION=x.y.z [NOTES=path]); bumps versions, builds+p
 #   - a DEDICATED GitHub OAuth App, callback https://<host>/oauth2/callback
 #   - a 32-char cookieSecret: openssl rand -base64 64 | tr -d '\n=+/' | head -c 32
 #   - oauth2.githubUsers — the admin allowlist; THIS is the access gate
-# Put these in users-private/_controller/values.yaml (gitignored); any
-# users-private/_controller/secrets/*.yaml are merged in too.
+# Put these in users-private/_controller/values.yaml (gitignored), or commit
+# it to the GitOps repo as users-private/_controller/values.yaml (read from
+# .users/ after `make users-sync`; a local file wins). Any
+# users-private/_controller/secrets/*.yaml are merged in too — keep those local.
 # =============================================================================
 .PHONY: controller-web controller-web-install controller-web-test controller-python-tests controller-tests deploy-controller ship-controller-config controller-dev require-controller
 
 WC_DIR := charts/workspace-controller
 WC_WEB_DIR := $(WC_DIR)/web
-CONTROLLER_DIR := users-private/_controller
-controller_secret_flags = $(foreach f,$(wildcard $(CONTROLLER_DIR)/secrets/*.yaml),-f $(f))
+controller_secret_flags = $(foreach f,$(wildcard $(CONTROLLER_SECRETS_DIR)/*.yaml),-f $(f))
 
 controller-web-install: ## Install controller SPA deps (yarn, node 20)
 	cd $(WC_WEB_DIR) && yarn install
@@ -766,13 +773,13 @@ controller-web: controller-web-install ## Build controller SPA → chart web-dis
 	  echo "WARNING: SPA is near the 1 MiB ConfigMap limit — switch to image-baked delivery."; fi
 
 require-controller:
-	@if [ ! -f $(CONTROLLER_DIR)/values.yaml ]; then \
-	  echo "ERROR: missing $(CONTROLLER_DIR)/values.yaml — set controller.host, oauth2.{cookieSecret,clientId,clientSecret,githubUsers}. Schema: $(WC_DIR)/values.yaml"; exit 1; fi
+	@if [ -z "$(CONTROLLER_VALUES)" ]; then \
+	  echo "ERROR: no controller values.yaml in users-private/_controller/ or $(USERS_DIR)/users-private/_controller/ (run 'make users-sync') — set controller.host, oauth2.{cookieSecret,clientId,clientSecret,githubUsers}. Schema: $(WC_DIR)/values.yaml"; exit 1; fi
 
 deploy-controller: require-controller ## Helm upgrade the workspace-controller release
-	@echo "Deploying workspace-controller from $(CONTROLLER_DIR)/values.yaml..."
+	@echo "Deploying workspace-controller from $(CONTROLLER_VALUES)..."
 	helm upgrade workspace-controller ./$(WC_DIR) \
-		-f $(CONTROLLER_DIR)/values.yaml \
+		-f $(CONTROLLER_VALUES) \
 		$(controller_secret_flags) \
 		--set controller.image.tag=$(IMAGE_NAME)-$(VERSION) \
 		--namespace $(NAMESPACE) \
