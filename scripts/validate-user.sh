@@ -92,6 +92,16 @@ else
   for f in "${SECRET_FILES[@]:-}"; do
     [ -n "$f" ] && HELM_F+=(-f "$f")
   done
+  # `helm template` renders offline, so .Capabilities.APIVersions only knows
+  # built-in kinds. The chart gates its PodMonitor/PrometheusRule on those
+  # CRDs (platform observability, #869), so advertise whichever ones the
+  # cluster really has — otherwise every scrape-enabled workspace fails here
+  # even though `helm upgrade` would render fine.
+  for kind in podmonitors:PodMonitor prometheusrules:PrometheusRule; do
+    if kubectl get crd "${kind%%:*}.monitoring.coreos.com" >/dev/null 2>&1; then
+      HELM_F+=(--api-versions "monitoring.coreos.com/v1/${kind#*:}")
+    fi
+  done
   RENDER_OUT=$(helm template validate-preview "$CHART" "${HELM_F[@]}" 2>&1)
   RENDER_RC=$?
   if [ "$RENDER_RC" -ne 0 ]; then
