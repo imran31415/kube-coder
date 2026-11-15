@@ -178,6 +178,16 @@
       "prBodyNotes": ["**code-server bump:** the `.deb` SHA-256 pins must move with the version or the image build fails `sha256sum -c`. If this PR did not already update `CODE_SERVER_SHA256_AMD64`/`_ARM64`, run `node scripts/renovate/code-server-sha.mjs` on this branch and push."]
     },
     {
+      "description": "herdr (#834) ships bare binaries and no checksum file, so devlaptop/Dockerfile pins each arch's SHA-256 from GitHub's release API. Every bump must re-pin HERDR_SHA256_AMD64/_ARM64 or the image build fails its sha256sum -c; the postUpgradeTask recomputes them, once the self-hosted run allows the command (RENOVATE_ALLOWED_COMMANDS in .github/workflows/renovate.yml).",
+      "matchDepNames": ["herdrdev/herdr"],
+      "postUpgradeTasks": {
+        "commands": ["node scripts/renovate/herdr-sha.mjs"],
+        "fileFilters": ["devlaptop/Dockerfile"],
+        "executionMode": "update"
+      },
+      "prBodyNotes": ["**herdr bump:** the binary SHA-256 pins must move with the version or the image build fails `sha256sum -c`. If this PR did not already update `HERDR_SHA256_AMD64`/`_ARM64`, run `node scripts/renovate/herdr-sha.mjs` on this branch and push. Then start `herdr` in a workspace terminal, detach with `Ctrl+B Ctrl+B q` and reattach, and check its config and session still load from `/home/dev/.config/herdr`."]
+    },
+    {
       "description": "dsh and the npm overrides that patch its pinned dependencies (devlaptop/Dockerfile, #851) move together and need the ACP re-check, so they get their own group and a reminder instead of riding along with the weekly CLI bump.",
       "matchFileNames": ["devlaptop/Dockerfile"],
       "matchDepNames": ["@deepseek-ai/dsh", "undici", "fflate", "@modelcontextprotocol/client"],

@@ -15,7 +15,7 @@ Tracks issue [#104](https://github.com/imran31415/kube-coder/issues/104).
 | Kaniko builder image | `charts/*/values.yaml`, `controller.py` | `gcr.io/kaniko-project/executor:v1.24.0` (+digest) |
 | **oauth2-proxy** (the auth gate) | `charts/*/templates/oauth2-proxy.yaml` | `v7.15.3` **+ digest** — see [below](#oauth2-proxy-the-authentication-gate) |
 | docker-compose | `devlaptop/Dockerfile` `COMPOSE_VERSION` | release tag (was `releases/latest`) |
-| code-server, ttyd, sqlite-vec, librefang | `devlaptop/Dockerfile` `*_VERSION` | release tag **+ checksum-verified** (see below) |
+| code-server, ttyd, sqlite-vec, librefang, herdr | `devlaptop/Dockerfile` `*_VERSION` | release tag **+ checksum-verified** (see below) |
 | helm, kubectl (provisioner) | `provisioner/Dockerfile` `HELM_VERSION`/`KUBECTL_VERSION` | version + published-checksum-verified |
 | npm, claude-code, opencode, codex | `devlaptop/Dockerfile` `*_VERSION` | npm versions |
 | GitHub Actions | `.github/workflows/*` | commit SHA (Renovate `pinGitHubActionDigests`) |
@@ -32,6 +32,7 @@ mismatch** (download → verify → install; no `curl | bash`, no `curl | tar`):
 | Node.js / npm | `devlaptop` | **digest-pinned `node:20-bookworm-slim`** — `node`/`npm`/`corepack` are `COPY --from` the same pinned image the SPA builder uses (content-addressed; no third-party apt repo). Replaced the NodeSource GPG keyring + `signed-by=` apt source, which was sound but left `deb.nodesource.com` in every uncached build's critical path (it began 403-ing repo-wide on 2026-07-27) |
 | code-server `.deb` | `devlaptop` | per-arch `sha256` pinned as `CODE_SERVER_SHA256_{AMD64,ARM64}` (from the GitHub release API `digest`) |
 | ttyd | `devlaptop` | release `SHA256SUMS` |
+| herdr | `devlaptop` | per-arch `sha256` pinned as `HERDR_SHA256_{AMD64,ARM64}` (from the GitHub release API `digest`) |
 | sqlite-vec | `devlaptop` | release `checksums.txt` (reversed `<file> <hash>` layout) |
 | librefang | `devlaptop` | per-asset `.tar.gz.sha256` sidecar |
 | Ante | `devlaptop` | pinned release `manifest.json` `sha256` (download tarball direct, no installer pipe) |
@@ -199,9 +200,16 @@ untracked from #420 until it was fixed). A few need more than a marker:
   GitHub release API, and Renovate runs it as a `postUpgradeTask`, but only once
   the self-hosted run allows the command: `allowedCommands` is global-only, so it
   belongs in `.github/workflows/renovate.yml`'s env
-  (`RENOVATE_ALLOWED_COMMANDS: '["^node scripts/renovate/code-server-sha\\.mjs$"]'`),
+  (`RENOVATE_ALLOWED_COMMANDS: '["^node scripts/renovate/(code-server|herdr)-sha\\.mjs$"]'`),
   not in `renovate.json`, which is also read as the repo config. Until that is
   set, the PR's notes say to run the script by hand on the branch.
+- **herdr** (`HERDR_VERSION`, #834). Same shape as code-server: the release
+  ships bare `herdr-linux-{x86_64,aarch64}` binaries and no checksum file, so
+  `HERDR_SHA256_{AMD64,ARM64}` are pinned from GitHub's release API and
+  `scripts/renovate/herdr-sha.mjs` re-pins them as a `postUpgradeTask`. Both
+  per-tool scripts share `scripts/renovate/release-digests.mjs`. The ARG keeps
+  the tag's `v` prefix, so no `extractVersion` is needed, and the build fails
+  unless `herdr --version` reports the pinned version.
 - **Ante** (`ANTE_VERSION`) and **Firefox** (`FIREFOX_VERSION`). Neither has a
   built-in datasource, so `renovate.json` defines `custom.ante` (the stable-channel
   manifest `https://download.ante.run/channels/stable/manifest.json`, field
