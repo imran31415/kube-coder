@@ -45,9 +45,9 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # the dashboard SPA build under it at the same time, so instead we ship a SECOND,
 # side-by-side Node purely for `dsh` (installed under /opt/node22 below, never on
 # PATH). Same digest-pinned-official-image supply chain as node-dist above.
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS node22-dist
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS node22-dist
 
-FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS runtime
+FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Ride out Ubuntu mirror blips: "Unable to connect to archive.ubuntu.com" failed
