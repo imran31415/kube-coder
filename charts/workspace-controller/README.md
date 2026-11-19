@@ -135,18 +135,15 @@ kubeconfig; listing is read-only and safe).
 Off unless `provision.enabled=true` and every field below is supplied; otherwise
 the *New workspace* button is hidden and the endpoints return `501`.
 
-**Flow.** Admin enters a username → controller validates it against the GitHub
-API → the SPA POSTs a GitHub App *manifest* to `github.com` → admin clicks
-*Create GitHub App* → GitHub redirects to `/api/provision/github/callback` with a
-one-time code → the controller exchanges it for the app's `client_id` /
-`client_secret`, generates a cookie secret, renders + pushes
-`users-private/<slug>/{values.yaml,secrets/oauth2.yaml}` to the GitOps repo, and
-launches the provisioner Job, which `make deploy`s the workspace. The SPA polls
-`/api/provision/<slug>/status` until the pod is running.
+**Legacy flow.** An admin looks up a GitHub username and supplies manually
+created GitHub OAuth App credentials. The controller pushes private GitOps
+configuration and launches the provisioner Job. The UI polls deployment status.
 
-GitHub has **no API to create classic OAuth Apps**, which is why this uses
-**GitHub Apps** — their `client_id`/`client_secret` drive the exact same
-`oauth2-proxy --provider=github` login, so nothing downstream changes.
+**Dex public signup.** Enable `dex.enabled` and `signup.enabled` after completing
+[the Dex setup](../../docs/DEX_SIGNUP.md). Approved numeric GitHub IDs can create
+their own workspace through a separate restricted listener. Each workspace gets
+its own Dex client and owner-only OIDC access. Existing workspaces migrate only
+through an explicit admin action; legacy mode remains the default.
 
 **One-time setup** — run the scaffold, then follow its printed steps. Full
 walkthrough in [`docs/PROVISIONING.md`](../../docs/PROVISIONING.md):
@@ -164,8 +161,7 @@ block to add to your controller values plus the remaining manual steps:
 - Wildcard DNS `*.<provision.workspaceDomain>` pointing at the ingress.
 - A **private** GitOps repo (`provision.gitops.repo`) with an initial commit.
 - A push token for that repo (Contents: RW) + GitHub API read, in `provision.gitToken`.
-- The signed-in admin must be able to create GitHub Apps under their account (or
-  `provision.githubOrg`).
+- Legacy mode requires an admin-created GitHub OAuth App for each workspace.
 
 > ⚠️ Generated config (including the client secret + cookie secret) is committed
 > to the GitOps repo. Keep it private; layering sealed-secrets/SOPS is recommended
@@ -175,7 +171,7 @@ block to add to your controller values plus the remaining manual steps:
 |---|---|
 | `provision.enabled` | Master switch (default `false`) |
 | `provision.workspaceDomain` | `<login>.<domain>` host for new workspaces |
-| `provision.githubOrg` | Org to create the GitHub Apps under (empty = admin's account) |
+| `provision.githubOrg` | Reserved legacy setting; does not create OAuth Apps |
 | `provision.gitops.repo` / `.branch` | Private repo (host/path, no scheme) the config is pushed to |
 | `provision.chart.repo` / `.ref` | Where the Job pulls the `workspace` chart from (your fork if customised). `ref` must be immutable — a `vX.Y.Z` release tag or full 40-hex commit SHA; empty (the default) auto-pins to this chart's own `v<appVersion>` release tag. Mutable refs (`main`, …) are rejected fail-closed unless `provision.chart.allowMutableRef=true` (dev-only escape hatch) |
 | `provision.gitToken` / `.stateSecret` | Runtime creds — set via the gitignored secrets overlay |

@@ -55,6 +55,31 @@ spec:
           value: /home/controller
         - name: TMPDIR
           value: /tmp
+        {{- if .Values.dex.enabled }}
+        - name: DEX_ENABLED
+          value: "true"
+        - name: DEX_GRPC_ADDRESS
+          value: {{ required "dex.grpcAddress is required" .Values.dex.grpcAddress | quote }}
+        - name: DEX_ISSUER_URL
+          value: {{ required "dex.issuerUrl is required" .Values.dex.issuerUrl | quote }}
+        - name: SIGNUP_ENABLED
+          value: {{ .Values.signup.enabled | quote }}
+        - name: SIGNUP_STATE_NAMESPACE
+          value: {{ .Values.dex.stateNamespace | quote }}
+        - name: SIGNUP_SHARED_TLS
+          value: {{ .Values.signup.sharedCertificate | quote }}
+        - name: SIGNUP_ALLOWED_IDS
+          value: {{ join "," .Values.signup.allowedGithubIds | quote }}
+        {{- if .Values.signup.enabled }}
+        - name: SIGNUP_ORIGIN
+          value: {{ printf "https://%s" (required "signup.host is required" .Values.signup.host) | quote }}
+        - name: SIGNUP_CSRF_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ required "signup.existingSecretName is required" .Values.signup.existingSecretName }}
+              key: csrf-secret
+        {{- end }}
+        {{- end }}
         - name: NAMESPACE
           valueFrom:
             fieldRef:
@@ -195,6 +220,11 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 30
         volumeMounts:
+        {{- if .Values.dex.enabled }}
+        - name: dex-client
+          mountPath: /dex-client
+          readOnly: true
+        {{- end }}
         - name: controller-app
           mountPath: /controller
         - name: controller-web
@@ -214,6 +244,11 @@ spec:
           seccompProfile:
             type: RuntimeDefault
       volumes:
+      {{- if .Values.dex.enabled }}
+      - name: dex-client
+        secret:
+          secretName: {{ required "dex.clientTlsSecretName is required" .Values.dex.clientTlsSecretName }}
+      {{- end }}
       - name: controller-app
         configMap:
           name: workspace-controller-app

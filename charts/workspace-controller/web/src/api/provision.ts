@@ -9,6 +9,7 @@ import { type Workspace } from './workspaces';
 export interface ProvisionConfig {
   /** Whether the controller has all provisioning wiring (else the tab hides). */
   enabled: boolean;
+  authMode?: 'github' | 'dex';
   /** Base domain new workspaces are created under: <slug>.<workspaceDomain>. */
   workspaceDomain: string;
   /** GitHub URL where the admin creates the OAuth App to paste creds from. */
@@ -36,10 +37,11 @@ export const validateUser = (user: string) =>
 
 export interface ProvisionOptions {
   user: string;
+  migrate?: boolean;
   /** OAuth App Client ID (starts with "Ov…"); pasted by the admin. */
-  clientId: string;
+  clientId?: string;
   /** OAuth App Client Secret; pasted by the admin. */
-  clientSecret: string;
+  clientSecret?: string;
   pvcSize?: string;
   gitName?: string;
   gitEmail?: string;
@@ -54,6 +56,7 @@ export type JobState = 'none' | 'pending' | 'running' | 'succeeded' | 'failed';
 
 export interface ProvisionStatus {
   slug: string;
+  operation?: import('./signup').SignupOperation;
   job: JobState;
   message: string;
   workspace: Workspace | null;

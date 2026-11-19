@@ -23,6 +23,15 @@ spec:
   policyTypes:
   - Ingress
   ingress:
+  {{- if .Values.signup.enabled }}
+  - from:
+    - podSelector:
+        matchLabels:
+          app: workspace-signup-oauth2
+    ports:
+    - protocol: TCP
+      port: 8082
+  {{- end }}
   # Only the controller's own oauth2-proxy may reach the admin backend (8080),
   # which trusts X-Forwarded-User. This is the trust pin described above.
   - from:

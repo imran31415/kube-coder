@@ -303,6 +303,7 @@ delete-user: ## Delete a workspace + its PVC/DATA (USER=<name>); retype the name
 	  echo "Re-running is safe: every step above is idempotent."; \
 	  exit 1; \
 	fi; \
+	python3 scripts/cleanup-dex-identity.py "$(USER)" || exit 1; \
 	echo "Done. '$(USER)' removed from the cluster."; \
 	echo; \
 	echo "NOTE: the GitHub OAuth App is untouched — delete it by hand unless you are reusing it."; \
@@ -765,8 +766,6 @@ controller-tests: controller-web-test controller-python-tests ## Run both contro
 # size guard catches the day the bundle outgrows the 1 MiB ConfigMap limit.
 controller-web: controller-web-install ## Build controller SPA → chart web-dist/ (single inlined index.html)
 	cd $(WC_WEB_DIR) && yarn build
-	rm -rf $(WC_DIR)/web-dist && mkdir -p $(WC_DIR)/web-dist
-	cp $(WC_WEB_DIR)/dist/index.html $(WC_DIR)/web-dist/index.html
 	@bytes=$$(wc -c < $(WC_DIR)/web-dist/index.html); \
 	echo "Built controller SPA: $$bytes bytes (ConfigMap limit ~1048576)"; \
 	if [ $$bytes -gt 1000000 ]; then \

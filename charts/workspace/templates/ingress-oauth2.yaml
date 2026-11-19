@@ -7,7 +7,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -36,7 +36,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -66,7 +68,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -87,7 +89,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -124,7 +128,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -142,7 +146,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -165,7 +171,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -182,7 +188,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -205,7 +213,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -223,7 +231,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -246,7 +256,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -266,7 +276,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -289,7 +301,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -313,7 +325,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}
@@ -336,7 +350,7 @@ metadata:
   labels:
     app: ws-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
@@ -354,7 +368,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}

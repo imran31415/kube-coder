@@ -19,6 +19,55 @@ permissions:
   contents: read
 
 jobs:
+  dex-auth:
+    name: Dex owner isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+        with:
+          version: v3.22.1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+      - name: Install existing browser test dependencies
+        working-directory: charts/workspace/web
+        run: |
+          yarn install --frozen-lockfile
+          yarn playwright install --with-deps chromium
+      - name: Start fixture identity services
+        run: |
+          python3 charts/workspace-controller/tests/integration/generate_certs.py
+          docker compose -p kc-dex-test -f charts/workspace-controller/tests/integration/compose.yaml -f charts/workspace-controller/tests/integration/compose-grpc.yaml up -d
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5556/.well-known/openid-configuration >/dev/null && curl -fsS http://127.0.0.1:4181/ping && curl -fsS http://127.0.0.1:4182/ping; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Test owner and non-owner access
+        run: node charts/workspace/web/scripts/dex-auth-e2e.mjs
+      - name: Test mutually authenticated Dex management
+        run: |
+          python3 -m venv /tmp/dex-test
+          /tmp/dex-test/bin/pip install grpcio==1.78.0 protobuf==6.33.5
+          /tmp/dex-test/bin/python charts/workspace-controller/tests/integration/dex_management.py
+      - name: Test signup browser flow with fixture infrastructure
+        run: |
+          yarn --cwd charts/workspace-controller/web install --frozen-lockfile
+          yarn --cwd charts/workspace-controller/web build
+          python3 charts/workspace-controller/tests/integration/signup_fixture.py > /tmp/signup-fixture.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8089/api/signup/config >/dev/null; then break; fi
+            sleep 1
+          done
+          node charts/workspace/web/scripts/signup-e2e.mjs
+      - name: Stop fixture services
+        if: always()
+        run: docker compose -p kc-dex-test -f charts/workspace-controller/tests/integration/compose.yaml -f charts/workspace-controller/tests/integration/compose-grpc.yaml down
+
   helm-lint:
     name: Helm Lint & Template
     runs-on: ubuntu-latest
@@ -76,6 +125,12 @@ jobs:
 
       - name: Lint workspace-controller chart
         run: helm lint charts/workspace-controller/ -f charts/workspace-controller/tests/test-values.yaml
+
+      - name: Validate Dex and signup security manifests
+        run: |
+          helm lint charts/dex -f charts/dex/tests/test-values.yaml
+          python3 -m unittest discover -s charts/workspace-controller/tests -p helm_signup_test.py
+          python3 -m unittest discover -s charts/workspace-controller/tests -p gitops_integration_test.py
 
       - name: Template workspace-controller chart
         run: helm template test-wc charts/workspace-controller/ -f charts/workspace-controller/tests/test-values.yaml > /dev/null

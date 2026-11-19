@@ -1431,3 +1431,20 @@ body {
 .resource-status button:focus-visible, .health button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .resource-reference { user-select: all; overflow-wrap: anywhere; }
 .health { flex-wrap: wrap; }
+
+/* Public signup: reuse the console's controls, keep one clear primary action. */
+.signup-shell { max-width: 580px; margin: 0 auto; padding: clamp(24px, 7vw, 80px) 20px; }
+.signup-brand { font-weight: 700; margin-bottom: 36px; letter-spacing: -.03em; font-size: 22px; }
+.signup-card { border: 1px solid var(--border, #394150); border-radius: 18px; padding: clamp(22px, 5vw, 40px); background: var(--surface, #151b25); }
+.signup-card h1 { font-size: clamp(26px, 5vw, 36px); line-height: 1.15; letter-spacing: -.035em; margin: 12px 0; }
+.signup-eyebrow { font-size: 11px; letter-spacing: .15em; opacity: .65; }
+.signup-primary { display: inline-flex; margin: 24px 0 8px; justify-content: center; width: 100%; min-height: 44px; }
+.signup-account { display: flex; gap: 8px; flex-wrap: wrap; margin: 24px 0; font-size: 13px; }
+.signup-account a { margin-left: auto; }
+.signup-stages { padding-left: 22px; line-height: 2.2; opacity: .8; }
+.signup-stages [aria-current=step] { font-weight: 700; color: #8bd5b4; opacity: 1; }
+.signup-workspace { font-family: monospace; overflow-wrap: anywhere; }
+.signup-error { margin-top: 20px; padding: 14px; border: 1px solid #b57272; border-radius: 10px; }
+.signup-updated, .signup-footnote { font-size: 12px; opacity: .65; margin-top: 24px; }
+.signup-footnote { text-align: center; line-height: 1.6; }
+.signup-shell :focus-visible { outline: 2px solid #8bd5b4; outline-offset: 4px; }

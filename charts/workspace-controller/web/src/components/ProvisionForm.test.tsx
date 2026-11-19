@@ -61,6 +61,18 @@ describe('ProvisionForm (create view)', () => {
     expect(screen.getByText('octocat.dev.scalebase.io')).toBeInTheDocument();
   });
 
+  it.each([false, true])('wires Dex creation or explicit migration without legacy credentials (%s)', async existing => {
+    provisionConfig.value = { ...provisionConfig.value!, authMode: 'dex' };
+    respondValidate = () => Promise.resolve(sampleUser({ exists: existing, configExists: existing }));
+    render(<ProvisionForm />);
+    fireEvent.input(screen.getByPlaceholderText('octocat'), { target: { value: 'octocat' } });
+    fireEvent.click(screen.getByText('Look up'));
+    fireEvent.click(await screen.findByText(existing ? 'Migrate to Dex' : 'Create workspace'));
+    await waitFor(() => expect(created).toEqual([{ user: 'octocat', migrate: existing }]));
+    expect(screen.queryByPlaceholderText('paste the generated secret')).toBeNull();
+    expect(deployed).toEqual([]);
+  });
+
   it('warns when the workspace already exists', async () => {
     respondValidate = () => Promise.resolve(sampleUser({ exists: true, slug: 'octocat' }));
     render(<ProvisionForm />);

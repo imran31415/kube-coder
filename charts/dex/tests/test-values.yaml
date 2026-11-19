@@ -1,0 +1,9 @@
+issuer: https://auth.example.test
+host: auth.example.test
+githubSecretName: github
+grpcTlsSecretName: grpc
+signup:
+  host: signup.example.test
+  secretName: signup
+tls:
+  secretName: dex-tls

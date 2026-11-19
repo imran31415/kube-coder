@@ -355,3 +355,19 @@ provision:
   # console path matches a hand-scaffolded one. Blank => that feature stays off.
   workspaceSelfServeSecret: ""     # self-serve update token (== update.selfServeSecretName)
   workspaceAssistantSecret: ""     # shared OpenRouter key (== assistant.openrouter.sharedSecretName)
+
+# Dex is opt-in. Existing workspace configurations remain GitHub-based.
+dex:
+  enabled: false
+  issuerUrl: ""
+  grpcAddress: ""
+  clientTlsSecretName: ""
+  stateNamespace: kube-coder-signup
+signup:
+  enabled: false
+  host: ""
+  allowedGithubIds: []
+  # client-id, client-secret, cookie-secret, csrf-secret (>=32 chars)
+  existingSecretName: ""
+  sharedCertificate: false
+  tlsSecretName: ""

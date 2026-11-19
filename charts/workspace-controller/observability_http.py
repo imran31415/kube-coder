@@ -31,6 +31,8 @@ def route_identity(path):
         path = path[6:]
     if path in EXACT_ROUTES:
         return path
+    if path in ('/api/signup/config', '/api/signup/me', '/api/signup/workspace', '/api/signup/status', '/api/signup/retry', '/signup'):
+        return path
     match = WORKSPACE_ROUTE.fullmatch(path)
     if match:
         return '/api/' + (match[1] or '') + 'workspaces/:user' + ('/' + match[2] if match[2] else '')
@@ -120,6 +122,8 @@ class ObservedHTTP:
                 CONTEXT.reset(token)
 
     def _obs_listener(self):
+        if getattr(self.server, 'signup', False):
+            return 'signup'
         if self.telemetry_service == 'workspace':
             return 'workspace'
         return 'self-serve' if getattr(self.server, 'restricted', False) else 'admin'

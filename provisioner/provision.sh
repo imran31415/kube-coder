@@ -65,10 +65,22 @@ case "${helm_actual}" in
   *) echo "provisioner: WARNING helm ${helm_actual} does not match the version baked into this image (${helm_expected})" >&2 ;;
 esac
 
-git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
+if [[ "$CHART_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    git init /tmp/kc
+    git -C /tmp/kc remote add origin "$CHART_REPO"
+    git -C /tmp/kc fetch --depth 1 origin "$CHART_REF"
+    git -C /tmp/kc checkout --detach FETCH_HEAD
+else
+    git clone --depth 1 -b "$CHART_REF" "$CHART_REPO" /tmp/kc
+fi
 # Provenance: record the exact commit the privileged deploy actually runs from.
 echo "provisioner: chart ref ${CHART_REF} resolved to commit $(git -C /tmp/kc rev-parse HEAD)"
 git clone --depth 1 -b "$GITOPS_BRANCH" "https://x-access-token:${GITOPS_TOKEN}@${GITOPS_REPO}" /tmp/cfg
+if [ -n "${GITOPS_COMMIT:-}" ]; then
+    [[ "$GITOPS_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid GitOps commit' >&2; exit 1; }
+    git -C /tmp/cfg fetch --depth 1 origin "$GITOPS_COMMIT"
+    git -C /tmp/cfg checkout --detach "$GITOPS_COMMIT"
+fi
 mkdir -p /tmp/kc/users-private
 cp -r "/tmp/cfg/users-private/${SLUG}" "/tmp/kc/users-private/${SLUG}"
 cd /tmp/kc

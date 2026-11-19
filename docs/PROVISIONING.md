@@ -1,14 +1,12 @@
 # Self-service workspace provisioning
 
-The **workspace-controller** dashboard can provision a brand-new workspace from
-a GitHub username: it registers a GitHub App for the user, writes the rendered
-config to a private GitOps repo, and runs `helm upgrade` — turning the manual
-[New User Provisioning](NEW_USER_PROVISIONING.md) checklist into a form
-submission.
+The admin dashboard provisions workspaces using a GitHub username and manually
+created GitHub OAuth App credentials. Public signup is an optional Dex mode:
+one GitHub OAuth App connects to Dex, and approved numeric GitHub IDs can create
+their own workspace. See [Dex signup setup and migration](DEX_SIGNUP.md).
 
-This is **off by default** and self-hostable: every endpoint is your cluster,
-your GitOps repo, your GitHub Apps. Nothing is shared with the kube-coder
-project. This guide is the end-to-end setup.
+Provisioning is off by default. The controller writes private GitOps configuration
+and runs the existing provisioner Job. This guide covers the legacy admin setup.
 
 > **Per-workspace namespaces (#103):** each provisioned workspace lands in its
 > own `ws-<user>` namespace with scoped RBAC + a `ResourceQuota`/`LimitRange`.
@@ -20,32 +18,20 @@ project. This guide is the end-to-end setup.
 
 ## How it works
 
-```
-Admin → controller "New workspace" → types a GitHub username
-  1. controller validates the username against the GitHub API
-  2. browser POSTs a GitHub App *manifest* to github.com
-  3. admin clicks "Create GitHub App"            ← the one manual click
-  4. GitHub redirects back with a one-time code; the controller exchanges it
-     for the App's client_id + client_secret
-  5. controller renders values.yaml + secrets/oauth2.yaml and pushes them to
-     YOUR private GitOps repo
-  6. controller launches a short-lived, privileged Job
-  7. the Job clones the chart + your config repo and runs `make deploy`
-  8. the UI polls until the workspace pod is running
-```
+1. An administrator looks up a GitHub username.
+2. They create a GitHub **OAuth App** manually and enter its credentials.
+3. The controller pushes workspace values and secrets to the private GitOps repo.
+4. A provisioner Job clones the pinned chart and configuration, then runs `make deploy`.
+5. The dashboard reports deployment status.
 
-**Why GitHub Apps and not OAuth Apps?** GitHub has no API to create classic
-OAuth Apps — only GitHub Apps can be registered programmatically (via the
-manifest flow). A GitHub App exposes the same `client_id`/`client_secret` login
-that `oauth2-proxy --provider=github` already uses, so the workspace auth is
-unchanged; you just click "Create" once per user instead of filling a form.
+GitHub OAuth Apps cannot be created through an API. There is no GitHub App
+manifest exchange in this flow. Dex mode removes the per-user registration step;
+existing workspaces remain on their original provider until explicitly migrated.
 
-**Security posture.** The always-on, internet-facing controller never holds
-write power over workspaces. It can only validate input, do the manifest
-exchange, push to git, and *create a Job*. The Job runs as a separate
-`workspace-provisioner` ServiceAccount that holds the create/update/delete RBAC
-— so a controller compromise can start Jobs, not silently rewrite every tenant's
-Deployment or read every Secret.
+The controller launches a separate privileged provisioner ServiceAccount. Its
+ability to create Jobs is still security-sensitive; keep the pinned image and
+admission policy enabled. Dex mode additionally grants access to a dedicated
+signup state namespace and the private, mutually authenticated Dex API.
 
 ---
 
@@ -57,7 +43,7 @@ Deployment or read every Secret.
 | **Wildcard DNS** `*.<domain>` → ingress | New workspaces are served at `<login>.<domain>` with no per-host DNS step. |
 | A **private** Git repo | Stores generated `values.yaml` + secrets (the GitOps source of truth). |
 | A **push token** for that repo | The controller + Job push/clone it. Fine-grained PAT (Contents: RW) or a GitHub App installation token. |
-| Admin can create GitHub Apps | Under their own account, or an org you control (`provision.githubOrg`). |
+| Admin can create GitHub OAuth Apps | One per legacy workspace, or one shared App for Dex mode. |
 
 ---
 
@@ -116,7 +102,6 @@ provision:
   gitops:
     repo: github.com/<you>/kube-coder-users.git
     branch: main
-  # githubOrg: acme          # omit to create Apps under the admin's account
   # chart:                   # omit to use the upstream kube-coder chart
   #   repo: https://github.com/<you>/kube-coder.git
   #   ref: main

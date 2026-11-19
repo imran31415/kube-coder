@@ -9,7 +9,7 @@ data:
   controller.py: |
 {{ .Files.Get "controller.py" | indent 4 }}
 
-{{- range $name := list "prometheus_exposition.py" "observability_metrics.py" "observability_http.py" "observability_logging.py" }}
+{{- range $name := list "prometheus_exposition.py" "observability_metrics.py" "observability_http.py" "observability_logging.py" "signup.py" "signup_errors.py" "provisioning.py" "provision_store.py" "provision_backend.py" "dex_client.py" "dex_api_pb2.py" "dex_api_pb2_grpc.py" }}
   {{ $name }}: |
 {{ $.Files.Get $name | indent 4 }}
 {{- end }}
