@@ -33,7 +33,7 @@ before it finishes.
 Open **Security** in the dashboard and connect one: a model name in the
 scanner's format (`provider/model-name`), and an API key from that provider.
 A model running on this machine works too — give its address in the optional
-server field.
+server field; it does not need a key.
 
 Your key is stored in this workspace only, in the scanner's own settings file,
 and is never shown again. It is kept separate from the key your assistant uses,
@@ -52,7 +52,10 @@ container, so the workspace has to be deployed with `strix.enabled: true` and
 failing at the first scan. See `charts/workspace/values.yaml`.
 
 The scanner itself installs the first time you connect a model. That takes a
-few minutes and happens once.
+few minutes and happens once; the Security page shows it, then checks your
+model as soon as it is ready. A model name the scanner would not accept — a
+typo, a missing `provider/` in front — is refused before any scan starts, and
+the page takes you to **Model settings** to fix it.
 
 ## Choosing how deep to go
 

@@ -283,6 +283,15 @@ describe('live scan page helpers', () => {
     expect(emptyFindingsText(scan({ status: 'running' }))).toContain('Nothing found yet');
   });
 
+  it('does not talk about an ended scan for one that never reached the app', () => {
+    // #886: "None confirmed before the scan ended" sat under "could not run,
+    // so nothing was checked" and contradicted it.
+    const never = scan({ status: 'failed', usage: { ...scan().usage, requests: 0 } });
+    expect(emptyFindingsText(never)).toBe('Nothing was checked, so there is nothing to list.');
+    // One that failed partway did check something.
+    expect(emptyFindingsText(scan({ status: 'failed' }))).toContain('None confirmed before the scan ended');
+  });
+
   it('names where a new report is saved, when the backend says', () => {
     expect(reportSavedText({ text: 'x', location: '/runs/r1/report.md' })).toBe(
       'The scanner’s report is ready. Saved to /runs/r1/report.md',

@@ -67,7 +67,9 @@ export function ConnectStrix({ onDone }: { onDone?: () => void }) {
     if (await saveConnection(body)) {
       setApiKey('');
       setTouched(false);
-      await testConnection();
+      // Mid-install the check can only say "still being installed", which
+      // reads as a failure. The store runs it the moment the install lands.
+      if (connection.value?.install?.state === 'ready') await testConnection();
       onDone?.();
     }
   }
@@ -94,12 +96,21 @@ export function ConnectStrix({ onDone }: { onDone?: () => void }) {
         </p>
       ) : null}
 
-      <form class="security-form" onSubmit={save}>
+      {/* Never filled from the browser's saved logins (#886). To a password
+          manager a text box above a password box is a sign-in form, so a
+          login saved elsewhere on this site (Messaging's Account SID and
+          Auth Token) landed in Model and API key and Save stored both.
+          Browsers do not fill a saved login into a `new-password` box, nor
+          the text box above it. */}
+      <form class="security-form" onSubmit={save} autocomplete="off">
         <label class="security-field">
           <span>Model</span>
           <Input
             value={model}
+            name="scanner-model"
             placeholder="provider/model-name"
+            autocomplete="off"
+            spellcheck={false}
             onInput={(e) => {
               setTouched(true);
               setModel((e.target as HTMLInputElement).value);
@@ -122,8 +133,9 @@ export function ConnectStrix({ onDone }: { onDone?: () => void }) {
             <Input
               type="password"
               value={apiKey}
+              name="scanner-api-key"
               placeholder={conn?.has_key ? 'Saved — type to replace' : 'Paste your key'}
-              autocomplete="off"
+              autocomplete="new-password"
               onInput={(e) => {
                 setTouched(true);
                 setApiKey((e.target as HTMLInputElement).value);
@@ -139,7 +151,10 @@ export function ConnectStrix({ onDone }: { onDone?: () => void }) {
           <span>Server address <span class="muted">(optional)</span></span>
           <Input
             value={apiBase}
+            name="scanner-api-base"
             placeholder="http://localhost:11434"
+            autocomplete="off"
+            spellcheck={false}
             onInput={(e) => {
               setTouched(true);
               setApiBase((e.target as HTMLInputElement).value);

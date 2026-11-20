@@ -13,7 +13,9 @@ request handler thread until it finished.
 Run:  python3 -m unittest tests.scans_api_test   (from charts/workspace/)
 """
 
+import contextlib
 import http.server
+import io
 import json
 import os
 import shutil
@@ -315,6 +317,51 @@ class CreateTests(ApiTestCase):
         status, body = self.start_scan()
         self.assertEqual(status, 409)
         self.assertEqual(body['code'], 'not_connected')
+
+    def refuse_bare_names(self, verdict):
+        """The scanner installed, and its bare-name rule answering
+        `verdict` — the one part of the gate that would start a process."""
+        self.addCleanup(setattr, strix_connection, 'is_installed',
+                        strix_connection.is_installed)
+        strix_connection.is_installed = lambda: True
+        calls = []
+
+        def known(_probe, python, model):
+            calls.append(model)
+            return verdict, ''
+        self.addCleanup(setattr, strix_connection._Probe, 'known_bare_model',
+                        strix_connection._Probe.known_bare_model)
+        strix_connection._Probe.known_bare_model = known
+        return calls
+
+    def test_a_model_name_the_scanner_would_refuse_never_starts_a_scan(self):
+        """#886: the Model field held a saved login's Account SID. The scan
+        must be refused while it is free — not become a failed scan, a
+        notification, and a "Try again" that fails the same way."""
+        calls = self.refuse_bare_names(False)
+        self.connect(model='FAKE-saved-login-not-a-model')
+        with contextlib.redirect_stderr(io.StringIO()):
+            status, body = self.start_scan()
+        self.assertEqual(status, 409, body)
+        self.assertEqual(body['code'], 'model_invalid')
+        self.assertEqual(body['error'], strix_connection.UNKNOWN_MODEL_MESSAGE)
+        self.assertEqual(calls, ['FAKE-saved-login-not-a-model'])
+        self.assertEqual(self.request('/api/scans')[1]['scans'], [])
+
+    def test_a_bare_name_the_scanner_knows_starts_normally(self):
+        self.refuse_bare_names(True)
+        self.connect(model='known-bare-model')
+        status, body = self.start_scan()
+        self.assertEqual(status, 202, body)
+
+    def test_a_model_on_the_users_own_server_scans_without_a_key(self):
+        status, body = self.request('/api/scans/connection', 'POST', {
+            'model': 'ollama/some-model',
+            'api_base': 'http://localhost:11434'})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body['configured'])
+        status, body = self.start_scan()
+        self.assertEqual(status, 202, body)
 
     def test_a_connected_workspace_starts_a_scan_and_gets_an_id(self):
         self.connect()

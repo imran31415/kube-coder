@@ -17,6 +17,15 @@ export const MODE_LABELS: Record<ScanMode, string> = {
   deep: 'Deep · 1–4 hrs',
 };
 
+/** The status in words, as the dashboard shows it — never the raw code. */
+export const STATUS_LABELS: Record<string, string> = {
+  running: 'Scanning',
+  done: 'Finished',
+  stopped: 'Stopped',
+  failed: 'Failed',
+  interrupted: 'Cut short',
+};
+
 /** A scan still doing work — what drives polling and the Stop button. */
 export function isLiveScan(scan: { status: string }): boolean {
   return scan.status === 'running';
@@ -76,9 +85,15 @@ export function emptyFindingsText(scan: {
   status: string;
   coverage?: { complete: boolean };
   report?: unknown;
+  usage?: { requests?: number };
 }): string {
   if (scan.status === 'running') {
     return 'Nothing found yet. A problem shows up here the moment the scanner proves it is real.';
+  }
+  // A scan that never reached the app: "none confirmed before the scan
+  // ended" under "could not run, so nothing was checked" contradicts it.
+  if (scan.status === 'failed' && !scan.usage?.requests) {
+    return 'Nothing was checked, so there is nothing to list.';
   }
   if (scan.status === 'done' && scan.coverage?.complete !== false) {
     return 'No problems were recorded for this scan.';

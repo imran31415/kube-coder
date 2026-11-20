@@ -38,6 +38,10 @@
 .security-install-failed,
 .security-result.is-bad { border-left: 3px solid var(--danger); }
 .security-result.is-ok { border-left: 3px solid var(--success); }
+.security-status {
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--size-2);
+}
+.security-status p { margin: 0; white-space: pre-line; }
 
 /* ---- list ---------------------------------------------------------- */
 

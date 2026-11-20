@@ -338,9 +338,18 @@ _LOG_ERROR_RE = re.compile(
 #: A provider's error body quoted inside the message — the sentence a person
 #: can act on is its `message` field, not the JSON around it.
 _PROVIDER_MESSAGE_RE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)+)"')
-#: An error that came back from the model provider. Every one reaches the
-#: scanner through LiteLLM, whose exceptions print as `litellm.<Name>Error`.
-_PROVIDER_ERROR_RE = re.compile(r'\blitellm\.|^LLM connection failed', re.I)
+#: An error the user fixes in their model settings or with their provider,
+#: not one in the scanner. Two shapes: what came back from the provider
+#: (every one reaches the scanner through LiteLLM, whose exceptions print as
+#: `litellm.<Name>Error`), and the scanner's own boxes for a model it refused
+#: before sending anything — a name it does not recognise (#886), a model the
+#: subscription does not include, no model set at all. Those last three used
+#: to read as a scanner fault, so the page offered only "Try again", which
+#: fails identically every time.
+_PROVIDER_ERROR_RE = re.compile(
+    r'\blitellm\.|^(?:LLM connection failed|Unknown model name'
+    r'|Model not available on subscription'
+    r'|Missing required environment variables)\b', re.I)
 _ERROR_TEXT_MAX = 300
 
 
@@ -468,7 +477,7 @@ def scanner_error(log_text):
 
 
 def is_provider_error(error):
-    """Did this error come from the model provider?
+    """Is this error about the model — its settings or its provider?
 
     Only those get the provider hint table's advice. Matched against
     anything else it misleads: "The 'docker' CLI was not found" reads to the

@@ -753,6 +753,31 @@ class ScannerErrorTests(unittest.TestCase):
         self.assertFalse(scan_backends.is_provider_error(
             "Docker not installed: The 'docker' CLI was not found"))
 
+    def test_an_unknown_model_name_box_is_read_whole(self):
+        """#886: a saved login filled into the Model field reached the
+        scanner as a bare name, and this box is what it printed."""
+        error = scan_backends.scanner_error(scanner_log('unknown_model.log'))
+        self.assertEqual(
+            error,
+            "Unknown model name: 'FAKE-saved-login-not-a-model' is not "
+            "a known OpenAI model. Bare names route to OpenAI by default. If "
+            "you meant a non-OpenAI provider, use the '<provider>/<model>' "
+            "form, e.g. 'anthropic/claude-opus-4-7', "
+            "'deepseek/deepseek-v4-pro'.")
+
+    def test_a_model_the_scanner_refused_is_a_model_problem(self):
+        """Fixed in the model settings, not by trying the scanner again —
+        these used to read as scanner faults, offering only "Try again"."""
+        for error in (
+                "Unknown model name: 'x' is not a known OpenAI model.",
+                'Model not available on subscription: This model isn\'t '
+                'available on your ChatGPT subscription.',
+                'Missing required environment variables: • STRIX_LLM'):
+            self.assertTrue(scan_backends.is_provider_error(error), error)
+        # Anchored on the headline: the words elsewhere do not count.
+        self.assertFalse(scan_backends.is_provider_error(
+            'Docker not available: unknown model name in image tag'))
+
 
 class EndReasonTests(unittest.TestCase):
     """What the user reads, from what the backend found."""
@@ -869,6 +894,18 @@ class ExplainEndTests(unittest.TestCase):
         self.assertTrue(reason.startswith('The provider is busy right now. '
                                           'The scanner said: This model'),
                         reason)
+
+    def test_an_unknown_model_name_ends_as_a_model_problem(self):
+        """#886. The page picks "Model settings" by this cause; with
+        `scanner` it offered only a retry that fails the same way."""
+        self.write_log(scanner_log('unknown_model.log'))
+        reason, detail, cause = self.explain(
+            explainer=lambda e: 'Fix the model name.')
+        self.assertEqual(cause, 'provider')
+        self.assertTrue(reason.startswith(
+            'Fix the model name. The scanner said: Unknown model name:'),
+            reason)
+        self.assertIn('scanner error: Unknown model name', detail)
 
     def test_the_hint_table_is_not_applied_to_a_setup_error(self):
         """The provider table reads "not found" as a wrong model name; the
