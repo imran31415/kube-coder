@@ -186,7 +186,7 @@ export default function TasksScreen() {
         )
       ) : (
         <FlatList
-          data={visible}
+          data={visible ?? undefined}
           keyExtractor={(t) => t.id}
           style={away && styles.stale}
           contentContainerStyle={styles.list}

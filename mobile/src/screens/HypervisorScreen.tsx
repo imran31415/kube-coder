@@ -22,6 +22,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import type { ScrollViewInstance } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
@@ -181,7 +182,7 @@ export default function HypervisorScreen() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [briefOpen, setBriefOpen] = useState(false);
   const [dirs, setDirs] = useState<WorkdirOption[]>([]);
-  const scrollRef = useRef<ScrollView | null>(null);
+  const scrollRef = useRef<ScrollViewInstance | null>(null);
   const optimisticSeq = useRef(-1);
   // The transcript as last set, and which store the server built it from
   // (session_log vs capture — a flip re-stamps seqs). Every change to `events`

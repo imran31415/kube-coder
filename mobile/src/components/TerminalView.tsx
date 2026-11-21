@@ -15,6 +15,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useIsFocused } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { ScrollViewInstance } from 'react-native';
 import { WebView } from './PlatformWebView';
 import { prepareTerminal, terminalEmbedSource } from '../api/client';
 import { getConfig } from '../store/config';
@@ -250,7 +251,7 @@ export function TerminalView({ taskId, output }: { taskId: string; output: strin
 
 /** Finished/old tasks: the recorded output, ANSI-colored, pinned to bottom. */
 function ArchivedOutput({ output, showNotice = true }: { output: string; showNotice?: boolean }) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const pinnedToBottom = useRef(true);
   const lines = useMemo(() => parseAnsiLines(output), [output]);
 
