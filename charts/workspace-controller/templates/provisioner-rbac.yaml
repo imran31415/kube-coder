@@ -82,6 +82,13 @@ rules:
 - apiGroups: ["cilium.io"]
   resources: ["ciliumnetworkpolicies"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# The per-workspace PodMonitor the chart renders when metrics.podMonitor is on
+# (platform observability #869). A Prometheus Operator CRD, so like Cilium it
+# needs its own rule; without it a console Update/provision of a scrape-enabled
+# workspace fails `helm upgrade` on `podmonitors` in `monitoring.coreos.com`.
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["podmonitors"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # The oauth2-proxy PodDisruptionBudget the chart ships for its HA proxy pair.
 - apiGroups: ["policy"]
   resources: ["poddisruptionbudgets"]

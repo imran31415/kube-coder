@@ -97,9 +97,14 @@ else
   # CRDs (platform observability, #869), so advertise whichever ones the
   # cluster really has — otherwise every scrape-enabled workspace fails here
   # even though `helm upgrade` would render fine.
-  for kind in podmonitors:PodMonitor prometheusrules:PrometheusRule; do
-    if kubectl get crd "${kind%%:*}.monitoring.coreos.com" >/dev/null 2>&1; then
-      HELM_F+=(--api-versions "monitoring.coreos.com/v1/${kind#*:}")
+  # Ask API *discovery*, not `kubectl get crd`: every authenticated identity
+  # may read discovery, but the provisioner Job's ServiceAccount cannot read
+  # cluster-scoped CRDs, so the CRD lookup silently failed there and a console
+  # Update of any scrape-enabled workspace died in this check.
+  MON_DISCOVERY=$(kubectl get --raw /apis/monitoring.coreos.com/v1 2>/dev/null || true)
+  for kind in PodMonitor PrometheusRule; do
+    if printf '%s' "$MON_DISCOVERY" | grep -Eq "\"kind\": ?\"$kind\""; then
+      HELM_F+=(--api-versions "monitoring.coreos.com/v1/$kind")
     fi
   done
   RENDER_OUT=$(helm template validate-preview "$CHART" "${HELM_F[@]}" 2>&1)
