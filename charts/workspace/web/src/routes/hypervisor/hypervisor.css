@@ -1923,15 +1923,19 @@
    ═══════════════════════════════════════════════════════════════════════ */
 :root:has(.route-hypervisor),
 :root[data-theme="dark"]:has(.route-hypervisor) {
-  --bg:          #0a0e16;
-  --surface:     #11151d;
-  --surface-2:   #181c24;
-  --surface-3:   #202530;
-  --border:      #262b36;
-  --border-2:    #353b49;
-  --text:        #e6e9ef;
-  --text-muted:  #a3abba;
-  --text-subtle: #8c95a6;
+  /* Slate, not black: the first cut (#0a0e16 / #11151d) read as black on
+     black — adjacent surfaces were only ~1.06:1 apart. Each step is lifted
+     and spread (≈1.10–1.17:1 between steps, hairlines ≈1.45:1 on panels)
+     while subtle text stays ≥4.5:1 on the highest surface (WCAG AA). */
+  --bg:          #12171f;
+  --surface:     #1a202b;
+  --surface-2:   #222935;
+  --surface-3:   #2c3442;
+  --border:      #323b4a;
+  --border-2:    #454f61;
+  --text:        #e8ebf1;
+  --text-muted:  #b4bccb;
+  --text-subtle: #97a0b1;
 
   --accent:        #10b981;
   --accent-strong: #34d399;
