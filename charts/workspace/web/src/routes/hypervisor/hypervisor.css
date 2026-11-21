@@ -923,7 +923,7 @@
 }
 .hv-prose th,
 .hv-prose td { padding: 6px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
-.hv-prose th { background: var(--surface-2); font-weight: 600; color: var(--text-muted); }
+.hv-prose th { background: var(--surface-2); font-weight: var(--weight-semibold); color: var(--text-muted); }
 .hv-prose code {
   font-family: var(--font-mono);
   font-size: var(--text-md);
