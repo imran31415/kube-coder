@@ -35,7 +35,7 @@ user:
 # Container image configuration
 image:
   repository: registry.digitalocean.com/resourceloop/coder
-  tag: devlaptop-v1.81.0
+  tag: devlaptop-v1.82.0
   pullPolicy: Always
   pullSecretName: regcred
 
