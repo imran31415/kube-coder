@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
 import { Icon } from '../../components/Icon';
 import { navigate } from '../../store/router';
 import { getThreadActivity, type ActivityEntry, type ThreadActivity } from '../../api/hypervisor';
@@ -19,7 +20,18 @@ import {
  * Collapsed and idle by default: it only polls the /activity endpoint while
  * open, at a faster cadence while a turn is running so it feels live.
  */
-export function ActivityPanel({ threadId, running }: { threadId: string; running: boolean }) {
+export function ActivityPanel({
+  threadId,
+  running,
+  children,
+}: {
+  threadId: string;
+  running: boolean;
+  /** Extra context shown at the top of the expanded body (the workspace's
+   *  running tasks) — folded in here so the chat column carries ONE
+   *  collapsible status row instead of a stack of strips. */
+  children?: ComponentChildren;
+}) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<ThreadActivity | null>(null);
   const [showLog, setShowLog] = useState(false);
@@ -72,6 +84,11 @@ export function ActivityPanel({ threadId, running }: { threadId: string; running
       >
         <Icon name="tasks" size={13} />
         <span class="hv-ap-title">Activity</span>
+        {running && (
+          <span class="hv-ap-live">
+            <span class="hv-dot hv-dot-running" aria-hidden="true" /> working
+          </span>
+        )}
         {counts && (
           <span class="hv-ap-badges">
             {summaryBadges(counts).map((b) => (
@@ -90,6 +107,7 @@ export function ActivityPanel({ threadId, running }: { threadId: string; running
 
       {open && (
         <div class="hv-ap-body">
+          {children}
           {err && <div class="hv-ap-err">{err}</div>}
           {!data && !err && <div class="hv-ap-empty">Loading…</div>}
           {data && data.timeline.length === 0 && !err && (

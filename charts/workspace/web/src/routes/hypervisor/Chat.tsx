@@ -175,10 +175,29 @@ function EmbedBlock({ port, title, height }: { port: number; title?: string; hei
   const h = height && height >= 80 ? height : 280;
   return (
     <figure class="hv-embed">
+      {/* Browser-window chrome: traffic lights, an address bar naming the
+          port, and a live tag — reads as "a real page running in your
+          sandbox", not a bare iframe. */}
       <figcaption class="hv-embed-head">
-        <span class="hv-embed-title">{title || `App on :${port}`}</span>
+        <span class="hv-embed-lights" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span class="hv-embed-url">
+          <span class="hv-embed-host mono">localhost:{port}</span>
+          <span class="hv-embed-title">{title || `App on :${port}`}</span>
+        </span>
+        <span class="hv-embed-live">
+          <span class="hv-embed-live-dot" aria-hidden="true" /> Live
+        </span>
         <span class="hv-embed-actions">
-          <button type="button" class="hv-embed-btn" onClick={() => setKey((k) => k + 1)}>
+          <button
+            type="button"
+            class="hv-embed-btn"
+            onClick={() => setKey((k) => k + 1)}
+            title="Reload preview"
+          >
             Reload
           </button>
           <a
@@ -1189,8 +1208,11 @@ export function Chat({
 
   return (
     <div class="hv-chat">
-      {active && <WorkspaceContext />}
-      {active && <ActivityPanel threadId={active} running={working} />}
+      {active && (
+        <ActivityPanel threadId={active} running={working}>
+          <WorkspaceContext />
+        </ActivityPanel>
+      )}
 
       <div class="hv-transcript" ref={scrollRef} onScroll={onTranscriptScroll} onClick={onTranscriptClick}>
         {empty && boardCards}
@@ -1445,6 +1467,34 @@ export function Chat({
             input.value = '';
           }}
         />
+        <textarea
+          ref={taRef}
+          class="hv-composer-input"
+          aria-label="Message Kube-Coder"
+          value={draft}
+          placeholder={
+            readOnly
+              ? 'Read-only workspace — you can still ask about state'
+              : working
+                ? 'Kube-Coder is working… press Stop to interrupt'
+                : listening
+                  ? 'Listening… tap the mic again to stop'
+                  : 'Message Kube-Coder…  (paste, attach, or / for agent commands)'
+          }
+          onInput={(e) => onDraftInput((e.target as HTMLTextAreaElement).value)}
+          onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            const files = filesFromClipboard(e.clipboardData);
+            if (files.length) {
+              e.preventDefault();
+              addFiles(files);
+            }
+          }}
+          rows={1}
+          disabled={blocked}
+        />
+        <div class="hv-composer-bar">
+          <div class="hv-composer-tools">
         <button
           type="button"
           class="hv-attach-btn"
@@ -1453,7 +1503,7 @@ export function Chat({
           title="Attach a file (image, pdf, text, code…)"
           aria-label="Attach a file"
         >
-          <Icon name="upload" size={16} />
+          <Icon name="plus" size={16} />
         </button>
         {slashEnabled && commands.length > 0 && (
           <button
@@ -1486,32 +1536,10 @@ export function Chat({
             <Icon name="mic" size={16} />
           </button>
         )}
-        <textarea
-          ref={taRef}
-          class="hv-composer-input"
-          aria-label="Message Kube-Coder"
-          value={draft}
-          placeholder={
-            readOnly
-              ? 'Read-only workspace — you can still ask about state'
-              : working
-                ? 'Kube-Coder is working… press Stop to interrupt'
-                : listening
-                  ? 'Listening… tap the mic again to stop'
-                  : 'Message Kube-Coder…  (paste, attach, or / for commands)'
-          }
-          onInput={(e) => onDraftInput((e.target as HTMLTextAreaElement).value)}
-          onKeyDown={onKeyDown}
-          onPaste={(e) => {
-            const files = filesFromClipboard(e.clipboardData);
-            if (files.length) {
-              e.preventDefault();
-              addFiles(files);
-            }
-          }}
-          rows={1}
-          disabled={blocked}
-        />
+          </div>
+          <span class="hv-composer-hint" aria-hidden="true">
+            <kbd>↵</kbd> send <span class="hv-composer-hint-sep">·</span> <kbd>⇧↵</kbd> newline
+          </span>
         {working ? (
           <Button
             type="button"
@@ -1532,6 +1560,7 @@ export function Chat({
             <Icon name="play" size={12} /> {pendingSend !== null ? 'Uploading…' : 'Send'}
           </Button>
         )}
+        </div>
       </form>
     </div>
   );

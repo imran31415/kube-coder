@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { HypervisorRoute } from './index';
 import {
@@ -118,6 +118,13 @@ async function openChat(id: string) {
   await waitFor(() => expect(activeThreadId.value).toBe(id));
 }
 
+/** Model / effort / project live behind the header's "Chat settings" button;
+ *  open that panel (idempotently) before reaching for its controls. */
+async function openSettings() {
+  const btn = await screen.findByRole('button', { name: 'Chat settings' });
+  if (btn.getAttribute('aria-expanded') !== 'true') fireEvent.click(btn);
+}
+
 describe('per-project assistant defaults in Chat (#683)', () => {
   it('offers the write only when the chat is filed into a project', async () => {
     threads = [
@@ -126,6 +133,7 @@ describe('per-project assistant defaults in Chat (#683)', () => {
     ];
     render(<HypervisorRoute />);
     await screen.findByTitle('unfiled');
+    await openSettings();
 
     await openChat('b');
     await waitFor(() =>
@@ -141,6 +149,7 @@ describe('per-project assistant defaults in Chat (#683)', () => {
     render(<HypervisorRoute />);
     await screen.findByTitle('filed');
     await openChat('a');
+    await openSettings();
 
     (await screen.findByText('Set as project default')).click();
 
@@ -159,6 +168,7 @@ describe('per-project assistant defaults in Chat (#683)', () => {
     render(<HypervisorRoute />);
     await screen.findByTitle('filed');
     await openChat('a');
+    await openSettings();
 
     const btn = (await screen.findByText('Project default')) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
