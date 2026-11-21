@@ -983,7 +983,7 @@ from the Deployment's own entries, copying times only from ones that already
 had them. A record of the keeper's own would be a second source of truth
 (§2.1), so the status JSON stays `{"state": "asleep"}` and nothing shows how
 long a workspace has been asleep. The away page says "It goes to sleep after
-30 minutes with nobody using it." when the reason for a wake is a plain visit.
+12 hours with nobody using it." (the default `idleMinutes: 720`) when the reason for a wake is a plain visit.
 
 #### Running it
 
@@ -993,7 +993,7 @@ keeper:
   image: ghcr.io/imran31415/kube-coder/keeper:<version>@sha256:<digest>
   sleep:
     enabled: true
-    idleMinutes: 30
+    idleMinutes: 720   # the default: 12 hours
 ```
 
 Keep `idleMinutes` comfortably longer than the most frequent schedule. A

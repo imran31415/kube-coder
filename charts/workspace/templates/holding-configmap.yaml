@@ -188,7 +188,7 @@ data:
           disagree. One line on purpose: sleep off renders step 4b's byte for
           byte. Present tense, because an operator can also sleep it by hand. */}}
           function waking(reason) {
-            say('Waking up your workspace…', WHY[reason] || {{ if .Values.keeper.sleep.enabled }}{{ $m := int64 .Values.keeper.sleep.idleMinutes }}'It goes to sleep after {{ $m }} minute{{ if ne $m 1 }}s{{ end }} with nobody using it.'{{ else }}'It was asleep while nobody was using it.'{{ end }},
+            say('Waking up your workspace…', WHY[reason] || {{ if .Values.keeper.sleep.enabled }}{{ $m := int64 .Values.keeper.sleep.idleMinutes }}{{ $h := div $m 60 }}'It goes to sleep after {{ if and (ge $m 60) (eq (mod $m 60) 0) }}{{ $h }} hour{{ if ne $h 1 }}s{{ end }}{{ else }}{{ $m }} minute{{ if ne $m 1 }}s{{ end }}{{ end }} with nobody using it.'{{ else }}'It was asleep while nobody was using it.'{{ end }},
               'This usually takes about a minute — the page refreshes automatically when it\'s ready.', true);
           }
           function show(s) {

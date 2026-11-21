@@ -214,7 +214,10 @@ keeper:
     # that sleeps between every run of a 5-minute cron needs a wake for each
     # run, and maxWakesPerHour above caps those: past the cap the runs queue
     # and fire late rather than on time.
-    idleMinutes: 30
+    #
+    # 720 = 12 hours: a workspace left alone overnight sleeps, but one that is
+    # merely between sessions during the day stays warm.
+    idleMinutes: 720
 
 # OAuth2 (GitHub) settings — only used when ingress.auth.type=oauth2.
 # Real credentials should come from a gitignored overlay (e.g.

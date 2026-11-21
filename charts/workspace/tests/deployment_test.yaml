@@ -733,7 +733,7 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: KC_KEEPER_IDLE_MINUTES
-            value: "30"
+            value: "720"
 
   - it: leaves replicas to the keeper when sleep is on
     template: templates/deployment.yaml

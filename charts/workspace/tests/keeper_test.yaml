@@ -809,6 +809,36 @@ tests:
           path: data["holding.html"]
           pattern: "It goes to sleep after 1 minute with nobody using it"
 
+  - it: says whole hours as hours
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 720
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after 12 hours with nobody using it"
+
+  - it: says one hour, not one hours
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 60
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after 1 hour with nobody using it"
+
+  - it: keeps minutes when it is not a whole number of hours
+    set:
+      keeper.sleep.enabled: true
+      keeper.sleep.idleMinutes: 90
+    template: templates/holding-configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["holding.html"]
+          pattern: "It goes to sleep after 90 minutes with nobody using it"
+
   - it: keeps step 4b's sentence when sleep is off
     template: templates/holding-configmap.yaml
     asserts:

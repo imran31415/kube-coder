@@ -616,7 +616,7 @@ func TestAControllerStopOnASleepingWorkspaceSticks(t *testing.T) {
 
 func TestIdleMinutesFromEnv(t *testing.T) {
 	_ = captureLog(t)
-	for in, want := range map[string]int{"": 30, "5": 5, "0": 30, "-3": 30, "soon": 30, "90": 90} {
+	for in, want := range map[string]int{"": 720, "5": 5, "0": 720, "-3": 720, "soon": 720, "90": 90} {
 		t.Setenv("KEEPER_IDLE_MINUTES", in)
 		if got := idleMinutesFromEnv(); got != want {
 			t.Errorf("KEEPER_IDLE_MINUTES=%q -> %d, want %d", in, got, want)
