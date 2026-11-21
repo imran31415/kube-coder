@@ -12,3 +12,6 @@ controllerNamespace: coder
 tls:
   sharedCertificate: false
   secretName: ""
+  # Per-host cert via cert-manager (ignored with sharedCertificate), e.g.
+  # letsencrypt-production. Empty = bring your own secretName.
+  clusterIssuer: ""

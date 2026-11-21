@@ -192,7 +192,7 @@ CONTROLLER_VALUES := $(firstword $(wildcard users-private/_controller/values.yam
 CONTROLLER_SECRETS_DIR := $(firstword $(wildcard users-private/_controller/secrets $(USERS_DIR)/users-private/_controller/secrets))
 USERS_REPO ?= $(KC_USERS_REPO)
 ifeq ($(USERS_REPO),)
-USERS_REPO := $(shell awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $$2; exit}' $(CONTROLLER_VALUES) 2>/dev/null)
+USERS_REPO := $(shell awk '/^[[:space:]]*gitops:/{f=1} f&&/repo:/{print $$2; exit}' $(CONTROLLER_VALUES) </dev/null 2>/dev/null)
 endif
 
 users-sync: ## Clone/pull the GitOps workspace-config repo into .users/ (set KC_USERS_REPO or _controller provision.gitops.repo)
@@ -791,6 +791,32 @@ ship-controller-config: controller-web deploy-controller ## Build SPA + deploy +
 	@echo "Forcing rollout in case the configmap checksum didn't change..."
 	kubectl rollout restart deployment/workspace-controller -n $(NAMESPACE)
 	kubectl rollout status deployment/workspace-controller -n $(NAMESPACE) --timeout=180s
+
+# ---- Dex (opt-in public signup / workspace owner isolation, docs/DEX_SIGNUP.md) ----
+# Values live in the GitOps checkout at users-private/_dex/values.yaml (schema:
+# charts/dex/values.yaml). Credential Secrets (GitHub OAuth App, signup client)
+# are created out of band in DEX_NAMESPACE and referenced by name.
+DEX_NAMESPACE ?= dex
+DEX_VALUES := $(firstword $(wildcard users-private/_dex/values.yaml $(USERS_DIR)/users-private/_dex/values.yaml))
+
+.PHONY: dex-mtls deploy-dex
+dex-mtls: ## Issue Dex gRPC mTLS certs via cert-manager (server in dex, client in controller ns)
+	kubectl get namespace $(DEX_NAMESPACE) >/dev/null 2>&1 || kubectl create namespace $(DEX_NAMESPACE)
+	kubectl apply -f deployments/dex-grpc-mtls.yaml
+	kubectl -n $(DEX_NAMESPACE) wait certificate/dex-grpc --for=condition=Ready --timeout=120s
+	kubectl -n $(NAMESPACE) wait certificate/dex-controller-client --for=condition=Ready --timeout=120s
+
+deploy-dex: ## Helm upgrade the Dex release from users-private/_dex/values.yaml
+	@if [ -z "$(DEX_VALUES)" ]; then \
+	  echo "ERROR: no users-private/_dex/values.yaml (run 'make users-sync'). Schema: charts/dex/values.yaml"; exit 1; fi
+	@echo "Deploying Dex from $(DEX_VALUES)..."
+	helm upgrade dex ./charts/dex \
+		-f $(DEX_VALUES) \
+		--namespace $(DEX_NAMESPACE) \
+		--create-namespace \
+		--install \
+		--wait \
+		--timeout 5m
 
 # Local dev: run controller.py against your kubeconfig. Listing is read-only
 # and safe against the real cluster. Auth via a dev bearer token — in the
