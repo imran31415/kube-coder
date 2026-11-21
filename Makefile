@@ -695,6 +695,10 @@ ship: require-user validate-user ## Roll a user onto release image devlaptop-$(V
 	kubectl rollout status deployment/ws-$(USER) -n $(call ws_namespace,$(USER)) --timeout=180s
 	@echo "NOTE: image.tag in $(call values_file,$(USER)) is UNCOMMITTED — commit + push it to the gitops repo to persist the pin."
 
+.PHONY: roll-fleet
+roll-fleet: ## Ship every RUNNING workspace (or USERS="a b") onto devlaptop-$(VERSION), PARALLEL=3 at a time; verifies each
+	@PARALLEL=$${PARALLEL:-3} VERSION=$(VERSION) MAKE="$(MAKE)" scripts/roll-workspaces.sh $(USERS)
+
 # Stop / start a workspace pod without touching the helm release. PVC + secrets +
 # ingress + cookieSecret all stay; just the pod is gone. Reversible.
 stop: require-user ## Scale a user's pod to 0 — turns off the workspace, preserves data (USER=<name>)
