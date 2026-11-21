@@ -17,6 +17,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   useWindowDimensions,
@@ -85,6 +86,7 @@ import { relativeTime } from '../util/format';
 import { sheetMaxHeight } from '../util/sheetSizing';
 import { useKeyboardHeight, useKeyboardVisible } from '../util/useKeyboard';
 import { SearchPicker } from '../components/SearchPicker';
+import { chatSettingsLabel, chatSettingsRows, chatSettingsShowsDot } from '../util/chatSettings';
 import { ProjectBriefSheet } from '../components/ProjectBriefSheet';
 import { MODE_OPTIONS, personaLabel } from '../util/threadMode';
 import { assistantMarker, missingKeyMessage } from '../util/assistantReady';
@@ -163,6 +165,11 @@ export default function HypervisorScreen() {
   // page at a time. Grows by TURN_WINDOW_STEP; reset when the thread changes.
   const [visibleTurns, setVisibleTurns] = useState(TURN_WINDOW);
   const [chatsOpen, setChatsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Past chats opened from the settings sheet. iOS cannot present one Modal
+  // while another is still dismissing (the second silently never shows), so
+  // there the chats sheet waits for the settings sheet's onDismiss.
+  const chatsAfterSettings = useRef(false);
   // Assistant chosen for the NEXT new chat (existing threads keep their own).
   const [selectedAssistant, setSelectedAssistant] = useState<string | undefined>(undefined);
   // Model chosen for the NEXT new chat (#308/#361, parity with web selectedModel).
@@ -227,6 +234,17 @@ export default function HypervisorScreen() {
     // Leaving the screen kills any queued speech.
     return () => stopSpeaking();
   }, []);
+
+  function openChatsFromSettings() {
+    setSettingsOpen(false);
+    if (Platform.OS === 'ios') chatsAfterSettings.current = true;
+    else setChatsOpen(true);
+  }
+  function onSettingsDismissed() {
+    if (!chatsAfterSettings.current) return;
+    chatsAfterSettings.current = false;
+    setChatsOpen(true);
+  }
 
   function toggleSpeak() {
     setSpeakOn((v) => {
@@ -726,6 +744,17 @@ export default function HypervisorScreen() {
   const briefProjectId = activeThread?.project_id || null;
   const selectedProjectName =
     projects.find((p) => p.id === selectedProject)?.name ?? null;
+  const rows = chatSettingsRows({
+    hasActiveId: !!activeId,
+    hasThread: !!activeThread,
+    assistantCount: config?.assistants?.length ?? 0,
+    projectCount: projects.length,
+    threadProjectId: activeThread?.project_id,
+    modelCount: models.length,
+    ctoComposing,
+    threadCount: threads.length,
+  });
+  const settingsHint = { model: rows.model ? currentModel : undefined, speakOn };
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -750,38 +779,18 @@ export default function HypervisorScreen() {
                 <Ionicons name="reader-outline" size={16} color={colors.text} />
               </Pressable>
             )}
-            {/* Speak replies (issue #396) — on-device TTS via expo-speech;
-                the preference persists per device, same key as the web. */}
+            {/* One options button instead of the inline pickers, speak toggle
+                and past-chats button — they all live in ChatSettingsSheet. */}
             <Pressable
-              onPress={toggleSpeak}
+              onPress={() => setSettingsOpen(true)}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Speak replies aloud"
-              accessibilityState={{ selected: speakOn }}
-              style={({ pressed }) => [
-                styles.voiceToggle,
-                speakOn && styles.voiceToggleOn,
-                pressed && { opacity: 0.6 },
-              ]}
+              accessibilityLabel={chatSettingsLabel(settingsHint)}
+              style={({ pressed }) => [styles.settingsBtn, pressed && { opacity: 0.6 }]}
             >
-              <Ionicons
-                name={speakOn ? 'volume-high' : 'volume-mute-outline'}
-                size={16}
-                color={speakOn ? colors.accent : colors.textMuted}
-              />
+              <Ionicons name="options-outline" size={18} color={colors.text} />
+              {chatSettingsShowsDot(settingsHint) && <View style={styles.settingsDot} />}
             </Pressable>
-            {threads.length > 0 && (
-              <Pressable
-                onPress={() => setChatsOpen(true)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`Past chats, ${threads.length}`}
-                style={({ pressed }) => [styles.chatsBtn, pressed && { opacity: 0.6 }]}
-              >
-                <Ionicons name="chatbubbles-outline" size={16} color={colors.text} />
-                <Text style={styles.chatsBtnText}>{threads.length}</Text>
-              </Pressable>
-            )}
             <Pressable onPress={newChat} hitSlop={8} style={({ pressed }) => [styles.newBtn, pressed && { opacity: 0.9 }]}>
               <Ionicons name="add" size={18} color={colors.accentText} />
               <Text style={styles.newBtnText}>New</Text>
@@ -804,6 +813,196 @@ export default function HypervisorScreen() {
         onToggleTrash={toggleTrash}
         onRestore={(t) => void reviveThread(t.id)}
       />
+
+      {/* Chat settings (the header's options button) — the Agent / Mode /
+          Project / Model / Folder pickers that used to stack above the
+          composer, plus the speak toggle and past chats that sat in the
+          header. Same controls, same state and handlers; visibility rules
+          live in util/chatSettings so the move is testable. */}
+      <ChatSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onDismiss={onSettingsDismissed}
+        speakOn={speakOn}
+        onToggleSpeak={toggleSpeak}
+        threadCount={rows.chats ? threads.length : 0}
+        onOpenChats={openChatsFromSettings}
+        agentNotice={agentMissingKey}
+      >
+        {/* New-chat assistant picker — parity with the web Hypervisor agent
+            select. Only shown when starting a NEW chat (no active thread) and
+            more than one assistant is available; existing threads keep the
+            assistant they were created with. */}
+        {rows.agent && config && (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Agent"
+              icon="hardware-chip-outline"
+              value={selectedAssistant || config?.defaultAssistant || ''}
+              onChange={chooseAssistant}
+              options={config.assistants.map((a) => ({
+                value: a.id,
+                label: `${a.label || a.id}${assistantMarker(a)}`,
+              }))}
+            />
+          </View>
+        )}
+
+        {/* Mode picker (#683) — which preamble a NEW chat is created with, the
+            phone's half of the web sidebar's Mode control. It maps 1:1 onto the
+            server's `persona` field, so there is no new server concept and
+            existing CTO threads need no migration. Creation-time only: an open
+            thread shows its mode in the header subtitle instead, because the
+            preamble was delivered once, on turn 1.
+
+            Unlike the web, this isn't gated on a capability flag — the mobile
+            app doesn't read `ctoEnabled` today, exactly as the AI CTO drawer
+            entry it replaces wasn't gated either. */}
+        {rows.mode && (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Mode"
+              icon="compass-outline"
+              value={selectedMode}
+              onChange={setSelectedMode}
+              options={MODE_OPTIONS}
+            />
+          </View>
+        )}
+
+        {/* Project picker (#358/#683) — what a NEW chat is filed into, which
+            also decides which brief its header can open. Hidden entirely in a
+            workspace with no projects. An open chat shows its own binding,
+            read-only: re-filing mid-thread is a web-side affordance and the
+            phone's job here is to make the binding legible. */}
+        {rows.project && (
+          <View style={styles.pickerRow}>
+            {activeThread ? (
+              <SearchPicker
+                label="Project"
+                icon="albums-outline"
+                value={activeThread.project_id || ''}
+                placeholder="No project"
+                disabled
+                onChange={() => undefined}
+                options={projects.map((p) => ({ value: p.id, label: p.name || p.id }))}
+              />
+            ) : (
+              <SearchPicker
+                label="Project"
+                icon="albums-outline"
+                value={selectedProject}
+                emptyLabel="No project"
+                onChange={setSelectedProject}
+                options={projects.map((p) => {
+                  const running = p.pulse?.running ?? 0;
+                  const waiting = p.pulse?.waiting ?? 0;
+                  // The AI CTO rail carried these as coloured dots; keep the
+                  // signal as words rather than dropping it with the rail.
+                  const hint = [
+                    running ? `${running} running` : '',
+                    waiting ? `${waiting} waiting` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
+                  return { value: p.id, label: p.name || p.id, hint: hint || undefined };
+                })}
+              />
+            )}
+          </View>
+        )}
+
+        {/* Model picker (#308/#361) — parity with the web hv-model-select. Shown
+            whenever the effective assistant offers a model choice, for BOTH a
+            new chat (sets the new-thread default) and an open thread (live-
+            switches it; the change lands on the next turn). Disabled while a
+            turn is running, matching the web `disabled={status === 'running'}`. */}
+        {rows.model && (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Model"
+              icon="cube-outline"
+              value={currentModel}
+              disabled={blocked}
+              onChange={(m) => void chooseModel(m)}
+              options={models.map((m) => ({ value: m, label: m }))}
+            />
+          </View>
+        )}
+
+        {/* New-chat folder picker (#370) — parity with the web sidebar Folder
+            select (#345/#368). Only shown when starting a NEW chat; an open
+            thread keeps the folder it was created in. The server default
+            (config.workdir) is offered as the first chip since /api/workspace/
+            dirs only lists folders UNDER it; when the list is empty entirely,
+            fall back to free text like the web picker and NewTaskScreen. */}
+        {/* An open chat shows the folder it actually runs in, read-only (#636,
+            parity with web #637). Hiding the row entirely — what this did
+            before — meant a phone user switching between chats across several
+            repos had no way to tell which repo the open chat targets, which
+            is the whole worry behind the request. The value is fixed at
+            creation, so the control is disabled rather than editable. */}
+        {rows.folder === 'thread' && activeThread ? (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              // An older thread with no recorded workdir gets the honest
+              // placeholder rather than the server default dressed up as
+              // this chat's folder — that guess is the bug web #637 fixed.
+              value={activeThread.workdir || ''}
+              placeholder="Its creation folder"
+              disabled
+              onChange={() => undefined}
+              options={
+                activeThread.workdir
+                  ? [{ value: activeThread.workdir, label: activeThread.workdir }]
+                  : []
+              }
+            />
+          </View>
+        ) : rows.folder === 'cto' ? (
+          // A CTO chat starts in its bound project's folder — the server
+          // resolves it from the project record, so this picker has nothing to
+          // say. Showing a folder we deliberately don't send would lie.
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              value=""
+              placeholder="Its project's folder"
+              disabled
+              onChange={() => undefined}
+              options={[]}
+            />
+          </View>
+        ) : (
+          <View style={styles.pickerRow}>
+            <SearchPicker
+              label="Folder"
+              icon="folder-outline"
+              value={selectedWorkdir}
+              onChange={setSelectedWorkdir}
+              // /api/workspace/dirs only lists folders UNDER the server root,
+              // so a custom workdir has to remain typeable — the old rail fell
+              // back to a free-text field for the same reason.
+              allowCustom
+              placeholder={config?.workdir || 'Workspace root'}
+              options={[
+                ...(config?.workdir && !dirs.some((d) => d.path === config.workdir)
+                  ? [{ value: config.workdir, label: config.workdir }]
+                  : []),
+                ...dirs.map((d) => ({
+                  value: d.path,
+                  label: d.label ?? d.path,
+                  hint: d.is_git_repo ? 'git' : undefined,
+                })),
+              ]}
+            />
+          </View>
+        )}
+
+      </ChatSettingsSheet>
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -980,25 +1179,6 @@ export default function HypervisorScreen() {
           </ScrollView>
         )}
 
-        {/* New-chat assistant picker — parity with the web Hypervisor agent
-            select. Only shown when starting a NEW chat (no active thread) and
-            more than one assistant is available; existing threads keep the
-            assistant they were created with. */}
-        {!activeId && (config?.assistants?.length ?? 0) > 1 && (
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Agent"
-              icon="hardware-chip-outline"
-              value={selectedAssistant || config?.defaultAssistant || ''}
-              onChange={chooseAssistant}
-              options={config!.assistants.map((a) => ({
-                value: a.id,
-                label: `${a.label || a.id}${assistantMarker(a)}`,
-              }))}
-            />
-          </View>
-        )}
-
         {/* Installed but unauthenticated (#702) — the agent is offered so it can
             be found, and says what it wants instead of opening a chat whose
             every turn fails with "Authentication Fails". Send stays disabled
@@ -1008,160 +1188,6 @@ export default function HypervisorScreen() {
             {agentMissingKey}
           </Text>
         ) : null}
-
-        {/* Mode picker (#683) — which preamble a NEW chat is created with, the
-            phone's half of the web sidebar's Mode control. It maps 1:1 onto the
-            server's `persona` field, so there is no new server concept and
-            existing CTO threads need no migration. Creation-time only: an open
-            thread shows its mode in the header subtitle instead, because the
-            preamble was delivered once, on turn 1.
-
-            Unlike the web, this isn't gated on a capability flag — the mobile
-            app doesn't read `ctoEnabled` today, exactly as the AI CTO drawer
-            entry it replaces wasn't gated either. */}
-        {!activeThread && (
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Mode"
-              icon="compass-outline"
-              value={selectedMode}
-              onChange={setSelectedMode}
-              options={MODE_OPTIONS}
-            />
-          </View>
-        )}
-
-        {/* Project picker (#358/#683) — what a NEW chat is filed into, which
-            also decides which brief its header can open. Hidden entirely in a
-            workspace with no projects. An open chat shows its own binding,
-            read-only: re-filing mid-thread is a web-side affordance and the
-            phone's job here is to make the binding legible. */}
-        {(projects.length > 0 || !!activeThread?.project_id) && (
-          <View style={styles.pickerRow}>
-            {activeThread ? (
-              <SearchPicker
-                label="Project"
-                icon="albums-outline"
-                value={activeThread.project_id || ''}
-                placeholder="No project"
-                disabled
-                onChange={() => undefined}
-                options={projects.map((p) => ({ value: p.id, label: p.name || p.id }))}
-              />
-            ) : (
-              <SearchPicker
-                label="Project"
-                icon="albums-outline"
-                value={selectedProject}
-                emptyLabel="No project"
-                onChange={setSelectedProject}
-                options={projects.map((p) => {
-                  const running = p.pulse?.running ?? 0;
-                  const waiting = p.pulse?.waiting ?? 0;
-                  // The AI CTO rail carried these as coloured dots; keep the
-                  // signal as words rather than dropping it with the rail.
-                  const hint = [
-                    running ? `${running} running` : '',
-                    waiting ? `${waiting} waiting` : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' · ');
-                  return { value: p.id, label: p.name || p.id, hint: hint || undefined };
-                })}
-              />
-            )}
-          </View>
-        )}
-
-        {/* Model picker (#308/#361) — parity with the web hv-model-select. Shown
-            whenever the effective assistant offers a model choice, for BOTH a
-            new chat (sets the new-thread default) and an open thread (live-
-            switches it; the change lands on the next turn). Disabled while a
-            turn is running, matching the web `disabled={status === 'running'}`. */}
-        {models.length > 0 && (
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Model"
-              icon="cube-outline"
-              value={currentModel}
-              disabled={blocked}
-              onChange={(m) => void chooseModel(m)}
-              options={models.map((m) => ({ value: m, label: m }))}
-            />
-          </View>
-        )}
-
-        {/* New-chat folder picker (#370) — parity with the web sidebar Folder
-            select (#345/#368). Only shown when starting a NEW chat; an open
-            thread keeps the folder it was created in. The server default
-            (config.workdir) is offered as the first chip since /api/workspace/
-            dirs only lists folders UNDER it; when the list is empty entirely,
-            fall back to free text like the web picker and NewTaskScreen. */}
-        {/* An open chat shows the folder it actually runs in, read-only (#636,
-            parity with web #637). Hiding the row entirely — what this did
-            before — meant a phone user switching between chats across several
-            repos had no way to tell which repo the open chat targets, which
-            is the whole worry behind the request. The value is fixed at
-            creation, so the control is disabled rather than editable. */}
-        {activeThread ? (
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Folder"
-              icon="folder-outline"
-              // An older thread with no recorded workdir gets the honest
-              // placeholder rather than the server default dressed up as
-              // this chat's folder — that guess is the bug web #637 fixed.
-              value={activeThread.workdir || ''}
-              placeholder="Its creation folder"
-              disabled
-              onChange={() => undefined}
-              options={
-                activeThread.workdir
-                  ? [{ value: activeThread.workdir, label: activeThread.workdir }]
-                  : []
-              }
-            />
-          </View>
-        ) : ctoComposing ? (
-          // A CTO chat starts in its bound project's folder — the server
-          // resolves it from the project record, so this picker has nothing to
-          // say. Showing a folder we deliberately don't send would lie.
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Folder"
-              icon="folder-outline"
-              value=""
-              placeholder="Its project's folder"
-              disabled
-              onChange={() => undefined}
-              options={[]}
-            />
-          </View>
-        ) : (
-          <View style={styles.pickerRow}>
-            <SearchPicker
-              label="Folder"
-              icon="folder-outline"
-              value={selectedWorkdir}
-              onChange={setSelectedWorkdir}
-              // /api/workspace/dirs only lists folders UNDER the server root,
-              // so a custom workdir has to remain typeable — the old rail fell
-              // back to a free-text field for the same reason.
-              allowCustom
-              placeholder={config?.workdir || 'Workspace root'}
-              options={[
-                ...(config?.workdir && !dirs.some((d) => d.path === config.workdir)
-                  ? [{ value: config.workdir, label: config.workdir }]
-                  : []),
-                ...dirs.map((d) => ({
-                  value: d.path,
-                  label: d.label ?? d.path,
-                  hint: d.is_git_repo ? 'git' : undefined,
-                })),
-              ]}
-            />
-          </View>
-        )}
 
         <View
           style={[
@@ -1251,6 +1277,113 @@ export default function HypervisorScreen() {
         nav={navigation as unknown as { navigate: (tab: string, opts?: object) => void }}
       />
     </SafeAreaView>
+  );
+}
+
+/**
+ * Chat settings sheet — everything that used to crowd the chat: the pickers
+ * that stacked above the composer (passed in as children, unchanged), the
+ * speak-replies toggle and the way into past chats. Same bottom-sheet shape as
+ * ChatsSheet below. The pickers open their own sheets from inside this one,
+ * which nests cleanly on iOS, Android and web.
+ */
+function ChatSettingsSheet({
+  visible,
+  onClose,
+  onDismiss,
+  speakOn,
+  onToggleSpeak,
+  threadCount,
+  onOpenChats,
+  agentNotice,
+  children,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  /** iOS-only Modal callback — fires once the sheet has fully gone. */
+  onDismiss: () => void;
+  speakOn: boolean;
+  onToggleSpeak: () => void;
+  /** 0 hides the past-chats row, as the header button was hidden. */
+  threadCount: number;
+  onOpenChats: () => void;
+  /** The missing-provider-key notice (#702), repeated beside the Agent picker
+   *  so switching agents here shows its consequence before the sheet closes. */
+  agentNotice: string | null;
+  children: ReactNode;
+}) {
+  const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose} onDismiss={onDismiss}>
+      <Pressable style={styles.sheetScrim} onPress={onClose} accessibilityLabel="Close chat settings" />
+      <View
+        style={[
+          styles.sheet,
+          { maxHeight: sheetMaxHeight(screenHeight), paddingBottom: Math.max(insets.bottom, space.md) },
+        ]}
+      >
+        <View style={styles.sheetGrip} />
+        <View style={styles.sheetHead}>
+          <Text style={styles.sheetTitle}>Chat settings</Text>
+          <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
+            <Ionicons name="close" size={18} color={colors.textMuted} />
+          </Pressable>
+        </View>
+        <ScrollView style={styles.sheetList} contentContainerStyle={styles.settingsBody}>
+          {children}
+          {agentNotice ? (
+            <Text style={styles.agentNeedsKey} accessibilityRole="alert">
+              {agentNotice}
+            </Text>
+          ) : null}
+
+          <View style={styles.settingsDivider} />
+
+          {/* Speak replies (issue #396) — on-device TTS via expo-speech; the
+              preference persists per device, same key as the web. */}
+          <Pressable
+            onPress={onToggleSpeak}
+            accessibilityRole="switch"
+            accessibilityLabel="Speak replies aloud"
+            accessibilityState={{ checked: speakOn }}
+            style={({ pressed }) => [styles.settingsRow, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons
+              name={speakOn ? 'volume-high' : 'volume-mute-outline'}
+              size={18}
+              color={speakOn ? colors.accent : colors.textMuted}
+            />
+            <Text style={styles.settingsRowText}>Speak replies</Text>
+            {/* The row is the control; the switch is only its picture.
+                pointerEvents="none" sends every tap to the row, so a tap on
+                the switch itself can't toggle twice (row + switch), and the
+                a11y props stop the toggle being announced twice. */}
+            <View pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
+              <Switch
+                value={speakOn}
+                trackColor={{ false: colors.border, true: colors.accent }}
+                thumbColor={colors.text}
+              />
+            </View>
+          </Pressable>
+
+          {threadCount > 0 && (
+            <Pressable
+              onPress={onOpenChats}
+              accessibilityRole="button"
+              accessibilityLabel={`Past chats, ${threadCount}`}
+              style={({ pressed }) => [styles.settingsRow, pressed && { opacity: 0.7 }]}
+            >
+              <Ionicons name="chatbubbles-outline" size={18} color={colors.textMuted} />
+              <Text style={styles.settingsRowText}>Past chats</Text>
+              <Text style={styles.settingsRowMeta}>{threadCount}</Text>
+              <Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
+            </Pressable>
+          )}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
@@ -1858,6 +1991,44 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   chatsBtnText: { color: colors.text, fontWeight: '600', fontSize: font.size.sm },
+  // The header's chat-settings button — same footprint as the brief button.
+  settingsBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  // Lit while replies are read aloud — the one setting worth a glance.
+  settingsDot: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.accent,
+  },
+  // Chat settings sheet
+  settingsBody: { paddingBottom: space.sm },
+  settingsDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginHorizontal: space.md,
+    marginVertical: space.sm,
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    minHeight: 44,
+    paddingHorizontal: space.lg,
+  },
+  settingsRowText: { flex: 1, color: colors.text, fontSize: font.size.md },
+  settingsRowMeta: { color: colors.textMuted, fontSize: font.size.sm, fontWeight: '600' },
   dot: { width: 7, height: 7, borderRadius: 4 },
   // Past-chats sheet
   sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
@@ -2148,20 +2319,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface2,
   },
-  // Voice interface (issue #396): a hot mic is unmissable, the speak toggle
-  // lights accent when replies are being read aloud.
+  // Voice interface (issue #396): a hot mic is unmissable.
   micBtnOn: { borderColor: colors.danger, backgroundColor: colors.danger + '22' },
-  voiceToggle: {
-    width: 34,
-    height: 34,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
-  },
-  voiceToggleOn: { borderColor: colors.accent, backgroundColor: colors.accent + '22' },
   attachStrip: {
     maxHeight: 72,
     borderTopWidth: 1,
