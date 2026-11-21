@@ -55,6 +55,31 @@ tests:
             resources: ["resourcequotas", "limitranges"]
             verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  - it: can manage the CRD-backed objects the workspace chart renders (Cilium, PodMonitor)
+    set:
+      provision.enabled: true
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["cilium.io"]
+            resources: ["ciliumnetworkpolicies"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["monitoring.coreos.com"]
+            resources: ["podmonitors"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      # Detection uses API discovery (validate-user.sh), so no CRD read grant.
+      - notContains:
+          path: rules
+          content:
+            apiGroups: ["apiextensions.k8s.io"]
+            resources: ["customresourcedefinitions"]
+            verbs: ["get"]
+
   - it: can create the regcred image-pull Secret + RBAC in the new namespace
     set:
       provision.enabled: true
