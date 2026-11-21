@@ -1,12 +1,17 @@
 :root {
   color-scheme: dark;
-  --bg: #0e0e10;
-  --panel: #18181b;
-  --panel-2: #1f1f23;
-  --border: #2a2a30;
-  --text: #ededf0;
-  --muted: #9a9aa3;
-  --accent: #6ea8fe;
+  /* Slate/emerald — same palette as the workspace dashboard
+     (charts/workspace/web/src/styles/tokens.css). */
+  --bg: #12171f;
+  --panel: #1a202b;
+  --panel-2: #222935;
+  --border: #323b4a;
+  --border-2: #454f61;
+  --text: #e8ebf1;
+  --muted: #b4bccb;
+  --faint: #97a0b1;
+  --accent: #10b981;
+  --accent-soft: rgba(16, 185, 129, 0.12);
 }
 
 * {
@@ -88,7 +93,7 @@ body {
 }
 
 .insight:hover {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 
 /* Landing-page cluster-health card — one cheap call, links to the full
@@ -111,7 +116,7 @@ body {
   cursor: pointer;
 }
 .health:hover {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 .health-main {
   display: flex;
@@ -196,7 +201,7 @@ body {
 }
 .search:focus {
   outline: none;
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 .filter-group {
   display: flex;
@@ -301,7 +306,7 @@ body {
 }
 
 .row-wrap.open {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 
 .row {
@@ -431,7 +436,7 @@ body {
 }
 
 .btn:hover:not(:disabled) {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 
 .btn:disabled {
@@ -537,7 +542,7 @@ body {
 }
 
 .panel-meta .muted {
-  color: #6e6e78;
+  color: var(--faint);
 }
 
 .panel-link {
@@ -581,7 +586,7 @@ body {
 }
 
 .range-btn:hover {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 
 .range-btn.active {
@@ -660,7 +665,7 @@ body {
   justify-content: space-between;
   margin-top: 0.3rem;
   font-size: 0.7rem;
-  color: #6e6e78;
+  color: var(--faint);
   font-family: 'Geist Mono', ui-monospace, monospace;
 }
 
@@ -685,7 +690,7 @@ body {
 }
 
 .detail-foot .muted {
-  color: #6e6e78;
+  color: var(--faint);
 }
 
 .foot-k {
@@ -748,13 +753,13 @@ body {
 }
 
 .chip:hover {
-  border-color: #3a3a42;
+  border-color: var(--border-2);
 }
 
 .chip.on {
   color: var(--text);
   border-color: var(--accent);
-  background: rgba(110, 168, 254, 0.12);
+  background: var(--accent-soft);
 }
 
 .cap-summary {
@@ -822,7 +827,7 @@ body {
 }
 
 .capbar.unknown .capbar-track {
-  background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, #232329 6px, #232329 12px);
+  background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, #2a3240 6px, #2a3240 12px);
 }
 
 .capbar-legend {
@@ -893,7 +898,7 @@ body {
   grid-template-columns: 180px 1fr;
   gap: 1rem;
   padding: 0.5rem 0;
-  border-top: 1px solid #202026;
+  border-top: 1px solid var(--border);
 }
 
 .cap-node:first-of-type {
@@ -1362,7 +1367,7 @@ body {
   flex-direction: column;
   gap: 0.15rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid #202026;
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -1394,7 +1399,7 @@ body {
   gap: 1rem;
   align-items: center;
   padding: 0.45rem 0;
-  border-top: 1px solid #202026;
+  border-top: 1px solid var(--border);
   font-size: 0.82rem;
 }
 

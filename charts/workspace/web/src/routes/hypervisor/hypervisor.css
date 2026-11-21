@@ -1912,77 +1912,10 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   "Hypervisor" skin — obsidian/slate palette, emerald accent, 4–8px radii,
-   glowing status dots, browser-chrome app previews, docked composer card.
-
-   PREVIEW SCOPE: the palette is applied via :root:has(.route-hypervisor), so
-   the whole shell (topbar, rail, metrics) adopts it ONLY while /hypervisor is
-   mounted and every other route is untouched. Once the look is signed off,
-   promote these token values into styles/tokens.css and drop the :has()
-   scoping.
+   Hypervisor component styling on top of the app-wide slate/emerald tokens
+   (styles/tokens.css): card sidebar, glowing status dots, browser-chrome app
+   previews, docked composer card.
    ═══════════════════════════════════════════════════════════════════════ */
-:root:has(.route-hypervisor),
-:root[data-theme="dark"]:has(.route-hypervisor) {
-  /* Slate, not black: the first cut (#0a0e16 / #11151d) read as black on
-     black — adjacent surfaces were only ~1.06:1 apart. Each step is lifted
-     and spread (≈1.10–1.17:1 between steps, hairlines ≈1.45:1 on panels)
-     while subtle text stays ≥4.5:1 on the highest surface (WCAG AA). */
-  --bg:          #12171f;
-  --surface:     #1a202b;
-  --surface-2:   #222935;
-  --surface-3:   #2c3442;
-  --border:      #323b4a;
-  --border-2:    #454f61;
-  --text:        #e8ebf1;
-  --text-muted:  #b4bccb;
-  --text-subtle: #97a0b1;
-
-  --accent:        #10b981;
-  --accent-strong: #34d399;
-  --accent-soft:   rgba(16, 185, 129, 0.12);
-  --on-accent:     #03140d;
-
-  --success: #10b981;
-  --warn:    #f59e0b;
-  --danger:  #f87171;
-  --info:    #60a5fa;
-
-  --radius-sm: 4px;
-  --radius:    6px;
-  --radius-lg: 8px;
-
-  --hv-shadow: 0 10px 30px rgba(0, 0, 0, 0.32);
-  --hv-glow-success: 0 0 0 3px rgba(16, 185, 129, 0.18), 0 0 8px rgba(16, 185, 129, 0.65);
-  --hv-glow-warn:    0 0 0 3px rgba(245, 158, 11, 0.18), 0 0 8px rgba(245, 158, 11, 0.6);
-  --hv-glow-danger:  0 0 0 3px rgba(248, 113, 113, 0.16), 0 0 8px rgba(248, 113, 113, 0.55);
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]):has(.route-hypervisor) {
-    --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e6e9ef;
-    --border: #e2e5eb; --border-2: #c3c8d2;
-    --text: #0f172a; --text-muted: #475063; --text-subtle: #5d6577;
-    --accent: #047857; --accent-strong: #065f46; --accent-soft: rgba(4, 120, 87, 0.08); --on-accent: #ffffff;
-    --success: #047857;
-    --radius-sm: 4px; --radius: 6px; --radius-lg: 8px;
-    --hv-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
-    --hv-glow-success: 0 0 0 3px rgba(4, 120, 87, 0.14);
-    --hv-glow-warn: 0 0 0 3px rgba(180, 83, 9, 0.14);
-    --hv-glow-danger: 0 0 0 3px rgba(185, 28, 28, 0.12);
-  }
-}
-:root[data-theme="light"]:has(.route-hypervisor) {
-  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e6e9ef;
-  --border: #e2e5eb; --border-2: #c3c8d2;
-  --text: #0f172a; --text-muted: #475063; --text-subtle: #5d6577;
-  --accent: #047857; --accent-strong: #065f46; --accent-soft: rgba(4, 120, 87, 0.08); --on-accent: #ffffff;
-  --success: #047857;
-  --radius-sm: 4px; --radius: 6px; --radius-lg: 8px;
-  --hv-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
-    --hv-glow-success: 0 0 0 3px rgba(4, 120, 87, 0.14);
-  --hv-glow-warn: 0 0 0 3px rgba(180, 83, 9, 0.14);
-  --hv-glow-danger: 0 0 0 3px rgba(185, 28, 28, 0.12);
-}
-:root:has(.route-hypervisor) body { background: var(--bg); }
 
 /* ── Sidebar: card panel, segmented tabs, mono meta ── */
 .hv-sidebar { background: var(--surface); }
@@ -2014,9 +1947,9 @@
 .hv-thread-agent { font-family: var(--font-mono); }
 
 /* ── Status dots: glowing ── */
-.hv-dot-running { background: var(--success); box-shadow: var(--hv-glow-success); animation: hv-pulse 2.4s ease-in-out infinite; }
-.hv-dot-waiting-for-input { box-shadow: var(--hv-glow-warn); }
-.hv-dot-error { box-shadow: var(--hv-glow-danger); }
+.hv-dot-running { background: var(--success); box-shadow: var(--glow-success); animation: hv-pulse 2.4s ease-in-out infinite; }
+.hv-dot-waiting-for-input { box-shadow: var(--glow-warn); }
+.hv-dot-error { box-shadow: var(--glow-danger); }
 @keyframes hv-pulse { 50% { box-shadow: 0 0 0 4px transparent, 0 0 3px color-mix(in srgb, var(--success) 50%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .hv-dot-running { animation: none; } }
 
@@ -2029,7 +1962,7 @@
 .hv-embed {
   border-radius: var(--radius-lg);
   border-color: var(--border-2);
-  box-shadow: var(--hv-shadow);
+  box-shadow: var(--shadow-card);
 }
 .hv-embed-head { gap: 10px; padding: 8px 10px; background: var(--surface-2); }
 .hv-embed-lights { display: inline-flex; gap: 6px; flex-shrink: 0; }
@@ -2063,7 +1996,7 @@
   border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
   border-radius: var(--radius-pill);
 }
-.hv-embed-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: var(--hv-glow-success); }
+.hv-embed-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); box-shadow: var(--glow-success); }
 .hv-embed-btn { background: transparent; }
 
 /* ── Composer: a docked card — input on top, tool row beneath ── */
@@ -2076,12 +2009,12 @@
   background: var(--surface-2);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-lg);
-  box-shadow: var(--hv-shadow);
+  box-shadow: var(--shadow-card);
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .hv-composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
-  box-shadow: 0 0 0 3px var(--accent-soft), var(--hv-shadow);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-card);
 }
 .hv-composer-input,
 .hv-composer-input:focus {

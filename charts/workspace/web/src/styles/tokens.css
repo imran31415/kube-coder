@@ -1,47 +1,42 @@
 /* Design tokens.
-   Palette tuned for readable contrast in both modes:
-   - dark uses a soft near-black (not pure #000) so surfaces sit visibly above bg
-   - light uses an off-white bg with pure-white cards so cards "pop"
-   Type sizes bumped from 13px → 14px base for readability.
-
-   Visual identity: "Editorial" — high-contrast neutral palette with white as
-   the accent in dark mode (black in light), 1px hairline rules, flat
-   surfaces with minimal tinting. Tuned to read like a clean newspaper /
-   long-form work surface rather than a themed app: no chromatic accent,
-   no scanlines, no soft-glow halos. Hierarchy is carried by typography +
-   negative space, not color. */
+   Visual identity: "Slate" — a dark slate palette (not pure black: adjacent
+   surfaces step ~1.10–1.17:1 so panels, cards and hairlines separate) with a
+   single emerald accent, 4–8px radii, and soft glows on live status. Light
+   mode mirrors it on an off-white base with a darker emerald for contrast.
+   Subtle text keeps ≥4.5:1 on the highest raised surface (WCAG 1.4.3, #392).
+   First shipped scoped to Chat (#904/#905), promoted app-wide here. */
 :root {
   /* Dark is the default — the @media + [data-theme] blocks below mirror this.
-     Neutral charcoal dark: soft near-black bg + soft off-white text. Like
-     a Kindle's reading view but tuned grey rather than warm/sepia, so it
-     reads as a clean tool rather than a paperback. No yellow/brown bias. */
-  --bg:          #18181a;
-  --surface:     #1f1f22;
-  --surface-2:   #26262a;
-  --surface-3:   #2f2f34;
-  --border:      #2c2c30;
-  --border-2:    #424248;
+     Mobile (mobile/src/theme.ts, also the desktop app's UI) and the admin
+     console (charts/workspace-controller/web/src/styles.css) carry the same
+     values; change them together. */
+  --bg:          #12171f;
+  --surface:     #1a202b;
+  --surface-2:   #222935;
+  --surface-3:   #2c3442;
+  --border:      #323b4a;
+  --border-2:    #454f61;
   /* Alias for --border-2, kept because ~6 hover rules across the SPA ask
      for "the stronger border" by name. It was referenced long before it
      was ever defined, so those hovers silently fell back to the flat
      --border and the hover never read as a state change (#501). */
   --border-strong: var(--border-2);
-  --text:        #ededee;
-  --text-muted:  #aeaeb2;
+  --text:        #e8ebf1;
+  --text-muted:  #b4bccb;
   /* Lightened from #82828a so subtle text keeps ≥4.5:1 contrast even on the
      highest raised surface (--surface-3) — WCAG 1.4.3 (#392). */
-  --text-subtle: #98989f;
+  --text-subtle: #97a0b1;
 
-  /* Accent: soft off-white (not pure #fff so it doesn't feel clinical on
-     the soft charcoal bg). Primary CTA fills inherit this; accent-soft is
-     a barely-perceptible neutral wash for active rail items, selections. */
-  --accent:        #ededee;
-  --accent-strong: #ffffff;
-  --accent-soft:   rgba(237, 237, 238, 0.08);
-  --on-accent:     #18181a;
+  /* Accent: emerald. Primary CTA fills inherit it (with near-black
+     --on-accent text); accent-soft is a faint emerald wash for active rail
+     items and selections. */
+  --accent:        #10b981;
+  --accent-strong: #34d399;
+  --accent-soft:   rgba(16, 185, 129, 0.12);
+  --on-accent:     #03140d;
 
-  --success: #34d399;
-  --warn:    #fbbf24;
+  --success: #10b981;
+  --warn:    #f59e0b;
   --danger:  #f87171;
   --info:    #60a5fa;
   /* Text-safe warn tone (used by tasks.css waiting/prompt strips). Resolves
@@ -52,9 +47,9 @@
      round at all so panels read as flat sheets rather than chips.
      --radius-xl is the one deliberately-round step, reserved for floating
      overlays (modals, dialogs) that need to read as lifted sheets. */
-  --radius-sm: 2px;
-  --radius:    3px;
-  --radius-lg: 5px;
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-lg: 8px;
   --radius-xl: 10px;
   --radius-pill: 999px;
 
@@ -134,25 +129,31 @@
      On non-notched devices the insets are 0, so these equal the raw heights. */
   --topbar-total:    calc(var(--topbar-h) + var(--safe-top));
   --bottomnav-total: calc(var(--bottomnav-h) + var(--safe-bottom));
+
+  /* Status glows + floating-card shadow (status dots, live tags, composer). */
+  --glow-success: 0 0 0 3px rgba(16, 185, 129, 0.18), 0 0 8px rgba(16, 185, 129, 0.65);
+  --glow-warn:    0 0 0 3px rgba(245, 158, 11, 0.18), 0 0 8px rgba(245, 158, 11, 0.6);
+  --glow-danger:  0 0 0 3px rgba(248, 113, 113, 0.16), 0 0 8px rgba(248, 113, 113, 0.55);
+  --shadow-card:  0 10px 30px rgba(0, 0, 0, 0.32);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg:          #fafafa;
+    --bg:          #f6f7f9;
     --surface:     #ffffff;
-    --surface-2:   #f4f4f5;
-    --surface-3:   #e9e9eb;
-    --border:      #e1e1e3;
-    --border-2:    #b8b8bc;
-    --text:        #1c1c1f;
-    --text-muted:  #56565a;
+    --surface-2:   #f1f3f6;
+    --surface-3:   #e6e9ef;
+    --border:      #e2e5eb;
+    --border-2:    #c3c8d2;
+    --text:        #0f172a;
+    --text-muted:  #475063;
     /* Darkened from #79797f to keep ≥4.5:1 on --surface-3 (#392). */
-    --text-subtle: #68686f;
+    --text-subtle: #5d6577;
 
-    --accent:        #1c1c1f;
-    --accent-strong: #000000;
-    --accent-soft:   rgba(28, 28, 31, 0.05);
-    --on-accent:     #fafafa;
+    --accent:        #047857;
+    --accent-strong: #065f46;
+    --accent-soft:   rgba(4, 120, 87, 0.08);
+    --on-accent:     #ffffff;
 
     --success: #047857;
     --warn:    #b45309;
@@ -162,52 +163,63 @@
     --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
     --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.08);
     --shadow-3: 0 24px 48px rgba(15, 23, 42, 0.12);
+
+    --glow-success: 0 0 0 3px rgba(4, 120, 87, 0.14);
+    --glow-warn:    0 0 0 3px rgba(180, 83, 9, 0.14);
+    --glow-danger:  0 0 0 3px rgba(185, 28, 28, 0.12);
+    --shadow-card:  0 4px 14px rgba(15, 23, 42, 0.07);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg:          #18181a;
-  --surface:     #1f1f22;
-  --surface-2:   #26262a;
-  --surface-3:   #2f2f34;
-  --border:      #2c2c30;
-  --border-2:    #424248;
-  --text:        #ededee;
-  --text-muted:  #aeaeb2;
-  --text-subtle: #98989f;
+  --bg:          #12171f;
+  --surface:     #1a202b;
+  --surface-2:   #222935;
+  --surface-3:   #2c3442;
+  --border:      #323b4a;
+  --border-2:    #454f61;
+  --text:        #e8ebf1;
+  --text-muted:  #b4bccb;
+  --text-subtle: #97a0b1;
 
-  --accent:        #ededee;
-  --accent-strong: #ffffff;
-  --accent-soft:   rgba(237, 237, 238, 0.08);
-  --on-accent:     #18181a;
+  --accent:        #10b981;
+  --accent-strong: #34d399;
+  --accent-soft:   rgba(16, 185, 129, 0.12);
+  --on-accent:     #03140d;
 
-  --success: #34d399;
-  --warn:    #fbbf24;
+  --success: #10b981;
+  --warn:    #f59e0b;
   --danger:  #f87171;
   --info:    #60a5fa;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
   --shadow-3: 0 24px 48px rgba(0, 0, 0, 0.55);
+
+  /* Status glows + floating-card shadow (status dots, live tags, composer). */
+  --glow-success: 0 0 0 3px rgba(16, 185, 129, 0.18), 0 0 8px rgba(16, 185, 129, 0.65);
+  --glow-warn:    0 0 0 3px rgba(245, 158, 11, 0.18), 0 0 8px rgba(245, 158, 11, 0.6);
+  --glow-danger:  0 0 0 3px rgba(248, 113, 113, 0.16), 0 0 8px rgba(248, 113, 113, 0.55);
+  --shadow-card:  0 10px 30px rgba(0, 0, 0, 0.32);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg:          #ffffff;
+  --bg:          #f6f7f9;
   --surface:     #ffffff;
-  --surface-2:   #fafafa;
-  --surface-3:   #f4f4f5;
-  --border:      #e4e4e7;
-  --border-2:    #a1a1aa;
-  --text:        #09090b;
-  --text-muted:  #52525b;
+  --surface-2:   #f1f3f6;
+  --surface-3:   #e6e9ef;
+  --border:      #e2e5eb;
+  --border-2:    #c3c8d2;
+  --text:        #0f172a;
+  --text-muted:  #475063;
   /* Darkened from #71717a to keep ≥4.5:1 on --surface-3 (#392). */
-  --text-subtle: #68686f;
+  --text-subtle: #5d6577;
 
-  --accent:        #09090b;
-  --accent-strong: #000000;
-  --accent-soft:   rgba(9, 9, 11, 0.05);
+  --accent:        #047857;
+  --accent-strong: #065f46;
+  --accent-soft:   rgba(4, 120, 87, 0.08);
   --on-accent:     #ffffff;
 
   --success: #047857;
@@ -218,6 +230,11 @@
   --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
   --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.08);
   --shadow-3: 0 24px 48px rgba(15, 23, 42, 0.12);
+
+  --glow-success: 0 0 0 3px rgba(4, 120, 87, 0.14);
+  --glow-warn:    0 0 0 3px rgba(180, 83, 9, 0.14);
+  --glow-danger:  0 0 0 3px rgba(185, 28, 28, 0.12);
+  --shadow-card:  0 4px 14px rgba(15, 23, 42, 0.07);
 }
 
 @media (prefers-reduced-motion: reduce) {

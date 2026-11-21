@@ -1,35 +1,34 @@
 /**
  * Design tokens for the kube-coder mobile app.
  *
- * Mirrors the dashboard SPA's "Editorial" system (charts/workspace/web/src/
- * styles/tokens.css): a high-contrast neutral palette with NO chromatic accent —
- * white is the accent in this dark theme — 1px hairline borders, near-flat radii
- * (crisp sheets, not rounded chips), and almost no shadow (elevation is carried
- * by surface-colour steps + borders). Hierarchy comes from typography + space.
+ * Mirrors the dashboard SPA's "Slate" system (charts/workspace/web/src/
+ * styles/tokens.css, dark mode): a dark slate palette whose surfaces step
+ * visibly apart, a single emerald accent, 1px hairline borders, 4–8px radii and
+ * soft glows on live status. The desktop app renders this same UI, so these
+ * values reach it too. Keep them in step with tokens.css.
  */
 import { Platform } from 'react-native';
 
 export const colors = {
-  bg: '#18181a', // page background (soft charcoal, not pure black, so surfaces sit above it)
-  bgElevated: '#1f1f22', // surface — cards/panels/headers
-  card: '#1f1f22', // surface
-  cardHover: '#26262a', // surface-2 — inputs, hover fill, elevated
-  surface2: '#26262a', // input bg / hover
-  surface3: '#2f2f34', // highest surface / track
-  border: '#2c2c30', // hairline border / divider
-  borderStrong: '#424248', // stronger border (hover, emphasis)
-  text: '#ededee', // primary text (off-white, not pure #fff)
-  textMuted: '#aeaeb2', // secondary
-  textFaint: '#82828a', // tertiary / placeholder / captions
-  // The "accent" is achromatic: off-white fill with dark text on top. This is
-  // the crux of the black/white theme — primary actions are inked rectangles.
-  accent: '#ededee',
-  accentAlt: '#ffffff', // accent-strong (hover / CTA border)
-  accentSoft: 'rgba(237,237,238,0.08)', // selection / active-row wash
-  accentText: '#18181a', // on-accent — text/icon sitting on an accent fill
+  bg: '#12171f', // page background (slate, not pure black, so surfaces sit above it)
+  bgElevated: '#1a202b', // surface — cards/panels/headers
+  card: '#1a202b', // surface
+  cardHover: '#222935', // surface-2 — inputs, hover fill, elevated
+  surface2: '#222935', // input bg / hover
+  surface3: '#2c3442', // highest surface / track
+  border: '#323b4a', // hairline border / divider
+  borderStrong: '#454f61', // stronger border (hover, emphasis)
+  text: '#e8ebf1', // primary text
+  textMuted: '#b4bccb', // secondary
+  textFaint: '#97a0b1', // tertiary / placeholder / captions (≥4.5:1 on surface3)
+  // Emerald accent: primary actions are emerald fills with near-black text.
+  accent: '#10b981',
+  accentAlt: '#34d399', // accent-strong (hover / CTA border)
+  accentSoft: 'rgba(16,185,129,0.12)', // selection / active-row wash
+  accentText: '#03140d', // on-accent — text/icon sitting on an accent fill
   // Semantic colours: used as text + border tints, rarely as fills.
-  success: '#34d399',
-  warning: '#fbbf24',
+  success: '#10b981',
+  warning: '#f59e0b',
   danger: '#f87171',
   info: '#60a5fa',
   // Soft wash + hairline for the semantic hues above, so a tinted card or
@@ -42,22 +41,22 @@ export const colors = {
   infoBorder: 'rgba(96,165,250,0.45)',
   // task status colours (the one place chromatic hues appear, as tints)
   running: '#60a5fa',
-  waiting: '#fbbf24',
-  done: '#34d399',
+  waiting: '#f59e0b',
+  done: '#10b981',
   error: '#f87171',
-  killed: '#82828a',
+  killed: '#97a0b1',
 } as const;
 
 /**
- * Gradients (consumed by expo-linear-gradient). The editorial theme has no
- * gradient fills, so `primary`/`brand` are flattened to a solid accent — every
- * existing <LinearGradient> CTA/brand mark renders as a clean inked panel with
+ * Gradients (consumed by expo-linear-gradient). The theme has no gradient
+ * fills, so `primary`/`brand` are flattened to the solid emerald accent — every
+ * existing <LinearGradient> CTA/brand mark renders as a flat accent panel with
  * no call-site changes. `header` is a barely-there surface step.
  */
 export const gradients = {
-  primary: ['#ededee', '#ededee'] as const,
-  header: ['#1f1f22', '#18181a'] as const,
-  brand: ['#ededee', '#ededee'] as const,
+  primary: ['#10b981', '#10b981'] as const,
+  header: ['#1a202b', '#12171f'] as const,
+  brand: ['#10b981', '#10b981'] as const,
 };
 
 export const space = {
@@ -70,10 +69,10 @@ export const space = {
 } as const;
 
 export const radius = {
-  sm: 2, // inputs, chips, small buttons, segments
-  md: 3, // buttons, cards, rows, toasts
-  lg: 5, // big panels, sections, empty-state icon
-  xl: 8, // modals / bottom sheets (the one softer corner)
+  sm: 4, // inputs, chips, small buttons, segments
+  md: 6, // buttons, cards, rows, toasts
+  lg: 8, // big panels, sections, empty-state icon
+  xl: 10, // modals / bottom sheets (the one softer corner)
   pill: 999,
 } as const;
 
@@ -102,6 +101,14 @@ export const shadow = {
     shadowOffset: { width: 0, height: 1 },
     elevation: 1,
   },
+  // Glowing status dot (web --glow-*): pass the status colour as shadowColor.
+  // iOS renders the halo; Android ignores coloured shadows, which is fine.
+  glow: (color: string) => ({
+    shadowColor: color,
+    shadowOpacity: 0.65,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+  }),
   // Floating chrome: bottom sheets, modals, toasts (web --shadow-2).
   float: {
     shadowColor: '#000',
@@ -111,6 +118,11 @@ export const shadow = {
     elevation: 12,
   },
 } as const;
+
+/** Statuses that want attention or are in flight — their dots glow (web --glow-*). */
+export function isLiveStatus(status: string): boolean {
+  return ['running', 'waiting', 'waiting_input', 'error'].includes(status);
+}
 
 export function statusColor(status: string): string {
   switch (status) {

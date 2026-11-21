@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getMissionQueue, killTask, sendMessage } from '../api/client';
 import { Card, EmptyState, ErrorBanner, Loading, ScreenHeader, StatusPill } from '../components/ui';
 import type { MissionCard, MissionCardState, MissionPulse } from '../api/types';
-import { colors, font, radius, space, statusColor } from '../theme';
+import { colors, font, isLiveStatus, radius, shadow, space, statusColor } from '../theme';
 import { confirmAction } from '../util/confirm';
 import { relativeTime } from '../util/format';
 import { usePolling } from '../util/usePolling';
@@ -357,7 +357,7 @@ export default function MissionControlScreen() {
             item.type === 'header' ? (
               <View style={styles.sectionHeader}>
                 <View
-                  style={[styles.sectionDot, { backgroundColor: statusColor(item.state) }]}
+                  style={[styles.sectionDot, { backgroundColor: statusColor(item.state) }, isLiveStatus(item.state) && shadow.glow(statusColor(item.state))]}
                 />
                 <Text style={styles.sectionTitle}>{SECTION_TITLES[item.state]}</Text>
                 <Text style={styles.sectionCount}>{item.count}</Text>

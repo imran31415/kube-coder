@@ -11,7 +11,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { colors, font, gradients, radius, space, statusColor } from '../theme';
+import { colors, font, gradients, isLiveStatus, radius, shadow, space, statusColor } from '../theme';
 import { statusLabel } from '../util/format';
 import { openDrawer } from '../store/nav';
 import { useWideLayout } from './WideLayout';
@@ -63,7 +63,7 @@ export function StatusPill({
       {status === 'running' ? (
         <ActivityIndicator size="small" color={c} style={styles.spinner} />
       ) : (
-        <View style={[styles.dot, { backgroundColor: c }]} />
+        <View style={[styles.dot, { backgroundColor: c }, isLiveStatus(status) && shadow.glow(c)]} />
       )}
       <Text style={[styles.pillText, { color: c }]}>{statusLabel(status)}</Text>
     </View>

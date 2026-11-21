@@ -6,6 +6,7 @@ import React, { useEffect, useRef } from 'react';
 import { StyleSheet, View, ViewStyle } from 'react-native';
 import { isDesktop } from '../desktop/bridge';
 import { DesktopEmbed } from '../desktop/DesktopEmbed';
+import { colors } from '../theme';
 
 export interface WebViewProps {
   source?: { uri: string; headers?: Record<string, string> };
@@ -59,7 +60,7 @@ export const WebView = React.forwardRef<{ reload: () => void }, WebViewProps>(
           <iframe
             ref={frameRef}
             src={source.uri}
-            style={{ border: 0, width: '100%', height: '100%', background: '#08090b' }}
+            style={{ border: 0, width: '100%', height: '100%', background: colors.bg }}
             onLoad={() => onLoadEnd?.()}
           />
         ) : null}
@@ -69,5 +70,5 @@ export const WebView = React.forwardRef<{ reload: () => void }, WebViewProps>(
 );
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#08090b', overflow: 'hidden' },
+  wrap: { flex: 1, backgroundColor: colors.bg, overflow: 'hidden' },
 });
