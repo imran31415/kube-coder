@@ -71,6 +71,8 @@ ingress:
     enabled: true
     secretName: ""
     clusterIssuer: letsencrypt-production
+    # Use the ingress controller default wildcard certificate, without copying its key.
+    sharedCertificate: false
   # Caps applied only by ingress-public.yaml (auth.type=none). Defense in
   # depth around the unauthed demo surface — bump these for a higher-
   # traffic demo, but don't disable them.
@@ -221,6 +223,9 @@ keeper:
 # overlay surfaces at `helm install` time rather than as a silently
 # broken pod.
 oauth2:
+  provider: github
+  oidcIssuerUrl: ""
+  ownerGithubId: ""
   cookieSecret: ""        # 16/24/32 random bytes, base64-encoded
   clientId: ""            # GitHub OAuth App client id
   clientSecret: ""        # GitHub OAuth App client secret

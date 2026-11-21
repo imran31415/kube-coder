@@ -55,7 +55,25 @@ spec:
             drop:
               - ALL
         args:
+        {{- if not (has (.Values.oauth2.provider | default "github") (list "github" "oidc")) }}
+        {{- fail "oauth2.provider must be github or oidc" }}
+        {{- end }}
+        {{- if eq (.Values.oauth2.provider | default "github") "oidc" }}
+        {{- $owner := required "oauth2.ownerGithubId is required for OIDC" .Values.oauth2.ownerGithubId | toString }}
+        {{- if not (regexMatch "^[1-9][0-9]{0,19}$" $owner) }}
+        {{- fail "oauth2.ownerGithubId must be a numeric GitHub ID" }}
+        {{- end }}
+        {{- if not (hasPrefix "https://" .Values.oauth2.oidcIssuerUrl) }}{{ fail "oauth2.oidcIssuerUrl must use HTTPS" }}{{ end }}
+        - --provider=oidc
+        - --oidc-issuer-url={{ required "oauth2.oidcIssuerUrl is required for OIDC" .Values.oauth2.oidcIssuerUrl }}
+        - --scope=openid profile email federated:id offline_access
+        - --oidc-groups-claim=federated_claims.user_id
+        - --allowed-group={{ $owner }}
+        - --insecure-oidc-skip-nonce=false
+        - --code-challenge-method=S256
+        {{- else }}
         - --provider=github
+        {{- end }}
         - --email-domain=*
         - --upstream=http://ws-{{ .Values.user.name }}:8080/
         - --http-address=0.0.0.0:4180
@@ -71,12 +89,17 @@ spec:
         - --cookie-secure=true
         - --cookie-domain={{ .Values.user.host }}
         - --cookie-path=/
+        {{- if eq (.Values.oauth2.provider | default "github") "oidc" }}
+        - --cookie-expire=8h
+        - --cookie-refresh=1h
+        {{- else }}
         # GitHub OAuth apps issue no refresh token, so oauth2-proxy can't renew a
         # session — it is hard-capped at cookie-expire, then forces a full
         # re-login. Default 30d (was 24h, which re-logged users in ~daily).
         # cookie-refresh is a no-op for GitHub (nothing to refresh); default 0.
         - --cookie-expire={{ .Values.oauth2.cookieExpire | default "720h0m0s" }}
         - --cookie-refresh={{ .Values.oauth2.cookieRefresh | default "0" }}
+        {{- end }}
         # Explicit SameSite=Lax on the session cookie (defense-in-depth):
         # removes reliance on the browser's implicit Lax default and closes the
         # Chrome "Lax+POST 2-minute" freshly-set-cookie window. Lax (not Strict)
@@ -84,13 +107,13 @@ spec:
         - --cookie-samesite=lax
         - --whitelist-domain={{ .Values.user.host }}
         - --redirect-url=https://{{ .Values.user.host }}/oauth2/callback
-        {{- if .Values.oauth2.githubUsers }}
+        {{- if and (ne (.Values.oauth2.provider | default "github") "oidc") .Values.oauth2.githubUsers }}
         - --github-user={{ .Values.oauth2.githubUsers }}
         {{- end }}
-        {{- if .Values.oauth2.githubOrg }}
+        {{- if and (ne (.Values.oauth2.provider | default "github") "oidc") .Values.oauth2.githubOrg }}
         - --github-org={{ .Values.oauth2.githubOrg }}
         {{- end }}
-        {{- if .Values.oauth2.githubTeam }}
+        {{- if and (ne (.Values.oauth2.provider | default "github") "oidc") .Values.oauth2.githubTeam }}
         - --github-team={{ .Values.oauth2.githubTeam }}
         {{- end }}
         # Skip oauth2-proxy's interstitial "Sign in with GitHub" page so a
@@ -162,7 +185,7 @@ metadata:
   labels:
     app: oauth2-proxy-{{ .Values.user.name }}
   annotations:
-    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer (not .Values.ingress.tls.sharedCertificate) }}
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer }}
     {{- end }}
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
@@ -175,7 +198,9 @@ spec:
   tls:
   - hosts:
     - {{ .Values.user.host }}
+    {{- if not .Values.ingress.tls.sharedCertificate }}
     secretName: {{ .Values.ingress.tls.secretName }}
+    {{- end }}
   {{- end }}
   rules:
   - host: {{ .Values.user.host }}

@@ -1,0 +1,182 @@
+{{- if and .Values.signup.enabled (not .Values.dex.enabled) }}
+{{- fail "signup.enabled requires dex.enabled" }}
+{{- end }}
+{{- if .Values.dex.enabled }}
+{{- if not (hasPrefix "https://" .Values.dex.issuerUrl) }}{{ fail "dex.issuerUrl must use HTTPS" }}{{ end }}
+{{- range .Values.signup.allowedGithubIds }}
+{{- if not (regexMatch "^[1-9][0-9]{0,19}$" (toString .)) }}{{ fail "signup.allowedGithubIds must contain numeric GitHub IDs" }}{{ end }}
+{{- end }}
+{{- if not .Values.provision.enabled }}{{ fail "dex.enabled requires provision.enabled" }}{{ end }}
+{{- if eq .Values.dex.stateNamespace .Values.namespace }}{{ fail "dex.stateNamespace must be separate from the controller namespace" }}{{ end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ required "dex.stateNamespace is required" .Values.dex.stateNamespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: signup-state
+  namespace: {{ .Values.dex.stateNamespace }}
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "create", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: signup-state
+  namespace: {{ .Values.dex.stateNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: signup-state
+subjects:
+- kind: ServiceAccount
+  name: workspace-controller
+  namespace: {{ .Values.namespace }}
+{{- end }}
+{{- if .Values.signup.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-signup-oauth2
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: workspace-signup-oauth2}
+  template:
+    metadata:
+      labels: {app: workspace-signup-oauth2}
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels: {app: workspace-signup-oauth2}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: oauth2-proxy
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+        args:
+        - --provider=oidc
+        - --oidc-issuer-url={{ required "dex.issuerUrl is required" .Values.dex.issuerUrl }}
+        - --scope=openid profile email federated:id offline_access
+        - --oidc-groups-claim=federated_claims.user_id
+        - --email-domain=*
+        - --insecure-oidc-skip-nonce=false
+        - --code-challenge-method=S256
+        - --upstream=http://workspace-controller:8082/
+        - --http-address=0.0.0.0:4180
+        - --reverse-proxy=true
+        {{- range .Values.oauth2.trustedProxyIPs }}
+        - --trusted-proxy-ip={{ . }}
+        {{- end }}
+        - --redirect-url=https://{{ .Values.signup.host }}/oauth2/callback
+        - --whitelist-domain={{ .Values.signup.host }}
+        - --cookie-name=__Host-kc_signup
+        - --cookie-secure=true
+        - --cookie-samesite=lax
+        - --cookie-path=/
+        - --cookie-expire=8h
+        - --cookie-refresh=1h
+        - --pass-user-headers=true
+        - --skip-provider-button=true
+        - --skip-auth-regex=^/(signup/?|api/signup/config)?$
+        - --api-route=^/api/.*
+        - --request-logging=false
+        env:
+        {{- range $env, $key := dict "OAUTH2_PROXY_CLIENT_ID" "client-id" "OAUTH2_PROXY_CLIENT_SECRET" "client-secret" "OAUTH2_PROXY_COOKIE_SECRET" "cookie-secret" }}
+        - name: {{ $env }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ required "signup.existingSecretName is required" $.Values.signup.existingSecretName }}
+              key: {{ $key }}
+        {{- end }}
+        ports: [{name: http, containerPort: 4180}]
+        readinessProbe:
+          httpGet: {path: /ready, port: http}
+        livenessProbe:
+          httpGet: {path: /ping, port: http}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workspace-signup-oauth2
+  namespace: {{ .Values.namespace }}
+spec:
+  selector: {app: workspace-signup-oauth2}
+  ports: [{port: 4180, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: workspace-signup
+  namespace: {{ .Values.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1k"
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: [{{ required "signup.host is required" .Values.signup.host | quote }}]
+    {{- if not .Values.signup.sharedCertificate }}
+    secretName: {{ required "signup.tlsSecretName is required without sharedCertificate" .Values.signup.tlsSecretName }}
+    {{- end }}
+  rules:
+  - host: {{ .Values.signup.host | quote }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: workspace-signup-oauth2
+            port: {number: 4180}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workspace-signup-proxy
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels: {app: workspace-signup-oauth2}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+    ports: [{protocol: TCP, port: 4180}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: workspace-signup-oauth2
+  namespace: {{ .Values.namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: workspace-signup-oauth2}
+{{- end }}

@@ -1,0 +1,72 @@
+# Browser issuer uses the published loopback port; backchannel endpoints use service DNS.
+# No TLS-verification bypass: HTTP and fixture passwords are isolated to this test.
+services:
+  dex:
+    image: ghcr.io/dexidp/dex:v2.44.0@sha256:5d0656fce7d453c0e3b2706abf40c0d0ce5b371fb0b73b3cf714d05f35fa5f86
+    ports: ["127.0.0.1:5556:5556"]
+    command: [dex, serve, /config/dex.yaml]
+    volumes:
+      - ./dex.yaml:/config/dex.yaml:ro
+    tmpfs: [/tmp]
+  owner:
+    ports: ["127.0.0.1:4181:4181"]
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    restart: on-failure
+    command:
+      - --provider=oidc
+      - --oidc-issuer-url=http://127.0.0.1:5556
+      - --skip-oidc-discovery=true
+      - --login-url=http://127.0.0.1:5556/auth
+      - --redeem-url=http://dex:5556/token
+      - --oidc-jwks-url=http://dex:5556/keys
+      - --profile-url=http://dex:5556/userinfo
+      - --client-id=workspace-123
+      - --client-secret=fixture-only-secret
+      - --scope=openid profile email federated:id offline_access
+      - --oidc-groups-claim=federated_claims.user_id
+      - --allowed-group=123
+      - --email-domain=*
+      - --insecure-oidc-skip-nonce=false
+      - --code-challenge-method=S256
+      - --cookie-secret=AAAAAAAAAAAAAAAAAAAAAA==
+      - --cookie-secure=false
+      - --cookie-refresh=2s
+      - --redirect-url=http://127.0.0.1:4181/oauth2/callback
+      - --http-address=0.0.0.0:4181
+      - --upstream=http://upstream:8099
+      - --skip-provider-button=true
+      - --pass-user-headers=true
+      - --request-logging=false
+  other:
+    ports: ["127.0.0.1:4182:4182"]
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:10a1165743a192e1940b4708fb9647027185ce11a681a1c5519b442ff7f1f561
+    restart: on-failure
+    command:
+      - --provider=oidc
+      - --oidc-issuer-url=http://127.0.0.1:5556
+      - --skip-oidc-discovery=true
+      - --login-url=http://127.0.0.1:5556/auth
+      - --redeem-url=http://dex:5556/token
+      - --oidc-jwks-url=http://dex:5556/keys
+      - --profile-url=http://dex:5556/userinfo
+      - --client-id=workspace-456
+      - --client-secret=fixture-only-secret
+      - --scope=openid profile email federated:id offline_access
+      - --oidc-groups-claim=federated_claims.user_id
+      - --allowed-group=456
+      - --email-domain=*
+      - --insecure-oidc-skip-nonce=false
+      - --code-challenge-method=S256
+      - --cookie-secret=BBBBBBBBBBBBBBBBBBBBBB==
+      - --cookie-secure=false
+      - --redirect-url=http://127.0.0.1:4182/oauth2/callback
+      - --http-address=0.0.0.0:4182
+      - --upstream=http://upstream:8099
+      - --skip-provider-button=true
+      - --request-logging=false
+  upstream:
+    image: python:3.12-slim
+    command: [python, /test/upstream.py]
+    ports: ["127.0.0.1:8099:8099"]
+    volumes:
+      - ./upstream.py:/test/upstream.py:ro

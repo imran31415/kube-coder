@@ -1,0 +1,55 @@
+suite: Dex signup deployment wiring
+templates:
+  - templates/deployment.yaml
+  - templates/controller-configmap.yaml
+  - templates/controller-web-configmap.yaml
+  - templates/service.yaml
+  - templates/networkpolicy.yaml
+values:
+  - test-values.yaml
+  - signup-values.yaml
+tests:
+  - it: connects the backend to the same Dex and state settings as its mounted credentials
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: DEX_GRPC_ADDRESS, value: "dex.auth.svc.cluster.local:5557"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SIGNUP_ORIGIN, value: "https://signup.example.test"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: SIGNUP_ALLOWED_IDS, value: "123"}
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: CONTROLLER_DIST_DIR, value: /controller-web}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: {name: dex-client, mountPath: /dex-client, readOnly: true}
+      - contains:
+          path: spec.template.spec.volumes
+          content: {name: dex-client, secret: {secretName: dex-client}}
+  - it: sends signup traffic to the dedicated numeric backend port
+    template: templates/service.yaml
+    asserts:
+      - contains:
+          path: spec.ports
+          content: {name: signup, port: 8082, targetPort: 8082}
+      - equal:
+          path: spec.selector.app
+          value: workspace-controller
+  - it: grants the signup proxy only its separate listener and retains the admin boundary
+    template: templates/networkpolicy.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.ingress[0]
+          value:
+            from: [{podSelector: {matchLabels: {app: workspace-signup-oauth2}}}]
+            ports: [{protocol: TCP, port: 8082}]
+      - equal:
+          path: spec.ingress[1]
+          value:
+            from: [{podSelector: {matchLabels: {app: workspace-controller-oauth2}}}]
+            ports: [{protocol: TCP, port: 8080}]

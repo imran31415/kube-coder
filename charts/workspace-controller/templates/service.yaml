@@ -9,6 +9,11 @@ spec:
   selector:
     app: workspace-controller
   ports:
+  {{- if .Values.signup.enabled }}
+  - name: signup
+    port: 8082
+    targetPort: 8082
+  {{- end }}
   - name: http
     port: 8080
     targetPort: 8080

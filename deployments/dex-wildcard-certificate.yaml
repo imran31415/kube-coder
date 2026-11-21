@@ -1,0 +1,16 @@
+# Example only: replace the domain and issuer before applying.
+# ClusterIssuer must use DNS-01. Configure ingress-nginx with:
+# --default-ssl-certificate=ingress-nginx/workspaces-wildcard
+# Tenant charts use sharedCertificate=true; no private key copies.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: workspaces-wildcard
+  namespace: ingress-nginx
+spec:
+  secretName: workspaces-wildcard
+  dnsNames:
+  - '*.workspaces.example.com'
+  issuerRef:
+    name: workspaces-dns01
+    kind: ClusterIssuer

@@ -1,0 +1,17 @@
+dex:
+  enabled: true
+  issuerUrl: https://auth.example.test
+  grpcAddress: dex.auth.svc.cluster.local:5557
+  clientTlsSecretName: dex-client
+signup:
+  enabled: true
+  host: signup.example.test
+  allowedGithubIds: ["123"]
+  existingSecretName: signup
+  tlsSecretName: signup-tls
+provision:
+  enabled: true
+  workspaceDomain: example.test
+  gitToken: test-only
+  gitops:
+    repo: github.com/example/private.git

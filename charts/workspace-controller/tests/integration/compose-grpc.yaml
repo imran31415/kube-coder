@@ -1,0 +1,7 @@
+# Optional mTLS management API test, after generate_certs.py.
+services:
+  dex:
+    ports: ["127.0.0.1:5557:5557"]
+    command: [dex, serve, /certs/dex.yaml]
+    volumes:
+      - ./.certs:/certs:ro

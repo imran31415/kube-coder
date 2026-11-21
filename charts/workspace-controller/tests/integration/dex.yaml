@@ -1,0 +1,30 @@
+# Local fixture identities only. NEVER use this configuration in production.
+issuer: http://127.0.0.1:5556
+storage:
+  type: sqlite3
+  config:
+    file: /tmp/dex.db
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+enablePasswordDB: true
+staticClients:
+- id: workspace-123
+  name: Owner workspace
+  secret: fixture-only-secret
+  redirectURIs: [http://127.0.0.1:4181/oauth2/callback]
+- id: workspace-456
+  name: Other workspace
+  secret: fixture-only-secret
+  redirectURIs: [http://127.0.0.1:4182/oauth2/callback]
+# Hash of "password", from Dex v2.44.0 examples/config-dev.yaml.
+staticPasswords:
+- email: owner@example.test
+  hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+  username: owner
+  userID: "123"
+- email: other@example.test
+  hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+  username: other
+  userID: "456"

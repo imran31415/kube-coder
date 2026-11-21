@@ -1,0 +1,195 @@
+{{- if lt (int .Values.replicas) 2 }}{{ fail "Dex requires at least two replicas" }}{{ end }}
+{{- if not (hasPrefix "https://" .Values.issuer) }}{{ fail "Dex issuer must use HTTPS" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dex
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dex-storage
+rules:
+- apiGroups: ["dex.coreos.com"]
+  resources: ["authcodes", "authrequests", "oauth2clients", "connectors", "devicerequests", "devicetokens", "offlinesessionses", "passwords", "refreshtokens", "signingkeies"]
+  verbs: ["get", "list", "watch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dex-storage
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dex-storage}
+subjects:
+- kind: ServiceAccount
+  name: dex
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dex-config
+data:
+  config.yaml: |
+    issuer: {{ required "issuer is required" .Values.issuer | quote }}
+    storage:
+      type: kubernetes
+      config:
+        inCluster: true
+    web:
+      http: 0.0.0.0:5556
+    telemetry:
+      http: 0.0.0.0:5558
+    grpc:
+      addr: 0.0.0.0:5557
+      tlsCert: /grpc/tls.crt
+      tlsKey: /grpc/tls.key
+      tlsClientCA: /grpc/ca.crt
+    oauth2:
+      skipApprovalScreen: true
+    staticClients:
+    - id: {{ .Values.signup.clientId | quote }}
+      name: Kube Coder
+      secretEnv: SIGNUP_CLIENT_SECRET
+      redirectURIs:
+      - https://{{ required "signup.host is required" .Values.signup.host }}/oauth2/callback
+    connectors:
+    - type: github
+      id: github
+      name: GitHub
+      config:
+        clientID: $GITHUB_CLIENT_ID
+        clientSecret: $GITHUB_CLIENT_SECRET
+        redirectURI: {{ printf "%s/callback" (trimSuffix "/" .Values.issuer) | quote }}
+        useLoginAsID: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {app: kube-coder-dex}
+  template:
+    metadata:
+      labels: {app: kube-coder-dex}
+      annotations:
+        checksum/config: {{ toJson .Values | sha256sum }}
+    spec:
+      serviceAccountName: dex
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels: {app: kube-coder-dex}
+      containers:
+      - name: dex
+        image: {{ .Values.image | quote }}
+        args: [dex, serve, /config/config.yaml]
+        env:
+        - name: GITHUB_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ required "githubSecretName is required" .Values.githubSecretName }}
+              key: client-id
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.githubSecretName }}
+              key: client-secret
+        - name: SIGNUP_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ required "signup.secretName is required" .Values.signup.secretName }}
+              key: client-secret
+        ports:
+        - {name: http, containerPort: 5556}
+        - {name: grpc, containerPort: 5557}
+        - {name: telemetry, containerPort: 5558}
+        readinessProbe:
+          httpGet: {path: /healthz/ready, port: telemetry}
+        livenessProbe:
+          httpGet: {path: /healthz/live, port: telemetry}
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: config, mountPath: /config, readOnly: true}
+        - {name: grpc, mountPath: /grpc, readOnly: true}
+      volumes:
+      - name: config
+        configMap: {name: dex-config}
+      - name: grpc
+        secret:
+          secretName: {{ required "grpcTlsSecretName is required" .Values.grpcTlsSecretName }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+spec:
+  selector: {app: kube-coder-dex}
+  ports:
+  - {name: http, port: 5556, targetPort: http}
+  - {name: grpc, port: 5557, targetPort: grpc}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dex
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts: [{{ required "host is required" .Values.host | quote }}]
+    {{- if not .Values.tls.sharedCertificate }}
+    secretName: {{ required "tls.secretName is required" .Values.tls.secretName }}
+    {{- end }}
+  rules:
+  - host: {{ .Values.host | quote }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: {name: dex, port: {number: 5556}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dex
+spec:
+  podSelector:
+    matchLabels: {app: kube-coder-dex}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+    ports: [{protocol: TCP, port: 5556}]
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.controllerNamespace }}
+      podSelector:
+        matchLabels: {app: workspace-controller}
+    ports: [{protocol: TCP, port: 5557}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dex
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: kube-coder-dex}

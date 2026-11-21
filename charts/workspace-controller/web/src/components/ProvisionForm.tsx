@@ -34,6 +34,7 @@ function Header({ subtitle }: { subtitle: string }) {
 
 function ProvisionCreate({ initialError }: { initialError: string | null }) {
   const cfg = provisionConfig.value;
+  const dex = cfg?.authMode === 'dex';
   const [login, setLogin] = useState('');
   const [validating, setValidating] = useState(false);
   const [info, setInfo] = useState<ValidateUserResponse | null>(null);
@@ -81,15 +82,15 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
     setSubmitting(true);
     setErr(null);
     try {
-      await createProvision({
+      const result = await createProvision({
         user: info.login,
-        clientId: clientId.trim(),
+        ...(dex ? { migrate: !!(info.exists || info.configExists) } : { clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         pvcSize: pvcSize.trim() || undefined,
         gitName: gitName.trim() || undefined,
-        gitEmail: gitEmail.trim() || undefined,
+        gitEmail: gitEmail.trim() || undefined }),
       });
-      navigate(`/provision/${info.slug}`);
+      navigate(`/provision/${result.slug}`);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2));
       setSubmitting(false);
@@ -115,7 +116,7 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
 
   return (
     <div class="app">
-      <Header subtitle={`Look up a GitHub user, create a GitHub OAuth App for them, and paste its credentials. The workspace deploys at ${domainHint}.`} />
+      <Header subtitle={dex ? 'Look up a GitHub user and create their private workspace.' : `Look up a GitHub user, create a GitHub OAuth App for them, and paste its credentials. The workspace deploys at ${domainHint}.`} />
 
       {err && (
         <div class="banner err" role="alert">
@@ -165,10 +166,10 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
             </div>
           )}
 
-          <button class="prov-toggle" type="button" onClick={() => setAdvanced((v) => !v)}>
+          {!dex && <button class="prov-toggle" type="button" onClick={() => setAdvanced((v) => !v)}>
             {advanced ? '▾' : '▸'} Advanced options
-          </button>
-          {advanced && (
+          </button>}
+          {advanced && !dex && (
             <div class="prov-advanced">
               <label class="field">
                 <span class="field-label">Disk size</span>
@@ -185,7 +186,7 @@ function ProvisionCreate({ initialError }: { initialError: string | null }) {
             </div>
           )}
 
-          {info.configExists ? (
+          {dex ? <button class="btn start prov-go" disabled={submitting} onClick={onProvision}>{submitting ? 'Starting…' : info.exists || info.configExists ? 'Migrate to Dex' : 'Create workspace'}</button> : info.configExists ? (
             <>
               <p class="sub">
                 OAuth credentials for <code>{info.slug}</code> are already saved — no GitHub step
@@ -286,7 +287,7 @@ function ProvisionStatusView({ slug }: { slug: string }) {
   const job = status?.job ?? 'pending';
   // A failed provisioner Job must win over a still-running pod: a half-applied
   // deploy (pod up, but helm/RBAC failed mid-rollout) is NOT "ready".
-  const ready = status?.workspace?.state === 'running' && job !== 'failed';
+  const ready = status?.operation ? status.operation.stage === 'ready' : status?.workspace?.state === 'running' && job !== 'failed';
   const partial = job === 'failed' && status?.workspace?.state === 'running';
   const phase = jobPhase(job, ready, partial);
 
@@ -328,7 +329,7 @@ function ProvisionStatusView({ slug }: { slug: string }) {
             Open {slug} ↗
           </a>
         )}
-        {job === 'failed' && (
+        {job === 'failed' && (!status?.operation || status.operation.error?.retryable) && (
           <div class="prov-actions">
             <button class="btn start prov-go" type="button" disabled={retrying} onClick={onRetry}>
               {retrying ? 'Retrying…' : partial ? 'Finish deploy' : 'Retry deploy'}
