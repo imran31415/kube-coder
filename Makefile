@@ -1,5 +1,5 @@
 # Makefile for kube-coder
-.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-android-screenshots mobile-ensure-ios-version mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-ios-listing mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
+.PHONY: keeper-build-local build push deploy-base deploy-all clean help status version deploy logs shell test rollback delete-user migrate-user migrate-all migrate-status backup-user restore-user new-user validate-user doctor require-user release users-sync dashboard-web dashboard-web-install dashboard-web-test dashboard-web-clean python-tests python-coverage dashboard-web-coverage coverage test-coverage local local-up local-build local-secret local-deploy local-forward local-info local-down mobile-install mobile-typecheck mobile-web mobile-export-web mobile-screenshots mobile-android-screenshots mobile-ensure-ios-version mobile-build mobile-build-ios mobile-build-android mobile-submit-ios mobile-submit-android mobile-fastlane-install mobile-metadata mobile-metadata-text mobile-ios-screenshots mobile-ios-listing mobile-metadata-download mobile-play-metadata mobile-play-metadata-text mobile-play-metadata-download mobile-clean keeper-test
 
 # =============================================================================
 # Generic per-user helpers
@@ -527,6 +527,9 @@ mobile-build-android: mobile-typecheck ## EAS production build, Android only (.a
 
 mobile-submit-ios: ## Upload the latest iOS production build to App Store Connect
 	cd $(MOBILE_DIR) && npx eas-cli submit --profile production --platform ios
+
+mobile-submit-android: ## Upload the latest Android production build to Google Play (internal track, per eas.json)
+	cd $(MOBILE_DIR) && npx eas-cli submit --profile production --platform android
 
 # App Store / Play *listing* automation via fastlane (deliver + supply) —
 # metadata text + screenshots only; EAS still builds & uploads the binary.

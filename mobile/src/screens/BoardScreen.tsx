@@ -848,7 +848,7 @@ function WorkingRow({
   return (
     <Card
       nativeID={`board-working-${row.item_id}`}
-      style={StyleSheet.flatten([focused ? styles.cardFocused : null])}
+      style={StyleSheet.flatten([focused ? styles.cardFocused : null]) ?? undefined}
     >
       <Pressable
         style={styles.rowHit}
@@ -895,7 +895,7 @@ function DoneRow({
   return (
     <Card
       nativeID={`board-done-${row.item_id}`}
-      style={StyleSheet.flatten([focused ? styles.cardFocused : null])}
+      style={StyleSheet.flatten([focused ? styles.cardFocused : null]) ?? undefined}
     >
       <Pressable
         style={styles.rowHit}
@@ -976,7 +976,7 @@ function ReviewCard({
       style={StyleSheet.flatten([
         busy ? styles.cardBusy : null,
         focused ? styles.cardFocused : null,
-      ])}
+      ]) ?? undefined}
     >
       <View style={styles.cardHead}>
         <Text style={styles.itemKey}>{item.item_key || item.item_id}</Text>

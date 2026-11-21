@@ -27,7 +27,7 @@ export function AppEmbed({
   /** Imperative reload hook for a parent-owned toolbar button. */
   embedRef?: React.MutableRefObject<AppEmbedHandle | null>;
 }) {
-  const webRef = useRef<WebView>(null);
+  const webRef = useRef<React.ComponentRef<typeof WebView>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bump to remount the WebView — a clean retry that re-runs the whole
