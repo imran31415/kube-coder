@@ -37,21 +37,17 @@ describe('App shell', () => {
     // component still mounts through lazy + Suspense, it just no longer waits
     // on the bundler to do it.
     await import('./routes/memory/index');
+    // Likewise the starting route's chunk: Memory is now one click away (the
+    // Workspace disclosure is already revealed on /tasks), so the click can
+    // land while /tasks is still suspended, and Suspense would then sit on the
+    // fallback until THAT chunk had been transformed.
+    await import('./routes/tasks/index');
     const { container } = render(<App />);
     // The bottom nav is also rendered in the DOM (hidden via CSS in real
     // life), so pick the rail-specific button. Resolved by text rather
     // than position so adding a new route to ROUTES doesn't break the
-    // test (Desktop landed at index 2, Memory shifted to 3).
-    // Knowledge rests collapsed by default, so open it the way a user would
-    // before reaching for Memory.
-    const knowledge = Array.from(
-      container.querySelectorAll('.rail .rail-group-label'),
-    ).find((el) => el.textContent?.includes('Knowledge')) as
-      | HTMLButtonElement
-      | undefined;
-    expect(knowledge, 'rail has a Knowledge group').toBeTruthy();
-    knowledge!.click();
-
+    // test. Memory lives inside Workspace, which auto-reveals here because
+    // the active route (/tasks) is inside it too.
     // Signal-driven re-render, so wait for the group to actually open.
     const railMemory = (await waitFor(() => {
       const found = (
@@ -66,6 +62,24 @@ describe('App shell', () => {
     // this is waiting only on Suspense to swap the fallback for the component —
     // a couple of microtasks, not a module load.
     await screen.findByRole('heading', { level: 1, name: 'Memory' });
+  });
+
+  it('lands a bare visit on Chat and rewrites the URL to /hypervisor', async () => {
+    navigate('/', true);
+    const { container } = render(<App />);
+    await waitFor(() => expect(currentPath.value).toBe('/hypervisor'));
+    expect(window.location.pathname).toBe('/hypervisor');
+    expect(container.querySelector('.app-shell')?.getAttribute('data-active-route')).toBe(
+      '/hypervisor',
+    );
+    const active = container.querySelector('.rail .rail-item[aria-current="page"]');
+    expect(active?.textContent).toContain('Chat');
+  });
+
+  it('the brand mark goes home to Chat', async () => {
+    render(<App />);
+    screen.getByLabelText('Go to home (Chat)').click();
+    expect(currentPath.value).toBe('/hypervisor');
   });
 
   it('opens the command palette when the topbar search is clicked', async () => {

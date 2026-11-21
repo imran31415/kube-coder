@@ -13,9 +13,9 @@ beforeEach(() => {
 });
 
 describe('MoreSheet categories (#267)', () => {
-  it('renders Quick actions plus the three nav category sections', () => {
+  it('renders Quick actions plus the Workspace sections (Mission Control, Machine, Knowledge)', () => {
     render(<MoreSheet />);
-    for (const title of ['Quick actions', 'Mission Control', 'Workspace', 'Knowledge']) {
+    for (const title of ['Quick actions', 'Mission Control', 'Machine', 'Knowledge']) {
       expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
     }
     // Quick actions keeps the pre-existing action entries.
@@ -23,9 +23,10 @@ describe('MoreSheet categories (#267)', () => {
     expect(screen.getByText('Open VS Code')).toBeInTheDocument();
     expect(screen.getByText('Switch to light')).toBeInTheDocument();
     // Display labels from the shared source of truth.
-    expect(screen.getByText('Chat')).toBeInTheDocument();
     expect(screen.getByText('Builds')).toBeInTheDocument();
-    // Settings stays a standalone entry with no category.
+    // Chat is the bottom bar's other slot, not a Workspace entry.
+    expect(screen.queryByText('Chat')).toBeNull();
+    // Settings closes Workspace as a standalone entry with no category.
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
 
