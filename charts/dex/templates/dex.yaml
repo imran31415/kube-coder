@@ -125,7 +125,11 @@ spec:
         volumeMounts:
         - {name: config, mountPath: /config, readOnly: true}
         - {name: grpc, mountPath: /grpc, readOnly: true}
+        # The image entrypoint renders the config to /tmp; the root fs is read-only.
+        - {name: tmp, mountPath: /tmp}
       volumes:
+      - name: tmp
+        emptyDir: {sizeLimit: 16Mi}
       - name: config
         configMap: {name: dex-config}
       - name: grpc
@@ -148,6 +152,9 @@ metadata:
   name: dex
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- if and .Values.tls.clusterIssuer (not .Values.tls.sharedCertificate) }}
+    cert-manager.io/cluster-issuer: {{ .Values.tls.clusterIssuer | quote }}
+    {{- end }}
 spec:
   ingressClassName: nginx
   tls:

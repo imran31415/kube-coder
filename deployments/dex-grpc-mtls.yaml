@@ -1,0 +1,64 @@
+# Dex gRPC mutual TLS via cert-manager (docs/DEX_SIGNUP.md step 4).
+#
+# A private CA (self-signed root) signs:
+#   * the Dex gRPC server cert   -> Secret dex-grpc              (ns dex)
+#   * the controller client cert -> Secret dex-controller-client (ns coder)
+# cert-manager writes the CA into each Secret's ca.crt, which is exactly what
+# both sides need (Dex: client CA; controller: server CA).
+#
+# Assumes the chart defaults: Dex release in namespace `dex`, controller in
+# `coder`, cert-manager's cluster resource namespace `cert-manager`, and a
+# self-signed ClusterIssuer named `selfsigned-issuer`. Edit to match your
+# cluster. cert-manager renews both leaf certs; restart Dex and the controller
+# after a renewal so they reload (gRPC channels don't hot-reload).
+#
+# Applied by `make dex-mtls`.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: kube-coder-dex-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: kube-coder-dex-ca
+  secretName: kube-coder-dex-ca
+  duration: 87600h # 10y root; leaves below are short-lived
+  privateKey: {algorithm: ECDSA, size: 256}
+  issuerRef: {name: selfsigned-issuer, kind: ClusterIssuer}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: kube-coder-dex-ca
+spec:
+  ca:
+    secretName: kube-coder-dex-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dex-grpc
+  namespace: dex
+spec:
+  secretName: dex-grpc
+  commonName: dex.dex.svc.cluster.local
+  dnsNames: [dex.dex.svc.cluster.local, dex.dex.svc, dex.dex]
+  usages: [server auth, digital signature, key encipherment]
+  duration: 2160h
+  renewBefore: 360h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  issuerRef: {name: kube-coder-dex-ca, kind: ClusterIssuer}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dex-controller-client
+  namespace: coder
+spec:
+  secretName: dex-controller-client
+  commonName: workspace-controller
+  usages: [client auth, digital signature, key encipherment]
+  duration: 2160h
+  renewBefore: 360h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  issuerRef: {name: kube-coder-dex-ca, kind: ClusterIssuer}
