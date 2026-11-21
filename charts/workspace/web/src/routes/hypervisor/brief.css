@@ -292,9 +292,9 @@
   background: var(--text-subtle);
   flex: none;
 }
-.cto-dot-running { background: var(--success); }
-.cto-dot-waiting { background: var(--warn); }
-.cto-dot-error { background: var(--danger); }
+.cto-dot-running { background: var(--success); box-shadow: var(--glow-success); }
+.cto-dot-waiting { background: var(--warn); box-shadow: var(--glow-warn); }
+.cto-dot-error { background: var(--danger); box-shadow: var(--glow-danger); }
 .cto-dot-completed { background: var(--text-subtle); }
 .cto-dot-idle { background: var(--text-subtle); }
 .cto-skel {

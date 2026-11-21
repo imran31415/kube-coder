@@ -88,7 +88,7 @@ import { SearchPicker } from '../components/SearchPicker';
 import { ProjectBriefSheet } from '../components/ProjectBriefSheet';
 import { MODE_OPTIONS, personaLabel } from '../util/threadMode';
 import { assistantMarker, missingKeyMessage } from '../util/assistantReady';
-import { colors, font, radius, space } from '../theme';
+import { colors, font, radius, shadow, space } from '../theme';
 
 const SUGGESTIONS = [
   "What's running and how much CPU am I using?",
@@ -1386,7 +1386,7 @@ function ChatsSheet({
             return (
               <View key={t.id} style={[styles.chatRow, on && styles.chatRowOn]}>
                 <Pressable onPress={() => onOpen(t.id)} onLongPress={() => startRename(t)} style={styles.chatRowMain}>
-                  <View style={[styles.dot, { backgroundColor: t.status === 'running' ? colors.running : colors.killed }]} />
+                  <View style={[styles.dot, t.status === 'running' ? [{ backgroundColor: colors.running }, shadow.glow(colors.running)] : { backgroundColor: colors.killed }]} />
                   <View style={styles.chatRowBody}>
                     <Text numberOfLines={1} style={[styles.chatRowTitle, on && { color: colors.text }]}>
                       {t.title || 'New chat'}

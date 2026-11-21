@@ -62,7 +62,7 @@ export function buildConfig(): ExpoConfig {
     icon: './assets/icon.png',
     scheme: 'kubecoder',
     userInterfaceStyle: 'dark',
-    backgroundColor: '#0b0d10',
+    backgroundColor: '#12171f',
     assetBundlePatterns: ['**/*'],
     ios: {
       supportsTablet: true,
@@ -135,7 +135,7 @@ export function buildConfig(): ExpoConfig {
         {
           image: './assets/splash-icon.png',
           resizeMode: 'contain',
-          backgroundColor: '#0b0d10',
+          backgroundColor: '#12171f',
         },
       ],
       [

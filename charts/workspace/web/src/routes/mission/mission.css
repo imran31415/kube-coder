@@ -131,7 +131,7 @@
   flex: none;
 }
 .mission-col-dot-running { background: var(--info); }
-.mission-col-dot-waiting { background: var(--warn); }
+.mission-col-dot-waiting { background: var(--warn); box-shadow: var(--glow-warn); }
 .mission-col-dot-review { background: var(--success); }
 .mission-col-dot-done { background: var(--text-subtle); }
 
@@ -444,7 +444,7 @@
   background: var(--text-subtle);
 }
 .mission-timeline-dot-ok { background: var(--success); }
-.mission-timeline-dot-error { background: var(--danger); }
+.mission-timeline-dot-error { background: var(--danger); box-shadow: var(--glow-danger); }
 .mission-timeline-dot-pending { background: var(--warn); }
 .mission-timeline-dot-muted { background: var(--border-2); }
 .mission-timeline-body { min-width: 0; flex: 1; }
