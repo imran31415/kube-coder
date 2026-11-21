@@ -207,10 +207,10 @@ func serve() error {
 // below 1 at render time; a keeper run some other way that is given 0 must not
 // read it as "sleep the moment it is quiet", so that falls back to the default.
 func idleMinutesFromEnv() int {
-	n := envInt("KEEPER_IDLE_MINUTES", 30)
+	n := envInt("KEEPER_IDLE_MINUTES", 720)
 	if n < 1 {
-		log.Printf("KEEPER_IDLE_MINUTES=%d would sleep a workspace the moment it went quiet; using 30", n)
-		return 30
+		log.Printf("KEEPER_IDLE_MINUTES=%d would sleep a workspace the moment it went quiet; using 720", n)
+		return 720
 	}
 	return n
 }

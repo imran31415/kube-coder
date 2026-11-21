@@ -75,7 +75,7 @@ SSH_PORT = int(os.environ.get('KC_SSH_PORT', '22'))
 
 #: The keeper's default threshold, matching `keeper.sleep.idleMinutes`. The
 #: request may override it; the endpoint reports the value it used either way.
-DEFAULT_IDLE_MINUTES = int(os.environ.get('KC_KEEPER_IDLE_MINUTES', '30'))
+DEFAULT_IDLE_MINUTES = int(os.environ.get('KC_KEEPER_IDLE_MINUTES', '720'))
 
 #: A task in either of these is still somebody's work in progress. Same pair
 #: `_reconcile_status` treats as not-yet-finished (server.py). `running` is
