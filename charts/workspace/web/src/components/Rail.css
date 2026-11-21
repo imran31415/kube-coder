@@ -72,6 +72,38 @@
 
 .rail-group-items { display: flex; flex-direction: column; gap: 2px; }
 
+/* The Workspace disclosure header is a full .rail-item (icon + label) so it
+   reads as a top-level entry beside Chat; the chevron rides at its end. */
+.rail-group-toggle { width: 100%; }
+.rail-group-toggle .rail-group-chev {
+  width: auto;
+  align-self: center;
+  margin-left: auto;
+  background: transparent;
+  pointer-events: none;
+}
+/* Its contents sit one step in, under a hairline guide, so the sub-headings
+   read as belonging to Workspace rather than as peers of it. */
+.rail-workspace-items {
+  margin: 2px 0 0 12px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+  gap: var(--size-2);
+}
+.rail-workspace-items > .rail-divider { margin: 0 8px; }
+
+/* A sub-heading inside Workspace (Mission Control / Machine / Knowledge):
+   a plain label over its items — not a disclosure of its own. */
+.rail-section { display: flex; flex-direction: column; gap: 2px; }
+.rail-section-title {
+  padding: 4px 10px 2px 14px;
+  color: var(--text-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 /* Hairline between groups: flattened icon runs (icon-only mode) and the
    trailing Settings/Collapse group (both modes). */
 .rail-divider { height: 1px; background: var(--border); margin: 3px 8px; }
@@ -182,6 +214,14 @@
   padding: 10px 0;
 }
 .rail-collapsed .rail-toggle-label { display: none; }
+/* Icon-only: Workspace's runs sit flush, no indent guide to eat the 52px. */
+.rail-collapsed .rail-workspace-items {
+  margin: 0;
+  padding: 0;
+  border-left: 0;
+  gap: 0;
+}
+.rail-collapsed .rail-workspace-items > .rail-divider { margin: 3px 8px; }
 
 [data-density="compact"] .rail-item { padding: 5px 10px; }
 [data-density="compact"] .rail-collapsed .rail-item { padding: 8px 0; }

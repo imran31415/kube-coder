@@ -9,7 +9,7 @@ import { signal } from '@preact/signals';
  *   /oauth/...        (root through the OAuth2 ingress)
  *   /oauth/next/...   (legacy through the OAuth2 ingress)
  * `normalize()` strips known prefixes so app-level routes are always `/tasks`,
- * `/memory`, etc. The path "/" maps to the default route (/tasks).
+ * `/memory`, etc. The path "/" maps to the default route (HOME_PATH, Chat).
  */
 const PREFIXES = ['/oauth/next', '/next', '/oauth'];
 
@@ -71,11 +71,20 @@ export interface RouteDef {
   title: string;
 }
 
+/**
+ * The landing route: what a bare visit to the dashboard (`/`), an unknown
+ * path, and the brand mark all open. Chat is the front door — it is where
+ * work starts, and Mission Control is one click away inside Workspace for
+ * the "what needs me?" sweep. Every other route still deep-links as before.
+ */
+export const HOME_PATH = '/hypervisor';
+
 export const ROUTES: RouteDef[] = [
-  // Mission Control is the default landing route — matchRoute('/') falls
-  // through to ROUTES[0], so this order also controls what the user sees on
-  // a bare visit to the dashboard. It leads because "what needs me?" is the
-  // question you arrive with; Desktop is a place you go on purpose.
+  // "Chat" is the one user-facing name for this surface (#346); "Hypervisor"
+  // survives only as the internal term (route path, stores, server modules).
+  // Listed first because it is HOME_PATH, so the command palette's jump list
+  // starts where the rail does.
+  { path: '/hypervisor', title: 'Chat' },
   { path: '/mission', title: 'Mission Control' },
   { path: '/desktop', title: 'Desktop' },
   // Kept resolvable, not navigable (#683): /cto is a permanent redirect into
@@ -84,9 +93,6 @@ export const ROUTES: RouteDef[] = [
   { path: '/cto', title: 'AI CTO' },
   { path: '/board', title: 'Board' },
   { path: '/feed', title: 'Feed' },
-  // "Chat" is the one user-facing name for this surface (#346); "Hypervisor"
-  // survives only as the internal term (route path, stores, server modules).
-  { path: '/hypervisor', title: 'Chat' },
   { path: '/walkie', title: 'Walkie-Talkie' },
   { path: '/tasks', title: 'Build' },
   { path: '/memory', title: 'Memory' },
@@ -101,27 +107,48 @@ export const ROUTES: RouteDef[] = [
 
 export interface NavItem {
   path: string;
-  /** Display-label override (e.g. /hypervisor shows as "Chat" per #346);
-   *  defaults to the route's ROUTES title. */
+  /** Display-label override (e.g. /tasks shows as "Builds"); defaults to the
+   *  route's ROUTES title. */
   label?: string;
 }
 
 export interface NavGroup {
-  id: 'mission' | 'workspace' | 'knowledge';
+  id: 'mission' | 'machine' | 'knowledge';
   title: string;
-  /** Route the group header itself navigates to (Mission Control → the
-   *  /mission board). Groups without a landing page just toggle. */
+  /** Route the section's "Overview" entry opens (Mission Control → the
+   *  /mission board). Sections without a landing page are just a heading. */
   landing?: string;
   items: NavItem[];
 }
 
 /**
- * Categorized navigation (#267) — purely presentational grouping shared by
- * the Rail, the mobile More sheet, and the command palette. ROUTES and
- * matchRoute() are untouched, so deep links and the default landing route
- * are unaffected by group order. /settings deliberately stays out: it's a
- * standalone item the Rail renders as its own trailing group, not a
- * category member.
+ * The two top-level nav entries, in order: Chat, then the Workspace
+ * disclosure. Everything that is not Chat lives inside Workspace —
+ * NAV_GROUPS below are its sub-headings, and Settings closes it.
+ */
+export const NAV_TOP = [
+  { id: 'chat', title: 'Chat', path: HOME_PATH },
+  { id: 'workspace', title: 'Workspace' },
+] as const;
+
+/** The id of the one collapsible top-level group (the Rail's disclosure). */
+export const WORKSPACE_GROUP_ID = 'workspace';
+
+/** Routes listed inside Workspace after its sections, below a divider. */
+export const WORKSPACE_TAIL: readonly string[] = ['/settings'];
+
+/**
+ * The sections inside the Workspace disclosure (#267, regrouped when the
+ * sidebar collapsed to Chat + Workspace) — purely presentational grouping
+ * shared by the Rail, the narrow-screen Workspace sheet and the command
+ * palette. ROUTES and matchRoute() are untouched, so deep links are
+ * unaffected by group order.
+ *
+ * The former "Workspace" section is now "Machine": Workspace is the
+ * top-level container, and a sub-heading with the same name as the thing
+ * that contains it reads as a mistake. What the section holds — Desktop,
+ * Apps, Files — is the pod itself, so it is named for that. (The mobile
+ * drawer's copy adds Metrics, which is machine health too.)
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -129,10 +156,8 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Mission Control',
     landing: '/mission',
     items: [
-      // Chat leads the group now that the AI CTO is a mode of it (#683).
-      { path: '/hypervisor', label: 'Chat' },
-      // The Board Processor works someone ELSE's backlog, so it belongs beside
-      // Chat (where the AI CTO reasons over ours) rather than under Workspace.
+      // The Board Processor works someone ELSE's backlog, so it sits with the
+      // other "what needs me?" surfaces rather than under Machine.
       { path: '/board', label: 'Board' },
       { path: '/feed', label: 'Feed' },
       { path: '/tasks', label: 'Builds' },
@@ -145,8 +170,8 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    id: 'workspace',
-    title: 'Workspace',
+    id: 'machine',
+    title: 'Machine',
     items: [{ path: '/desktop' }, { path: '/apps' }, { path: '/files' }],
   },
   {
@@ -184,11 +209,17 @@ export function visibleNavGroups(caps: {
   }));
 }
 
-/** The nav group containing `path` (as landing or item), if any. */
+/** The Workspace section containing `path` (as landing or item), if any. */
 export function navGroupFor(path: string): NavGroup | undefined {
   return NAV_GROUPS.find(
     (g) => g.landing === path || g.items.some((i) => i.path === path),
   );
+}
+
+/** True when `path` is reached through the Workspace disclosure — i.e. it is
+ *  anything the nav lists other than Chat. */
+export function inWorkspace(path: string): boolean {
+  return !!navGroupFor(path) || WORKSPACE_TAIL.includes(path);
 }
 
 /** Display label for a route in nav surfaces — item override or ROUTES title. */
@@ -200,11 +231,16 @@ export function navLabel(path: string): string {
   return ROUTES.find((r) => r.path === path)?.title ?? path;
 }
 
+/** The home route's definition (HOME_PATH is always in ROUTES). */
+function homeRoute(): RouteDef {
+  return ROUTES.find((r) => r.path === HOME_PATH)!;
+}
+
 export function matchRoute(path: string): RouteDef {
   // `/tasks/abc` still matches /tasks (detail handled within the route module).
-  if (path === '/' || path === '') return ROUTES[0];
+  if (path === '/' || path === '') return homeRoute();
   const top = '/' + path.split('/').filter(Boolean)[0];
-  return ROUTES.find((r) => r.path === top) ?? ROUTES[0];
+  return ROUTES.find((r) => r.path === top) ?? homeRoute();
 }
 
 /** Everything after the matched top-level segment (no leading slash).

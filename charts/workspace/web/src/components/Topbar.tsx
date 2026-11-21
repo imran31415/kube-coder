@@ -8,7 +8,7 @@ import { WaitingBadge } from './WaitingBadge';
 import { createTerminalTask, terminalUrl, vscodeUrl } from '../api/tasks';
 import { refreshTasks } from '../store/tasks';
 import { serverMode } from '../store/server-mode';
-import { navigate } from '../store/router';
+import { navigate, HOME_PATH } from '../store/router';
 import { drawerOpen, sheetOpen } from '../store/ui';
 import './Topbar.css';
 
@@ -66,10 +66,10 @@ export function Topbar() {
           drawerOpen.value = null;
           sheetOpen.value = null;
           paletteOpen.value = false;
-          navigate('/mission');
+          navigate(HOME_PATH);
         }}
-        aria-label="Go to home (Mission Control)"
-        title="Home — Mission Control"
+        aria-label="Go to home (Chat)"
+        title="Home — Chat"
       >
         <span class="brand-mark" aria-hidden>kc</span>
         <span class="brand-name">kube-coder</span>

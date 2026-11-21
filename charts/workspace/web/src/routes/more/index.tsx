@@ -1,4 +1,4 @@
-import { navigate, visibleNavGroups, navLabel } from '../../store/router';
+import { navigate, visibleNavGroups, navLabel, WORKSPACE_TAIL } from '../../store/router';
 import { sheetOpen, theme } from '../../store/ui';
 import { Icon, type IconName } from '../../components/Icon';
 import { Button } from '../../components/primitives/Button';
@@ -32,6 +32,7 @@ const ROUTE_ICONS: Record<string, IconName> = {
   '/memory': 'memory',
   '/skills': 'skills',
   '/docs': 'docs',
+  '/settings': 'settings',
 };
 
 const ROUTE_HINTS: Record<string, string> = {
@@ -98,9 +99,11 @@ export function MoreSheet() {
       },
     },
   ];
-  // Same categories as the desktop rail (#267) — NAV_GROUPS is the single
-  // source of truth. Full groups render here (including routes that also
-  // have BottomNav slots) so the sheet doubles as a complete site map.
+  // The Workspace sheet: the narrow-screen twin of the rail's Workspace
+  // disclosure, opened from the bottom bar's Workspace slot. Same sections
+  // as the rail (NAV_GROUPS is the single source of truth), then the
+  // Workspace tail (Settings) — everything except Chat, which is the bar's
+  // other slot.
   const sections: MoreSection[] = [
     { title: 'Quick actions', entries: quickActions },
     ...visibleNavGroups({
@@ -115,7 +118,7 @@ export function MoreSheet() {
       ],
     })),
   ];
-  const settingsEntry = routeEntry('/settings');
+  const tailEntries = WORKSPACE_TAIL.map((p) => routeEntry(p));
   return (
     <div class="more">
       {sections.map((sec) => (
@@ -138,15 +141,17 @@ export function MoreSheet() {
         </section>
       ))}
       <ul class="more-list">
-        <li key="Settings">
-          <button class="more-item" type="button" onClick={settingsEntry.onSelect}>
-            <span class="more-item-icon"><Icon name="settings" size={18} /></span>
-            <div class="more-item-text">
-              <span class="more-item-label">Settings</span>
-            </div>
-            <span class="more-item-chev"><Icon name="chevron-right" size={14} /></span>
-          </button>
-        </li>
+        {tailEntries.map((e) => (
+          <li key={e.label}>
+            <button class="more-item" type="button" onClick={e.onSelect}>
+              <span class="more-item-icon"><Icon name={e.icon} size={18} /></span>
+              <div class="more-item-text">
+                <span class="more-item-label">{e.label}</span>
+              </div>
+              <span class="more-item-chev"><Icon name="chevron-right" size={14} /></span>
+            </button>
+          </li>
+        ))}
       </ul>
       <div class="more-footer">
         <Button

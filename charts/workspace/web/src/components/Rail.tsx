@@ -4,8 +4,11 @@ import {
   navigate,
   matchRoute,
   visibleNavGroups,
-  navGroupFor,
+  inWorkspace,
   navLabel,
+  NAV_TOP,
+  WORKSPACE_GROUP_ID,
+  WORKSPACE_TAIL,
   type NavGroup,
 } from '../store/router';
 import { serverMode } from '../store/server-mode';
@@ -36,9 +39,18 @@ const ICONS: Record<string, IconName> = {
   '/settings': 'settings',
 };
 
-function RailItem({ path, active }: { path: string; active: string }) {
+function RailItem({
+  path,
+  active,
+  label: labelOverride,
+}: {
+  path: string;
+  active: string;
+  /** Rail-only label (e.g. a section's landing reads "Overview"). */
+  label?: string;
+}) {
   const isActive = active === path;
-  const label = navLabel(path);
+  const label = labelOverride ?? navLabel(path);
   return (
     <button
       type="button"
@@ -53,60 +65,90 @@ function RailItem({ path, active }: { path: string; active: string }) {
   );
 }
 
-function RailGroup({ group, active }: { group: NavGroup; active: string }) {
-  const expanded = isRailGroupExpanded(group.id);
-  const containsActive =
-    group.landing === active || group.items.some((i) => i.path === active);
-  // When a collapsed group holds the active route, tint the header so the
-  // user never loses orientation.
-  const headerTint = !expanded && containsActive ? 'rail-group-header-active' : '';
-  const chevron = (
-    <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={12} />
-  );
+/** One sub-heading inside Workspace: a plain heading over its items. Not a
+ *  disclosure of its own — one level of collapse is the point of this rail. */
+function RailSection({ group, active }: { group: NavGroup; active: string }) {
+  if (!group.landing && group.items.length === 0) return null;
   return (
-    <div class="rail-group">
-      {group.landing ? (
-        // Landing groups (Mission Control): the label navigates, the
-        // chevron toggles — two separate buttons for two separate actions.
-        // The link renders as a regular rail item (icon + label) so it
-        // reads as clickable, not as a section heading.
-        <div class={`rail-group-header ${headerTint}`}>
-          <button
-            type="button"
-            class={`rail-item rail-group-link ${active === group.landing ? 'rail-item-active' : ''}`}
-            onClick={() => navigate(group.landing!)}
-            aria-current={active === group.landing ? 'page' : undefined}
-          >
-            <Icon name={ICONS[group.landing] ?? 'inbox'} size={16} />
-            <span class="rail-item-label">{group.title}</span>
-          </button>
-          <button
-            type="button"
-            class="rail-group-chev"
-            onClick={() => toggleRailGroup(group.id)}
-            aria-expanded={expanded}
-            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.title}`}
-          >
-            {chevron}
-          </button>
-        </div>
-      ) : (
-        <div class={`rail-group-header ${headerTint}`}>
-          <button
-            type="button"
-            class="rail-group-label"
-            onClick={() => toggleRailGroup(group.id)}
-            aria-expanded={expanded}
-          >
-            <span class="rail-group-title">{group.title}</span>
-            {chevron}
-          </button>
-        </div>
-      )}
+    <div class="rail-section" role="group" aria-label={group.title}>
+      <div class="rail-section-title" aria-hidden="true">
+        {group.title}
+      </div>
+      {group.landing && <RailItem path={group.landing} active={active} label="Overview" />}
+      {group.items.map((i) => (
+        <RailItem key={i.path} path={i.path} active={active} />
+      ))}
+    </div>
+  );
+}
+
+/** Icon-only counterpart of RailSection: an icon run under a hairline. */
+function RailIconRun({ group, active }: { group: NavGroup; active: string }) {
+  return (
+    <>
+      <div class="rail-divider" role="separator" />
+      {group.landing && <RailItem path={group.landing} active={active} label={group.title} />}
+      {group.items.map((i) => (
+        <RailItem key={i.path} path={i.path} active={active} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * The Workspace disclosure: every destination that is not Chat. Collapsed
+ * by default; it reveals itself while the active route lives inside it
+ * (Rail's effect → expandRailGroup) and, if the user explicitly collapses it
+ * while standing there, the header takes the accent tint instead so they
+ * never lose their place.
+ */
+function WorkspaceGroup({
+  groups,
+  active,
+  collapsed,
+}: {
+  groups: NavGroup[];
+  active: string;
+  collapsed: boolean;
+}) {
+  const id = WORKSPACE_GROUP_ID;
+  const expanded = isRailGroupExpanded(id);
+  const containsActive = inWorkspace(active);
+  const headerTint = !expanded && containsActive ? 'rail-group-header-active' : '';
+  const title = NAV_TOP[1].title;
+  return (
+    <div class="rail-group rail-workspace">
+      <div class={`rail-group-header ${headerTint}`}>
+        <button
+          type="button"
+          class="rail-item rail-group-toggle"
+          onClick={() => toggleRailGroup(id)}
+          aria-expanded={expanded}
+          aria-controls="rail-workspace-items"
+          title={collapsed ? `${expanded ? 'Collapse' : 'Expand'} ${title}` : undefined}
+        >
+          <Icon name="workspace" size={16} />
+          <span class="rail-item-label">{title}</span>
+          {!collapsed && (
+            <span class="rail-group-chev" aria-hidden="true">
+              <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={12} />
+            </span>
+          )}
+        </button>
+      </div>
       {expanded && (
-        <div class="rail-group-items" role="group" aria-label={group.title}>
-          {group.items.map((i) => (
-            <RailItem key={i.path} path={i.path} active={active} />
+        <div
+          id="rail-workspace-items"
+          class="rail-group-items rail-workspace-items"
+          role="group"
+          aria-label={title}
+        >
+          {collapsed
+            ? groups.map((g) => <RailIconRun key={g.id} group={g} active={active} />)
+            : groups.map((g) => <RailSection key={g.id} group={g} active={active} />)}
+          <div class="rail-divider" role="separator" />
+          {WORKSPACE_TAIL.map((p) => (
+            <RailItem key={p} path={p} active={active} />
           ))}
         </div>
       )}
@@ -124,12 +166,12 @@ export function Rail() {
     scansEnabled: serverMode.value.scansEnabled,
   });
 
-  // Reveal the group containing the active route so palette/bottom-nav jumps
-  // always land on a visible item. Transient by design (see store/ui.ts):
-  // leaving the route re-collapses the group, so the default five-row rail
-  // survives normal use instead of creeping back to thirteen.
+  // Reveal Workspace while the active route lives inside it, so palette /
+  // bottom-nav jumps always land on a visible item. Transient by design (see
+  // store/ui.ts): going back to Chat re-collapses it, so the two-row default
+  // survives normal use instead of creeping back to sixteen.
   useEffect(() => {
-    expandRailGroup(navGroupFor(active)?.id ?? null);
+    expandRailGroup(inWorkspace(active) ? WORKSPACE_GROUP_ID : null);
   }, [active]);
 
   // Preview fullscreen hides the rail entirely (overrides collapse state).
@@ -141,26 +183,16 @@ export function Rail() {
       data-collapsed={collapsed ? 'true' : 'false'}
     >
       <div class="rail-items">
-        {collapsed
-          ? // Icon-only mode: groups flatten to icon runs separated by
-            // hairline dividers; no disclosure. The Mission landing icon
-            // leads its group.
-            groups.map((g, idx) => (
-              <div class="rail-group" key={g.id}>
-                {idx > 0 && <div class="rail-divider" role="separator" />}
-                {g.landing && <RailItem path={g.landing} active={active} />}
-                {g.items.map((i) => (
-                  <RailItem key={i.path} path={i.path} active={active} />
-                ))}
-              </div>
-            ))
-          : groups.map((g) => <RailGroup key={g.id} group={g} active={active} />)}
-        {/* Settings + Collapse flow with the nav as a final group (#448):
-            a bottom slab pinned via margin-top:auto gets pushed below the
-            fold once the rail overflows and starts scrolling. */}
+        {/* Exactly two top-level entries: Chat, then Workspace (NAV_TOP). */}
+        <div class="rail-group">
+          <RailItem path={NAV_TOP[0].path} active={active} label={NAV_TOP[0].title} />
+        </div>
+        <WorkspaceGroup groups={groups} active={active} collapsed={collapsed} />
+        {/* Collapse flows with the nav as a final group (#448): a bottom slab
+            pinned via margin-top:auto gets pushed below the fold once the
+            rail overflows and starts scrolling. */}
         <div class="rail-group">
           <div class="rail-divider" role="separator" />
-          <RailItem path="/settings" active={active} />
           <button
             type="button"
             class="rail-toggle"

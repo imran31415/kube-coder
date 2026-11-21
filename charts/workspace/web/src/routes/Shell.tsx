@@ -1,7 +1,7 @@
 import type { ComponentType } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useEffect } from 'preact/hooks';
-import { currentPath, matchRoute } from '../store/router';
+import { currentPath, matchRoute, navigate, HOME_PATH } from '../store/router';
 import { paletteOpen, sheetOpen } from '../store/ui';
 import { useShortcut } from '../hooks/useShortcut';
 import { useKeyboardInset } from '../hooks/useKeyboardInset';
@@ -59,7 +59,15 @@ const ROUTE_COMPONENTS: Record<string, ComponentType> = {
 
 export function Shell() {
   const route = matchRoute(currentPath.value);
-  const RouteComponent: ComponentType = ROUTE_COMPONENTS[route.path] ?? ROUTE_COMPONENTS['/tasks'];
+  const RouteComponent: ComponentType = ROUTE_COMPONENTS[route.path] ?? ROUTE_COMPONENTS[HOME_PATH];
+
+  // A bare visit (`/`, or `/oauth/`) lands on Chat. Rewrite the URL to the
+  // home route itself rather than rendering Chat at `/`, so the chat page's
+  // URL-driven thread logic (restore last chat on a bare /hypervisor, deep
+  // links, back/forward) sees the path it is written against.
+  useEffect(() => {
+    if (currentPath.value === '/' || currentPath.value === '') navigate(HOME_PATH, true);
+  }, [currentPath.value]);
 
   // Cmd-K / Ctrl-K toggles the palette globally.
   useShortcut({ key: 'k', meta: true, allowInInput: true }, (e) => {
@@ -107,7 +115,7 @@ export function Shell() {
       <BottomSheet
         open={sheetOpen.value === 'more'}
         onClose={() => (sheetOpen.value = null)}
-        title="More"
+        title="Workspace"
         initialSnap="full"
       >
         <MoreSheet />
