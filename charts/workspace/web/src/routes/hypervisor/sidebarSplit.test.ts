@@ -49,6 +49,13 @@ describe('initialSidebarW', () => {
 });
 
 describe('chatGridTemplate (#683)', () => {
+  it('drops the sidebar and handle tracks when the Chats pane is collapsed', () => {
+    expect(chatGridTemplate({ sidebarW: 264, brief: 'none', sidebarCollapsed: true })).toBe('minmax(0, 1fr)');
+    expect(
+      chatGridTemplate({ sidebarW: 264, brief: 'expanded', sidebarCollapsed: true }).startsWith('minmax(0, 1fr) '),
+    ).toBe(true);
+  });
+
   it('is the two-column layout Chat has always had when no brief shows', () => {
     expect(chatGridTemplate({ sidebarW: 264, brief: 'none' })).toBe(
       '264px 6px minmax(0, 1fr)',

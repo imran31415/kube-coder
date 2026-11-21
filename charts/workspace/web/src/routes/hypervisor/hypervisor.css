@@ -2345,3 +2345,52 @@
 .hv-guide-modal .guide { border: 0; background: transparent; }
 .hv-guide-modal-foot { display: flex; justify-content: flex-end; padding: var(--size-3) var(--size-4) var(--size-4); }
 @media (max-width: 720px) { .hv-help-btn { width: 36px; } }
+
+/* ── Collapsible Chats pane (desktop) ──────────────────────────────────────
+   Collapsed, the sidebar + splitter leave the grid (index.tsx drops their
+   tracks) and the header shows the same "Chats N" badge phones use; clicking
+   it brings the pane back. */
+.route-hypervisor[data-chats-collapsed='true'] > .hv-sidebar,
+.route-hypervisor[data-chats-collapsed='true'] > .hv-split-handle { display: none; }
+.route-hypervisor[data-chats-collapsed='true'] .hv-topbar-menu { display: inline-flex; }
+.hv-sidebar-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-subtle);
+  cursor: pointer;
+}
+.hv-sidebar-collapse:hover { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+.hv-sidebar-collapse:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The badge itself: a compact pill with the live chat count. */
+.hv-topbar-menu {
+  height: 32px;
+  padding: 0 10px 0 8px;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-md);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.hv-topbar-menu:hover { color: var(--text); border-color: var(--border-2); }
+.hv-topbar-menu-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  text-align: center;
+}

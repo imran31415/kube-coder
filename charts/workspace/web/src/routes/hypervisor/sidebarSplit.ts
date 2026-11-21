@@ -69,8 +69,18 @@ export function resolvePaneCollapsed(choice: boolean | null, auto: boolean): boo
 export function chatGridTemplate(opts: {
   sidebarW: number;
   brief: 'none' | 'expanded' | 'collapsed';
+  /** Chats pane collapsed to its header badge: the sidebar + handle tracks
+   *  are dropped entirely (both elements are display:none, so leaving 0px
+   *  tracks would shift the chat into them). */
+  sidebarCollapsed?: boolean;
 }): string {
-  const base = `${Math.round(opts.sidebarW)}px 6px minmax(0, 1fr)`;
+  const base = opts.sidebarCollapsed
+    ? 'minmax(0, 1fr)'
+    : `${Math.round(opts.sidebarW)}px 6px minmax(0, 1fr)`;
   if (opts.brief === 'none') return base;
   return `${base} ${opts.brief === 'collapsed' ? BRIEF_COLLAPSED_W : BRIEF_W}px`;
 }
+
+// ── Chats pane collapse (desktop) ──────────────────────────────────────────
+/** Persisted "Chats pane collapsed to a badge" choice. */
+export const SIDEBAR_COLLAPSED_KEY = 'kc.hvSidebarCollapsed';
