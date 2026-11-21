@@ -38,6 +38,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 
@@ -91,6 +92,11 @@ _lock = threading.Lock()
 
 def pinned_version():
     return os.environ.get('STRIX_VERSION') or DEFAULT_VERSION
+
+
+def _log(message):
+    """Server log only. Never carries the key: nothing calls this with one."""
+    print(f'[scan-connection] {message}', file=sys.stderr, flush=True)
 
 
 # ── the scanner's config file ──────────────────────────────────────────────
@@ -218,16 +224,19 @@ def connection_view():
     key = env.get(KEY_VAR) or ''
     model = env.get(MODEL_VAR) or ''
     subscription = model.startswith('chatgpt/')
+    base = env.get(BASE_VAR) or ''
     return {
         'model': model,
-        'api_base': env.get(BASE_VAR) or '',
+        'api_base': base,
         'has_key': bool(key),
-        # A subscription model needs no key, so "configured" is not simply
-        # "has a key" — saying otherwise would tell a signed-in user they are
-        # not connected.
+        # "Configured" is not simply "has a key". A subscription model signs
+        # in instead, and a model on the user's own server (the form's
+        # "Server address") often takes no key at all — the scanner treats
+        # the key as optional. Requiring one left both unable to scan.
         'uses_subscription': subscription,
         'subscription': subscription_view(),
-        'configured': bool(model) and (bool(key) or subscription),
+        'configured': bool(model) and (bool(key) or subscription
+                                       or bool(base)),
     }
 
 
@@ -389,6 +398,73 @@ _PROBE = (
 )
 
 
+#: The scanner's own rule for a model name with no provider in front of it,
+#: asked of the scanner itself so the answer is the one a scan would get.
+#: Before any request it refuses a bare name that is not a known OpenAI model
+#: unless a server address is set, and the address can come from its config
+#: file or from any of several environment variables. Its settings loader
+#: knows all of them, which is why it is asked rather than our saved field.
+#: Exit 0: usable. Exit 3: the scanner would refuse it. Anything else: this
+#: check could not tell, and the scanner gets to decide.
+_BARE_MODEL_CHECK = (
+    'import os, sys\n'
+    'from strix.config.loader import load_settings\n'
+    'from strix.config.models import is_known_openai_bare_model\n'
+    'model = os.environ["KC_PROBE_MODEL"]\n'
+    'usable = load_settings().llm.api_base or is_known_openai_bare_model(model)\n'
+    'sys.exit(0 if usable else 3)\n'
+)
+_BARE_MODEL_TIMEOUT = 60
+#: Names the scanner accepted, per install. The check loads the scanner and
+#: its model library (around ten seconds), so a usable name is asked once
+#: rather than on every Start. Refusals are not kept: a model the library
+#: learns about later must not stay refused until the server restarts.
+_accepted_bare_models = set()
+
+#: What to tell the user when the scanner would refuse the model name. It
+#: does not quote the name: a key pasted into the wrong field would come
+#: straight back on screen and into whatever the user screenshots next.
+UNKNOWN_MODEL_MESSAGE = (
+    'The scanner does not recognise this model name. In Model settings, '
+    'write it as provider/model-name, for example anthropic/… or '
+    'openrouter/….')
+
+
+def model_name_problem(model, api_base='', runner=None):
+    """Why the scanner would refuse this model name, or '' when it would not.
+
+    Asked before a scan starts and by the connection check, so a name the
+    scanner rejects — a typo, a provider left off, or a browser that filled a
+    saved login into the Model field (#886) — is caught while it is free,
+    instead of becoming a failed scan and a notification.
+
+    Only a name with no provider prefix and no server address can fail this
+    rule, so everything else is answered without starting a process. When
+    the check itself cannot run (scanner not installed yet, a scanner version
+    that moved the function) this says nothing and the scanner decides: a
+    check that blocks scans when it is unsure would be worse than none.
+    """
+    model = (model or '').strip()
+    if not model or '/' in model or (api_base or '').strip():
+        return ''
+    if not is_installed():
+        return ''
+    python = os.path.join(venv_dir(), 'bin', 'python')
+    if (python, model) in _accepted_bare_models:
+        return ''
+    verdict, why = (runner or _Probe()).known_bare_model(python, model)
+    if verdict:
+        _accepted_bare_models.add((python, model))
+        return ''
+    if verdict is None:
+        _log(f'model name check could not run, so the scanner will decide: '
+             f'{why}')
+        return ''
+    _log('model name check: the scanner would refuse this model name (no '
+         'provider prefix, not a known OpenAI model, no server address)')
+    return UNKNOWN_MODEL_MESSAGE
+
+
 def test_connection(runner=None):
     """Check the saved settings against the provider. Returns `(ok, detail)`.
 
@@ -405,11 +481,19 @@ def test_connection(runner=None):
         return False, 'The scanner is still being installed.'
     env = saved_env()
     model = env.get(MODEL_VAR) or ''
+    base = env.get(BASE_VAR) or ''
     if not model:
         return False, 'No model is set yet.'
     if model.startswith('chatgpt/'):
         return runner.subscription_status(executable_path())
-    if not env.get(KEY_VAR):
+    # Before the key goes anywhere: a name the scanner refuses never reaches
+    # a provider, so neither should the probe's request.
+    problem = model_name_problem(model, base, runner=runner)
+    if problem:
+        return False, problem
+    # A model on the user's own server may take no key; the scanner treats
+    # it as optional, and so does the probe once an address is set.
+    if not env.get(KEY_VAR) and not base:
         return False, 'No API key is set for this model.'
     ok, detail = runner.probe_model(
         os.path.join(venv_dir(), 'bin', 'python'), model,
@@ -445,6 +529,23 @@ class _Probe:
         if r.returncode == 0:
             return True, 'The model answered.'
         return False, explain_provider_error(r.stderr or r.stdout)
+
+    def known_bare_model(self, python, model):
+        """`(verdict, why)`: True/False from the scanner's own rule, or None
+        with the reason this check could not tell."""
+        env = dict(os.environ)
+        env['KC_PROBE_MODEL'] = model
+        try:
+            r = subprocess.run([python, '-c', _BARE_MODEL_CHECK],
+                               capture_output=True, text=True,
+                               timeout=_BARE_MODEL_TIMEOUT, env=env)
+        except (OSError, subprocess.SubprocessError) as e:
+            return None, str(e)
+        if r.returncode in (0, 3):
+            return r.returncode == 0, ''
+        lines = (r.stderr or '').strip().splitlines()
+        return None, (lines[-1] if lines
+                      else f'the check exited {r.returncode}')
 
 
 #: Where the scanner keeps its own subscription credentials. We only ever ask
@@ -644,7 +745,7 @@ class SubscriptionSignIn:
         return {'signed_in': False, 'in_progress': True, 'state': state}
 
 
-#: Provider errors are written for developers. These are the four a user
+#: Provider errors are written for developers. These are the ones a user
 #: actually hits, each turned into the sentence that says what to do about it.
 #:
 #: ORDER IS LOAD-BEARING, and the reason is a real bug this table had: a
@@ -655,6 +756,12 @@ class SubscriptionSignIn:
 #: signals (a status code, "overloaded", a rate limit), and `unavailable` is
 #: left to the model rule below it.
 _ERROR_HINTS = (
+    # A model name the scanner (or LiteLLM, in the connection check) cannot
+    # route to any provider. First, because the fix is in the settings, not
+    # with the provider, and "is not available on this provider" below would
+    # send the user to look for a problem their provider does not have.
+    (re.compile(r'unknown model name|LLM Provider NOT provided', re.I),
+     UNKNOWN_MODEL_MESSAGE),
     # Quota before "busy", because an exhausted allowance also arrives as
     # a 429 and the two need opposite advice: waiting clears a burst, but a
     # daily cap only resets tomorrow and a spent plan never does. The busy

@@ -14,6 +14,7 @@ import { usePolling } from '../util/usePolling';
 import {
   FINDING_FACTS,
   FINDING_SECTIONS,
+  STATUS_LABELS,
   emptyFindingsText,
   fieldText,
   isLiveScan,
@@ -102,7 +103,9 @@ export default function ScanDetailScreen() {
                 <Text style={styles.liveText}>Scanning</Text>
               </View>
             ) : (
-              <Text style={styles.status}>{scan.status}</Text>
+              <Text style={styles.status}>
+                {STATUS_LABELS[scan.status] ?? scan.status}
+              </Text>
             )}
           </View>
           {/* Never a bare count: a finished scan's sentence says what was

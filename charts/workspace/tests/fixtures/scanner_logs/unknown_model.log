@@ -1,0 +1,10 @@
+╭─ STRIX ──────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  UNKNOWN MODEL NAME                                                          │
+│                                                                              │
+│  'FAKE-saved-login-not-a-model' is not a known OpenAI model. Bare names      │
+│  route to OpenAI by default.                                                 │
+│  If you meant a non-OpenAI provider, use the '<provider>/<model>' form,      │
+│  e.g. 'anthropic/claude-opus-4-7', 'deepseek/deepseek-v4-pro'.               │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

@@ -299,9 +299,15 @@ export function emptyFindingsText(scan: {
   status: ScanStatus;
   coverage?: ScanCoverage;
   report?: ScanReport;
+  usage?: ScanUsage;
 }): string {
   if (scan.status === 'running') {
     return 'Nothing found yet. A problem shows up here the moment the scanner proves it is real.';
+  }
+  // A scan that never reached the app: "none confirmed before the scan
+  // ended" under "could not run, so nothing was checked" contradicts it.
+  if (scan.status === 'failed' && !scan.usage?.requests) {
+    return 'Nothing was checked, so there is nothing to list.';
   }
   if (scan.status === 'done' && scan.coverage?.complete !== false) {
     return 'No problems were recorded for this scan.';

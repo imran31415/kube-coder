@@ -1,4 +1,5 @@
 import { signal } from '@preact/signals';
+import { ApiError } from '../api/client';
 import { subscribeEvents, type DashboardEvent } from '../api/events';
 import {
   listScans,
@@ -139,8 +140,16 @@ export async function loadTargets(): Promise<void> {
 
 export async function loadConnection(): Promise<void> {
   try {
+    const before = connection.value?.install?.state;
     connection.value = await getScanConnection();
     scansDisabled.value = false;
+    // A first connect saves mid-install, when the check can only say "still
+    // being installed". So the real check runs here, the moment the install
+    // lands, and a model that does not work is said before a scan is tried.
+    if (before === 'installing' && connection.value.install?.state === 'ready'
+        && connection.value.configured) {
+      void testConnection();
+    }
   } catch (err) {
     noteDisabled(err);
   }
@@ -289,9 +298,20 @@ export async function startScan(body: CreateScanBody): Promise<string | null> {
     await loadScans(true);
     return res.scan_id;
   } catch (err) {
-    pushToast(describe(err), { kind: 'danger', ttl: 6000 });
+    pushToast(describe(err), { kind: 'danger', ttl: 8000 });
+    // The fix for a refused model name is in one place; go there rather
+    // than leave the user to find it from the toast (#886).
+    if (errorCode(err) === 'model_invalid') openModelSettings();
     return null;
   }
+}
+
+/** The server's stable error code, when it sent one. Never the message. */
+function errorCode(err: unknown): string {
+  const body = err instanceof ApiError ? err.body : null;
+  return body && typeof body === 'object' && typeof (body as { code?: unknown }).code === 'string'
+    ? (body as { code: string }).code
+    : '';
 }
 
 export async function stop(id: string): Promise<void> {
@@ -384,6 +404,9 @@ function tick(): void {
   void loadScans(true);
   const current = openScan.value;
   if (current && isLiveScan(current)) void loadScan(current.id, true);
+  // The first-use install takes minutes and nothing else re-reads its
+  // state, so the page would say "setting up" until a reload.
+  if (connection.value?.install?.state === 'installing') void loadConnection();
 }
 
 /**

@@ -13,6 +13,8 @@ Run with:
     cd charts/workspace && python3 -m unittest tests.strix_connection_test
 """
 
+import contextlib
+import io
 import json
 import os
 import stat
@@ -27,6 +29,9 @@ import strix_connection  # noqa: E402
 from tests.envassert import assert_env_lacks_all  # noqa: E402
 
 SECRET = 'sk-test-0123456789abcdef'
+#: Stands in for what #886 saved as the model: a login the browser filled
+#: into the Model field. Plainly fake, and in no provider's format.
+BARE_NAME = 'FAKE-saved-login-not-a-model'
 
 
 class ConnectionTestCase(unittest.TestCase):
@@ -163,6 +168,16 @@ class ViewTests(ConnectionTestCase):
         self.assertTrue(view['configured'])
         self.assertFalse(view['has_key'])
 
+    def test_a_model_on_the_users_own_server_needs_no_key(self):
+        """The scanner treats the key as optional. Requiring one left a model
+        on the user's own server — the form's own `ollama/…` example —
+        unable to scan at all."""
+        self.mod.save_connection(model='ollama/some-model',
+                                 api_base='http://localhost:11434')
+        view = self.mod.connection_view()
+        self.assertTrue(view['configured'])
+        self.assertFalse(view['has_key'])
+
     def test_nothing_saved_reads_as_unconfigured(self):
         view = self.mod.connection_view()
         self.assertEqual(view['model'], '')
@@ -265,10 +280,12 @@ class InstallStateTests(ConnectionTestCase):
 class ConnectionTestProbeTests(ConnectionTestCase):
 
     class Probe:
-        def __init__(self, result=(True, 'ok')):
+        def __init__(self, result=(True, 'ok'), bare=(True, '')):
             self.result = result
+            self.bare = bare
             self.model_calls = []
             self.subscription_calls = []
+            self.bare_calls = []
 
         def subscription_status(self, executable):
             self.subscription_calls.append(executable)
@@ -278,6 +295,10 @@ class ConnectionTestProbeTests(ConnectionTestCase):
             self.model_calls.append({'python': python, 'model': model,
                                      'key': key, 'base': base})
             return self.result
+
+        def known_bare_model(self, python, model):
+            self.bare_calls.append(model)
+            return self.bare
 
     def install(self):
         binroot = os.path.join(self.mod.venv_dir(), 'bin')
@@ -325,6 +346,164 @@ class ConnectionTestProbeTests(ConnectionTestCase):
         """An argv is visible to anything that can read the process table."""
         self.assertNotIn('api_key=', self.mod._PROBE.replace('"api_key"', ''))
         self.assertIn('os.environ', self.mod._PROBE)
+
+    def test_a_name_the_scanner_would_refuse_fails_before_the_key_is_sent(self):
+        """#886: a saved login filled into Model and API key. The check says
+        so without handing that "key" to any provider, and without putting
+        the name back on screen — it may be a pasted secret."""
+        self.install()
+        self.mod.save_connection(model=BARE_NAME, api_key=SECRET)
+        probe = self.Probe(bare=(False, ''))
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            ok, detail = self.mod.test_connection(probe)
+        self.assertFalse(ok)
+        self.assertEqual(detail, self.mod.UNKNOWN_MODEL_MESSAGE)
+        self.assertEqual(probe.model_calls, [])
+        self.assertNotIn(BARE_NAME, detail + log.getvalue())
+        self.assertIn('would refuse', log.getvalue())
+
+    def test_a_bare_name_the_scanner_knows_goes_on_to_the_probe(self):
+        self.install()
+        self.mod.save_connection(model='known-bare-model', api_key=SECRET)
+        probe = self.Probe()
+        ok, _ = self.mod.test_connection(probe)
+        self.assertTrue(ok)
+        self.assertEqual(probe.bare_calls, ['known-bare-model'])
+        self.assertEqual(len(probe.model_calls), 1)
+
+    def test_a_name_with_a_provider_starts_no_name_check(self):
+        """Only a bare name can fail the scanner's rule, so nothing else pays
+        for a process start."""
+        self.install()
+        self.mod.save_connection(model='prov/model', api_key=SECRET)
+        probe = self.Probe()
+        self.mod.test_connection(probe)
+        self.assertEqual(probe.bare_calls, [])
+
+    def test_a_server_address_needs_no_key_and_no_name_check(self):
+        """With an address the scanner accepts any name, and the key is
+        optional, so the probe runs without one."""
+        self.install()
+        self.mod.save_connection(model='local-model',
+                                 api_base='http://localhost:11434')
+        probe = self.Probe()
+        ok, _ = self.mod.test_connection(probe)
+        self.assertTrue(ok)
+        self.assertEqual(probe.bare_calls, [])
+        self.assertFalse(probe.model_calls[0]['key'])
+        self.assertEqual(probe.model_calls[0]['base'], 'http://localhost:11434')
+
+    def test_when_the_name_check_cannot_run_the_scanner_decides(self):
+        """A check that blocks when it is unsure would be worse than none —
+        and the reason it could not run goes to the server log."""
+        self.install()
+        self.mod.save_connection(model='some-bare-name', api_key=SECRET)
+        probe = self.Probe(bare=(None, 'ImportError: no such function'))
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            ok, _ = self.mod.test_connection(probe)
+        self.assertTrue(ok)
+        self.assertIn('could not run', log.getvalue())
+        self.assertIn('ImportError', log.getvalue())
+
+
+class ModelNameCheckTests(ConnectionTestCase):
+    """`model_name_problem`, and the check script run for real against a
+    stand-in for the two scanner functions it imports."""
+
+    def test_nothing_is_asked_before_the_scanner_is_installed(self):
+        class Never:
+            def known_bare_model(self, python, model):
+                raise AssertionError('no check without the scanner')
+        self.assertEqual(
+            self.mod.model_name_problem('bare-name', '', runner=Never()), '')
+
+    def test_a_saved_server_address_answers_without_a_process(self):
+        class Never:
+            def known_bare_model(self, python, model):
+                raise AssertionError('an address makes any name usable')
+        self.assertEqual(self.mod.model_name_problem(
+            'bare-name', 'http://localhost:11434', runner=Never()), '')
+
+    def test_an_accepted_name_is_asked_once_and_a_refused_one_every_time(self):
+        """The check loads the scanner, which takes seconds, so a usable name
+        must not cost that on every Start. A refusal is asked again: a model
+        the scanner learns about later must not stay refused."""
+        binroot = os.path.join(self.mod.venv_dir(), 'bin')
+        os.makedirs(binroot, exist_ok=True)
+        open(os.path.join(binroot, 'strix'), 'w').close()
+
+        class Counting:
+            def __init__(self, verdict):
+                self.verdict, self.calls = verdict, 0
+
+            def known_bare_model(self, python, model):
+                self.calls += 1
+                return self.verdict, ''
+
+        yes = Counting(True)
+        for _ in range(3):
+            self.assertEqual(
+                self.mod.model_name_problem('usable-name', runner=yes), '')
+        self.assertEqual(yes.calls, 1)
+        no = Counting(False)
+        with contextlib.redirect_stderr(io.StringIO()):
+            for _ in range(2):
+                self.assertEqual(
+                    self.mod.model_name_problem(BARE_NAME, runner=no),
+                    self.mod.UNKNOWN_MODEL_MESSAGE)
+        self.assertEqual(no.calls, 2)
+
+    def fake_scanner(self, known=(), broken=False):
+        """A `strix` package with the scanner's settings loader and its
+        bare-name rule, importable by the check's own interpreter."""
+        root = os.path.join(self.home, 'fake-scanner')
+        config = os.path.join(root, 'strix', 'config')
+        os.makedirs(config)
+        for directory in (os.path.join(root, 'strix'), config):
+            open(os.path.join(directory, '__init__.py'), 'w').close()
+        with open(os.path.join(config, 'loader.py'), 'w') as f:
+            f.write('import os, types\n'
+                    'def load_settings():\n'
+                    '    base = os.environ.get("LLM_API_BASE")\n'
+                    '    return types.SimpleNamespace(\n'
+                    '        llm=types.SimpleNamespace(api_base=base))\n')
+        with open(os.path.join(config, 'models.py'), 'w') as f:
+            if not broken:
+                f.write('def is_known_openai_bare_model(name):\n'
+                        f'    return name in {list(known)!r}\n')
+        self._set_env('PYTHONPATH', root)
+
+    def _set_env(self, key, value):
+        previous = os.environ.get(key)
+        os.environ[key] = value
+        self.addCleanup(lambda: os.environ.__setitem__(key, previous)
+                        if previous is not None else os.environ.pop(key, None))
+
+    def check(self, model):
+        return self.mod._Probe().known_bare_model(sys.executable, model)
+
+    def test_the_scanners_rule_refuses_an_unknown_bare_name(self):
+        self.fake_scanner(known=('gpt-known',))
+        self.assertEqual(self.check(BARE_NAME), (False, ''))
+        self.assertEqual(self.check('gpt-known'), (True, ''))
+
+    def test_an_address_from_the_environment_counts_too(self):
+        """The scanner reads its address from several variables as well as
+        its file; asking its own loader is what keeps the two agreeing."""
+        self.fake_scanner()
+        self._set_env('LLM_API_BASE', 'http://localhost:11434')
+        self.assertEqual(self.check(BARE_NAME), (True, ''))
+
+    def test_a_scanner_without_the_rule_means_unknown_not_refused(self):
+        self.fake_scanner(broken=True)
+        verdict, why = self.check(BARE_NAME)
+        self.assertIsNone(verdict)
+        self.assertIn('ImportError', why)
+
+    def test_the_name_travels_in_the_environment_not_on_a_command_line(self):
+        self.assertIn('os.environ["KC_PROBE_MODEL"]',
+                      self.mod._BARE_MODEL_CHECK)
+
 
 
 class ProviderErrorTests(ConnectionTestCase):
@@ -395,6 +574,29 @@ class ProviderErrorTests(ConnectionTestCase):
             'high demand. Spikes in demand are usually temporary. Please try '
             'again later.", "status": "UNAVAILABLE"}}')
         self.assertIn('busy', text)
+
+    def test_an_unrecognised_model_name_points_at_the_settings(self):
+        """#886. "Not available on this provider" sent the user to their
+        provider for a fault in their own settings."""
+        for raw in (
+                "Unknown model name: 'FAKE-login' is not a known OpenAI model.",
+                'BadRequestError: litellm.BadRequestError: LLM Provider NOT '
+                'provided. Pass in the LLM provider you are trying to call. '
+                'You passed model=FAKE-login'):
+            self.assertEqual(self.mod.provider_error_hint(raw),
+                             self.mod.UNKNOWN_MODEL_MESSAGE, raw)
+
+    def test_the_scanners_unknown_model_box_gets_the_settings_hint(self):
+        """End to end over the scanner's own output: the backend lifts the
+        error out of its box, then this table explains it."""
+        import scan_backends
+        path = os.path.join(HERE, 'fixtures', 'scanner_logs',
+                            'unknown_model.log')
+        with open(path, encoding='utf-8') as f:
+            error = scan_backends.scanner_error(f.read())
+        self.assertTrue(scan_backends.is_provider_error(error), error)
+        self.assertEqual(self.mod.provider_error_hint(error),
+                         self.mod.UNKNOWN_MODEL_MESSAGE)
 
     def test_the_real_retired_model_404_reads_as_a_bad_model_name(self):
         """Verbatim from a real scan. A provider retiring a model produces a

@@ -6,7 +6,9 @@ import { navigate } from '../../store/router';
 import { MODE_LABELS, type ScanMode } from '../../api/scans';
 import {
   connection,
+  connectionResult,
   loadTargets,
+  openModelSettings,
   requestedPort,
   startScan,
   targets,
@@ -98,6 +100,7 @@ export function ScanForm() {
 
   const parsedBudget = parseBudget(budget);
   const budgetInvalid = parsedBudget === 'invalid';
+  const settingUp = conn?.install?.state === 'installing';
 
   async function submit(e: Event) {
     e.preventDefault();
@@ -181,6 +184,8 @@ export function ScanForm() {
           />
         </label>
 
+        <ModelStatus />
+
         <div class="security-actions">
           <MutatorOnly>
             <Button
@@ -188,6 +193,7 @@ export function ScanForm() {
               variant="primary"
               disabled={
                 starting ||
+                settingUp ||
                 port === null ||
                 budgetInvalid ||
                 !conn?.configured ||
@@ -208,5 +214,42 @@ export function ScanForm() {
         </p>
       </form>
     </section>
+  );
+}
+
+/**
+ * Whether the connected model can actually scan, said beside Start.
+ *
+ * On a first connect, Save replaces the form that showed the install and the
+ * connection check with this one — so both used to vanish, and a model that
+ * failed its check went straight to a failed scan (#886). Nothing here blocks
+ * a scan except the install: a provider that was busy a minute ago may not
+ * be now, and the server refuses a model name the scanner would reject.
+ */
+function ModelStatus() {
+  const install = connection.value?.install;
+  const check = connectionResult.value;
+  if (install?.state === 'installing') {
+    return (
+      <p class="security-install security-install-installing" role="status">
+        Setting up the scanner in this workspace. This happens once and takes a
+        few minutes; you can start a scan as soon as it is done.
+      </p>
+    );
+  }
+  const problem =
+    install?.state === 'failed'
+      ? `The scanner could not be set up: ${install.error}`
+      : check && !check.ok
+        ? `Your model did not pass its connection check. ${check.detail}`
+        : '';
+  if (!problem) return null;
+  return (
+    <div class="security-result is-bad security-status" role="alert">
+      <p>{problem}</p>
+      <Button type="button" size="sm" onClick={openModelSettings}>
+        Model settings
+      </Button>
+    </div>
   );
 }

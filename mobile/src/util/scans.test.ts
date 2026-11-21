@@ -3,6 +3,7 @@ import {
   FINDING_FACTS,
   FINDING_SECTIONS,
   MODE_LABELS,
+  STATUS_LABELS,
   emptyFindingsText,
   fieldText,
   isLiveScan,
@@ -166,6 +167,22 @@ describe('emptyFindingsText', () => {
       );
     }
     expect(emptyFindingsText(scan({ status: 'running' }))).toContain('Nothing found yet');
+  });
+
+  it('does not talk about an ended scan for one that never reached the app', () => {
+    // #886: shown under "could not run, so nothing was checked".
+    const never = scan({ status: 'failed', usage: { ...scan().usage, requests: 0 } });
+    expect(emptyFindingsText(never)).toBe('Nothing was checked, so there is nothing to list.');
+    expect(emptyFindingsText(scan({ status: 'failed', usage: { ...scan().usage, requests: 4 } })))
+      .toContain('None confirmed before the scan ended');
+  });
+
+  it('labels every status in words, never the raw code', () => {
+    // #886 showed a bare lower-case "failed" under the app's name.
+    for (const status of ['running', 'done', 'stopped', 'failed', 'interrupted']) {
+      expect(STATUS_LABELS[status]).toMatch(/^[A-Z]/);
+    }
+    expect(STATUS_LABELS.failed).toBe('Failed');
   });
 
   it('points at the report only when there is one', () => {

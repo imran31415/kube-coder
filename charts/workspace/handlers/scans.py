@@ -128,6 +128,16 @@ class ScanRoutes:
             self.send_json({'error': error}, 400)
             return
 
+        # A model name the scanner would refuse is refused here, while it is
+        # free: otherwise it becomes a failed scan, a notification, and a
+        # "Try again" that fails the same way (#886). `code` lets a client
+        # take the user straight to the setting that needs changing.
+        problem = strix_connection.model_name_problem(
+            spec['model'], connection['api_base'])
+        if problem:
+            self.send_json({'error': problem, 'code': 'model_invalid'}, 409)
+            return
+
         record, error = scans.ScansManager.create(spec)
         if error:
             self.send_json({'error': error}, 502)
