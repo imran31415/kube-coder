@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from provision_store import Conflict
 from provisioning import Provisioning
+from signup_allowlist import Allowlist
 from signup import handler, identity, signup_html
 from signup_errors import SignupError
 
@@ -60,7 +61,7 @@ def fixture():
     backend.ready.return_value = True
     backend.absent.return_value = True
     backend.job_failed.return_value = False
-    return Provisioning(store, dex, backend, 'example.test', {'123'})
+    return Provisioning(store, dex, backend, 'example.test', Allowlist(store, {'123'}))
 
 
 class WorkflowTest(unittest.TestCase):
@@ -90,7 +91,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertFalse(self.service.store.records)
 
     def test_two_replicas_double_submission_create_one_operation(self):
-        other = Provisioning(self.service.store, self.service.dex, self.service.backend, 'example.test', {'123'})
+        other = Provisioning(self.service.store, self.service.dex, self.service.backend, 'example.test', Allowlist(self.service.store, {'123'}))
         results = []
         threads = [threading.Thread(target=lambda s=s: results.append(s.create('123', 'octocat'))) for s in (self.service, other)]
         for t in threads: t.start()
@@ -102,7 +103,7 @@ class WorkflowTest(unittest.TestCase):
         for stage in ('configuration', 'deployment', 'readiness', 'ready'):
             self.service.tick()
             self.assertEqual(self.service.get('123')['stage'], stage)
-            self.service = Provisioning(self.service.store, self.service.dex, self.service.backend, 'example.test', {'123'})
+            self.service = Provisioning(self.service.store, self.service.dex, self.service.backend, 'example.test', Allowlist(self.service.store, {'123'}))
         self.service.dex.ensure.assert_called_once()
         self.service.backend.deploy.assert_called_once()
         self.assertEqual(self.service.public(self.service.get('123'))['url'], 'https://octocat.example.test/')
@@ -188,7 +189,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_removed_eligibility_cannot_retry_but_can_observe(self):
         self.service.create('123', 'octocat')
-        self.service.allowed_ids.clear()
+        self.service.allowlist = Allowlist(self.service.store, ())
         with self.assertRaises(SignupError): self.service.retry('123')
         self.assertIsNotNone(self.service.public(self.service.get('123')))
 

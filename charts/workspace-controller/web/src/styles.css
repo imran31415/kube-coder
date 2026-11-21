@@ -1448,3 +1448,57 @@ body {
 .signup-updated, .signup-footnote { font-size: 12px; opacity: .65; margin-top: 24px; }
 .signup-footnote { text-align: center; line-height: 1.6; }
 .signup-shell :focus-visible { outline: 2px solid #8bd5b4; outline-offset: 4px; }
+
+/* ---- signup access: who may create a workspace at public signup ---- */
+.banner.ok {
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  color: #7ee787;
+}
+.access-notice { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.access-add { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.25rem; }
+.access-add .field-row .btn { flex: none; white-space: nowrap; }
+.access-hint { margin-top: 0.4rem; font-size: 0.8rem; color: #e3b341; }
+.access-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: #ffb4ae; }
+.access-problem .panel-link { margin-left: 0; }
+.access-ref { font-size: 0.75rem; color: var(--muted); font-family: 'Geist Mono', ui-monospace, monospace; user-select: all; }
+.access-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem; font-size: 0.82rem; color: var(--muted); }
+.access-search { flex: 0 1 240px; }
+.access-empty-sub { margin-top: 0.4rem; font-size: 0.82rem; }
+.access-row { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem 0.9rem; }
+.access-row.fresh { animation: access-fresh 2s ease-out; }
+@keyframes access-fresh {
+  from { border-color: rgba(63, 185, 80, 0.7); background: rgba(63, 185, 80, 0.1); }
+}
+.access-main { display: flex; align-items: center; gap: 0.75rem; }
+.access-avatar { position: relative; overflow: hidden; width: 36px; height: 36px; flex: none; border-radius: 50%; background: var(--panel-2); }
+.access-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.access-initial { display: inline-flex; align-items: center; justify-content: center; font-weight: 600; color: var(--muted); }
+.access-text { flex: 1 1 auto; min-width: 0; }
+.access-name { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; overflow-wrap: anywhere; }
+.access-name a { color: inherit; text-decoration: none; }
+.access-name a:hover { text-decoration: underline; }
+.access-note { margin-top: 0.25rem; font-size: 0.8rem; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.access-ws { text-decoration: none; white-space: nowrap; }
+.access-none { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+.access-confirm { margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px solid var(--border); font-size: 0.85rem; }
+.access-confirm p { margin: 0 0 0.6rem; line-height: 1.45; }
+.access-confirm .access-problem { margin-top: 0.6rem; }
+.access-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.access-actions .sub { margin-right: auto; }
+.access-url { font-size: 0.78rem; overflow-wrap: anywhere; user-select: all; }
+.pill-helm { background: rgba(154, 154, 163, 0.16); color: var(--muted); }
+.access-add :focus-visible, .access-row :focus-visible, .access-notice :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .access-row.fresh { animation: none; }
+}
+@media (max-width: 640px) {
+  .access-main { flex-wrap: wrap; row-gap: 0.5rem; }
+  .access-text { flex-basis: calc(100% - 36px - 0.75rem); }
+  .access-ws, .access-none { margin-left: calc(36px + 0.75rem); }
+  .access-remove { margin-left: auto; }
+  .access-actions .btn, .access-remove { min-height: 44px; }
+  .access-actions .btn { flex: 1 1 auto; }
+  .access-head { flex-wrap: wrap; }
+  .access-search { flex: 1 1 100%; }
+}

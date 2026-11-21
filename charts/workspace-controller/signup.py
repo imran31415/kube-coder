@@ -87,7 +87,7 @@ def handler(service, origin, csrf_secret, index_html):
                     record = service.create(owner, login) if path.endswith('/workspace') else service.retry(owner)
                     self.send_json({'operation': service.public(record)}, 202)
                 elif path.endswith('/me'):
-                    self.send_json({'login': login, 'eligible': owner in service.allowed_ids,
+                    self.send_json({'login': login, 'eligible': service.allowlist.allows(owner),
                                     'csrfToken': self.csrf(owner), 'operation': service.public(service.get(owner))})
                 else:
                     self.send_json({'operation': service.public(service.get(owner))})

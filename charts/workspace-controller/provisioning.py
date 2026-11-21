@@ -16,9 +16,9 @@ STAGES = ('identity', 'configuration', 'deployment', 'readiness')
 
 
 class Provisioning:
-    def __init__(self, store, dex, backend, domain, allowed_ids):
+    def __init__(self, store, dex, backend, domain, allowlist):
         self.store, self.dex, self.backend = store, dex, backend
-        self.domain, self.allowed_ids = domain, allowed_ids
+        self.domain, self.allowlist = domain, allowlist
 
     def get(self, owner):
         return self.store.get('owner-' + owner)
@@ -33,7 +33,9 @@ class Provisioning:
     def create(self, owner, login, admin=False, migrate=False):
         if migrate and not admin:
             raise SignupError('forbidden')
-        if not admin and owner not in self.allowed_ids:
+        # Fresh read: a removal in the console must block creation at once,
+        # whichever replica serves this request.
+        if not admin and not self.allowlist.allows(owner, fresh=True):
             raise SignupError('not_eligible')
         current = self.get(owner)
         if current:
@@ -71,7 +73,7 @@ class Provisioning:
             return self.get(owner)
 
     def retry(self, owner, admin=False):
-        if not admin and owner not in self.allowed_ids:
+        if not admin and not self.allowlist.allows(owner, fresh=True):
             raise SignupError('not_eligible')
         record = self.get(owner)
         if not record or record['stage'] not in ('failed', 'deleted'):

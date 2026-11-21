@@ -16,8 +16,10 @@ DEADLINE = contextvars.ContextVar('request_deadline', default=None)
 METHODS = frozenset(('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'))
 EXACT_ROUTES = frozenset(('/', '/health', '/healthz', '/livez', '/metrics', '/metrics/prometheus',
                           '/api/workspaces', '/api/insights', '/api/capacity', '/api/capacity/summary',
-                          '/api/spend', '/api/events', '/api/admin/token', '/api/provision/config', '/api/provision'))
+                          '/api/spend', '/api/events', '/api/admin/token', '/api/provision/config', '/api/provision',
+                          '/api/allowlist', '/api/allowlist/lookup'))
 WORKSPACE_ROUTE = re.compile(r'^/api/(self/)?workspaces/[^/]+(?:/(metrics|start|stop|restart|update|version|resources))?$')
+ALLOWLIST_ENTRY_ROUTE = re.compile(r'^/api/allowlist/[0-9]+$')
 
 
 #: Every path no route template claims. One series, however many distinct
@@ -33,6 +35,8 @@ def route_identity(path):
         return path
     if path in ('/api/signup/config', '/api/signup/me', '/api/signup/workspace', '/api/signup/status', '/api/signup/retry', '/signup'):
         return path
+    if ALLOWLIST_ENTRY_ROUTE.fullmatch(path):
+        return '/api/allowlist/:id'
     match = WORKSPACE_ROUTE.fullmatch(path)
     if match:
         return '/api/' + (match[1] or '') + 'workspaces/:user' + ('/' + match[2] if match[2] else '')

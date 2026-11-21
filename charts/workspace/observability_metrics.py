@@ -51,6 +51,7 @@ class Registry:
         self._durations = {}
         self._operations = defaultdict(int)
         self._operation_durations = {}
+        self._allowlist = {}
 
     @staticmethod
     def _observe(table, key, elapsed):
@@ -88,10 +89,15 @@ class Registry:
                 self._operations[(name, result['outcome'])] += 1
                 self._observe(self._operation_durations, (name,), time.monotonic() - started)
 
+    def allowlist_size(self, helm, console):
+        """Signup allowlist entries as this replica last read them."""
+        with self._lock:
+            self._allowlist = {('helm',): helm, ('console',): console}
+
     def exposition(self):
         with self._lock:
-            counts, active, aborted, operations = (dict(x) for x in (
-                self._counts, self._active, self._aborted, self._operations))
+            counts, active, aborted, operations, allowlist = (dict(x) for x in (
+                self._counts, self._active, self._aborted, self._operations, self._allowlist))
             durations, op_durations = ({k: (list(v[0]), v[1]) for k, v in x.items()}
                                       for x in (self._durations, self._operation_durations))
         out = Exposition()
@@ -102,6 +108,7 @@ class Registry:
         out.gauge('kubecoder_http_requests_in_flight', 'Active requests and streams.', samples(active, ('service', 'listener', 'kind')))
         out.counter('kubecoder_http_aborted_requests_total', 'Disconnected requests.', samples(aborted, ('service', 'listener', 'kind')))
         out.counter('kubecoder_controller_operations_total', 'Controller action outcomes; submitted is not completed.', samples(operations, ('operation', 'outcome')))
+        out.gauge('kubecoder_signup_allowlist_entries', 'Signup allowlist entries by source (helm seed or admin console).', samples(allowlist, ('source',)))
         for name, values, names in (('kubecoder_http_request_duration_seconds', durations, labels),
                                      ('kubecoder_controller_operation_duration_seconds', op_durations, ('operation',))):
             out.histogram(name, 'Completed operation duration in seconds.',

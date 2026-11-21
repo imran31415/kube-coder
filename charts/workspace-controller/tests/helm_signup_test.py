@@ -67,6 +67,19 @@ class HelmSignupTest(unittest.TestCase):
                              '--set', 'signup.sharedCertificate=true')
         self.assertNotIn('cert-manager.io/cluster-issuer: "le-test"', shared)
 
+    def test_signup_allowlist_cap_is_configurable_and_validated(self):
+        args = ['-f', str(ROOT / 'charts/workspace-controller/tests/test-values.yaml'),
+                '-f', str(ROOT / 'charts/workspace-controller/tests/signup-values.yaml')]
+        env = 'name: SIGNUP_ALLOWLIST_MAX_ENTRIES\n          value: "{}"'
+        self.assertIn(env.format(1000), self.render('charts/workspace-controller', *args))
+        self.assertIn(env.format(2500), self.render('charts/workspace-controller', *args,
+                                                    '--set', 'signup.allowlist.maxEntries=2500'))
+        for bad in ('0', '1.5', 'many'):
+            with self.subTest(bad=bad):
+                text = self.render('charts/workspace-controller', *args,
+                                   '--set', f'signup.allowlist.maxEntries={bad}', success=False)
+                self.assertIn('signup.allowlist.maxEntries must be a whole number', text)
+
     def test_dex_private_admin_api_and_shared_storage(self):
         text = self.render('charts/dex', '-f', str(ROOT / 'charts/dex/tests/test-values.yaml'))
         for expected in ('replicas: 2', 'type: kubernetes', 'tlsClientCA: /grpc/ca.crt', 'useLoginAsID: false', 'app: workspace-controller'):

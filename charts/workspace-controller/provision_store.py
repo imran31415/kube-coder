@@ -7,6 +7,7 @@ import base64
 import contextlib
 import datetime
 import json
+import logging
 import os
 import ssl
 import urllib.error
@@ -57,10 +58,11 @@ class KubeStore:
                 return None
             if exc.code == 409:
                 raise Conflict() from None
-            event('controller', 'signup_state_failed', method=method, path=path, upstream_status=exc.code)
+            event('controller', 'signup_state_failed', logging.WARNING, method=method, path=path, upstream_status=exc.code)
             raise SignupError('state_unavailable') from None
         except (OSError, ValueError) as exc:
-            event('controller', 'signup_state_failed', method=method, path=path, exception_type=type(exc).__name__)
+            event('controller', 'signup_state_failed', logging.WARNING, method=method, path=path,
+                  exception_type=type(exc).__name__)
             raise SignupError('state_unavailable') from None
 
     def path(self, resource, name=''):

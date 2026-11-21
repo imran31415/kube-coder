@@ -70,6 +70,8 @@ spec:
           value: {{ .Values.signup.sharedCertificate | quote }}
         - name: SIGNUP_ALLOWED_IDS
           value: {{ join "," .Values.signup.allowedGithubIds | quote }}
+        - name: SIGNUP_ALLOWLIST_MAX_ENTRIES
+          value: {{ .Values.signup.allowlist.maxEntries | int | quote }}
         {{- if .Values.signup.enabled }}
         - name: SIGNUP_ORIGIN
           value: {{ printf "https://%s" (required "signup.host is required" .Values.signup.host) | quote }}
