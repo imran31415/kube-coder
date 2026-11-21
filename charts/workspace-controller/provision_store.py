@@ -20,6 +20,19 @@ class Conflict(Exception):
     pass
 
 
+EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def micro_time(value):
+    """Kubernetes MicroTime (Lease renewTime/acquireTime) wire format.
+
+    The API server parses it with Go's RFC3339Micro layout, which REQUIRES six
+    fractional digits: '...00Z' is rejected with a 400. isoformat() also omits
+    the fraction whenever microsecond == 0, so always format explicitly.
+    """
+    return value.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+
 class KubeStore:
     def __init__(self, namespace):
         self.namespace = namespace
@@ -110,7 +123,7 @@ class KubeStore:
                 return
         lease = {'apiVersion': 'coordination.k8s.io/v1', 'kind': 'Lease',
                  'metadata': {'name': name}, 'spec': {'holderIdentity': self.identity,
-                 'leaseDurationSeconds': 600, 'renewTime': now.isoformat().replace('+00:00', 'Z')}}
+                 'leaseDurationSeconds': 600, 'renewTime': micro_time(now)}}
         if obj:
             lease['metadata']['resourceVersion'] = obj['metadata']['resourceVersion']
         try:
@@ -123,6 +136,6 @@ class KubeStore:
         finally:
             # CAS prevents releasing a lease acquired by a replacement worker.
             held['spec']['leaseDurationSeconds'] = 1
-            held['spec']['renewTime'] = '1970-01-01T00:00:00Z'
+            held['spec']['renewTime'] = micro_time(EPOCH)
             with contextlib.suppress(Conflict, SignupError):
                 self.request('PUT', path, held)
