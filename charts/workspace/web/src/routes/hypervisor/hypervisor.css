@@ -907,6 +907,23 @@
 .hv-prose ul,
 .hv-prose ol { margin: 0 0 8px; padding-left: 20px; }
 .hv-prose li { margin: 2px 0; }
+/* reset.css strips list markers globally; numbered steps and bullets in a
+   reply need them back. */
+.hv-prose ul { list-style: disc; }
+.hv-prose ol { list-style: decimal; }
+.hv-prose li::marker { color: var(--text-subtle); }
+/* Markdown tables (agents reach for them in status summaries). */
+.hv-prose table {
+  border-collapse: collapse;
+  margin: 4px 0 10px;
+  font-size: var(--text-sm);
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.hv-prose th,
+.hv-prose td { padding: 6px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+.hv-prose th { background: var(--surface-2); font-weight: var(--weight-semibold); color: var(--text-muted); }
 .hv-prose code {
   font-family: var(--font-mono);
   font-size: var(--text-md);
