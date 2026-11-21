@@ -137,6 +137,9 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "1k"
     nginx.ingress.kubernetes.io/limit-rps: "5"
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    {{- if and .Values.signup.clusterIssuer (not .Values.signup.sharedCertificate) }}
+    cert-manager.io/cluster-issuer: {{ .Values.signup.clusterIssuer | quote }}
+    {{- end }}
 spec:
   ingressClassName: nginx
   tls:

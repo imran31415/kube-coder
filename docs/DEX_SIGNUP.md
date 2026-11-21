@@ -27,8 +27,10 @@ The creation allowlist controls provisioning, not revocation of existing access.
 
 ## One-time setup
 
-These steps require infrastructure and real GitHub credentials. They have been
-deferred for this implementation; do not enable public signup before validation.
+These steps require infrastructure and real GitHub credentials. For a concrete
+run-through with the Makefile targets, see
+[Walkthrough: per-host certificates with the Makefile](#walkthrough-per-host-certificates-with-the-makefile).
+Do not enable public signup before validation.
 
 1. Choose a workspace domain and separate Dex and signup hosts. Provision DNS,
    ingress-nginx and a NetworkPolicy-enforcing CNI. Keep the existing admin host.
@@ -81,6 +83,145 @@ workflow. Protect repository access and backups accordingly.
 Validate a workspace through the admin console, including a non-owner login,
 before setting `signup.enabled: true`.
 
+## Walkthrough: per-host certificates with the Makefile
+
+A worked version of the steps above for a cluster that already has
+ingress-nginx, cert-manager with an HTTP-01 `ClusterIssuer`, and wildcard DNS
+(`*.<domain>` → ingress) but **no wildcard certificate**. Each host gets its own
+cert-manager certificate. Values live in the private GitOps checkout
+(`make users-sync` → `.users/`); secrets never go into either repo.
+
+1. **GitHub OAuth App for Dex** (a classic OAuth App, `Ov…` client id; GitHub
+   has no API for these, so create it by hand). Homepage `https://<dex-host>`,
+   callback `https://<dex-host>/callback`. Store it without echoing it anywhere:
+
+   ```sh
+   kubectl -n dex create secret generic dex-github \
+     --from-literal=client-id=<Ov…> --from-literal=client-secret=<secret>
+   ```
+
+2. **gRPC mutual TLS:** `make dex-mtls`. This applies
+   `deployments/dex-grpc-mtls.yaml`: a private CA `ClusterIssuer`
+   (`kube-coder-dex-ca`) issuing `dex/dex-grpc` (server) and
+   `<controller-ns>/dex-controller-client` (client). Edit the namespaces/issuer
+   in that file first if yours differ from the chart defaults.
+
+3. **Dex signup client secret** (random, generated in-cluster):
+
+   ```sh
+   kubectl -n dex create secret generic dex-signup-client \
+     --from-literal=client-secret="$(openssl rand -base64 32)"
+   ```
+
+4. **Dex values** at `users-private/_dex/values.yaml` in the GitOps repo:
+
+   ```yaml
+   issuer: https://auth.<domain>
+   host: auth.<domain>
+   githubSecretName: dex-github
+   grpcTlsSecretName: dex-grpc
+   signup:
+     host: signup.<domain>
+     secretName: dex-signup-client
+   controllerNamespace: coder
+   tls:
+     secretName: dex-tls
+     clusterIssuer: letsencrypt-production   # per-host cert via cert-manager
+   ```
+
+   Then `make deploy-dex`. Check:
+   `curl https://auth.<domain>/.well-known/openid-configuration` returns the
+   issuer, and `/auth/github?...` redirects to `github.com/login/oauth/authorize`.
+
+5. **Controller in Dex mode, signup off.** In
+   `users-private/_controller/values.yaml` add the `dex:` block from step 7
+   above (`grpcAddress: dex.dex.svc.cluster.local:5557`,
+   `clientTlsSecretName: dex-controller-client`) and pin `provision.image` to
+   the release's provisioner image **by digest**. Then
+   `make ship-controller-config`. `/api/provision/config` now reports
+   `"authMode": "dex"`, and console-created workspaces use Dex: the workspace
+   slug is the GitHub login, there is **one workspace per GitHub ID**, and the
+   slug stays reserved to that ID after deletion.
+
+6. **Validate one workspace** from the console: owner login works, and a
+   different GitHub account gets 403.
+
+7. **Turn on the signup page.** Create the signup proxy secret, reusing the Dex
+   signup client secret so the two always match:
+
+   ```sh
+   kubectl -n coder create secret generic workspace-signup \
+     --from-literal=client-id=kube-coder-signup \
+     --from-literal=client-secret="$(kubectl -n dex get secret dex-signup-client -o jsonpath='{.data.client-secret}' | base64 -d)" \
+     --from-literal=cookie-secret="$(openssl rand -base64 32 | tr -d '\n' | tr '+/' '-_')" \
+     --from-literal=csrf-secret="$(openssl rand -hex 32)"
+   ```
+
+   and set:
+
+   ```yaml
+   signup:
+     enabled: true
+     host: signup.<domain>
+     allowedGithubIds: []          # see "Managing the signup allowlist"
+     existingSecretName: workspace-signup
+     tlsSecretName: workspace-signup-tls
+     clusterIssuer: letsencrypt-production
+   ```
+
+   `make ship-controller-config`. With an empty list the page is live and
+   anyone can sign in, but nobody can create a workspace, which is a safe way
+   to preview it.
+
+## Managing the signup allowlist
+
+`signup.allowedGithubIds` controls who may **create** a workspace through
+public signup. Anyone with a GitHub account can sign in to the signup page;
+only listed IDs see a working **Create workspace** button.
+
+- Entries are **numeric GitHub IDs as quoted strings**, never usernames. IDs
+  survive username changes, so a recycled username cannot inherit an
+  allowlisted slot. The chart fails to render on a non-numeric entry.
+- Look one up with `gh api users/<login> --jq .id`.
+
+To add (or remove) someone:
+
+```sh
+make users-sync
+# edit .users/users-private/_controller/values.yaml → signup.allowedGithubIds
+cd .users && git add users-private/_controller/values.yaml \
+  && git commit -m "signup: allow <login>" && git push && cd ..
+make ship-controller-config
+```
+
+Then point them at `https://signup.<domain>`. They get `<login>.<domain>`.
+
+Removing an ID only stops **new** creation. An existing workspace keeps
+working for its owner; delete it with `make delete-user USER=<slug>` if access
+must end. The slug stays reserved to that GitHub ID.
+
+## Troubleshooting
+
+- **Dex pods CrashLoopBackOff with `cannot create temp file:
+  /tmp/dex.config.yaml-…: read-only file system`**: the chart predates the
+  `/tmp` emptyDir (#896). Upgrade the chart and `make deploy-dex`.
+- **A provisioning stage sits for ~10 minutes, then advances**: the reconcile
+  Lease was not released (fixed in #897; the API server requires MicroTime
+  with six fractional digits). If a stale lease is held by a controller pod
+  that no longer exists, clear it:
+  `kubectl -n kube-coder-signup delete lease signup-reconcile`. Inspect
+  progress with `kubectl -n kube-coder-signup get cm owner-<github-id>
+  -o jsonpath='{.data.record}'`.
+- **Clicking Create twice** is harmless: creation is idempotent per GitHub ID
+  and returns the same operation.
+- **`make ship-controller-config` reports "rollout timed out"** right after a
+  release: usually the first pull of the multi-GB devlaptop image on a node.
+  Check `kubectl -n coder get pods`; it typically finishes a minute later.
+- **Controller cannot reach Dex**: from a controller pod, a gRPC `GetVersion`
+  with the `/dex-client` certs must succeed and a call without a client
+  certificate must fail. After cert-manager renews either leaf certificate,
+  restart Dex and the controller so they reload it.
+
 ## Wildcard TLS
 
 Use `deployments/dex-wildcard-certificate.yaml` as an example, replacing the domain
@@ -88,7 +229,8 @@ and DNS-01 ClusterIssuer. Configure ingress-nginx's default SSL certificate as
 `ingress-nginx/workspaces-wildcard`. Set the workspace, signup and Dex
 `sharedCertificate` switches only once that certificate is ready.
 
-Shared mode omits per-ingress `secretName` and certificate issuance annotations.
+Shared mode omits per-ingress `secretName` and certificate issuance annotations
+(`tls.clusterIssuer` on Dex and `signup.clusterIssuer` on the controller are ignored).
 The private key remains in the ingress namespace, with no tenant copies.
 All hosts must be covered by the certificate; a wildcard covers only one label.
 Legacy per-host certificates remain supported. DNS-provider setup, actual
