@@ -215,6 +215,10 @@ async function shots(page, device, outDir) {
     }),
   );
   await go(page, 'Chat');
+  // Past chats live in the Chat settings sheet behind the header's options
+  // button.
+  await clickVisible(page.getByLabel(/^Chat settings/), 'chat settings');
+  await sleep(400);
   await clickVisible(page.getByLabel(/Past chats/), 'past chats');
   await sleep(500);
   await clickVisible(page.getByText('Ship the chart change'), 'demo thread');
