@@ -58,9 +58,17 @@ async function assertEscape(page, tag, shotName) {
   const page = await freshPage();
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
-  const chat = page.getByLabel('Go to Chat');
-  const n = await visibleNth(chat);
-  const selected = n >= 0 && (await chat.nth(n).getAttribute('aria-selected')) === 'true';
+  // react-native-web drops accessibilityState.selected on a button, so read
+  // the drawer's own active styling: the active entry's icon takes the accent
+  // colour, while Workspace's stays muted (untinted, since Chat is outside it).
+  const iconColor = async (label) => {
+    const loc = page.getByLabel(label);
+    const n = await visibleNth(loc);
+    return n < 0 ? null : loc.nth(n).evaluate((el) => getComputedStyle(el.firstElementChild).color);
+  };
+  const chatColor = await iconColor('Go to Chat');
+  const workspaceColor = await iconColor('Show Workspace');
+  const selected = !!chatColor && !!workspaceColor && chatColor !== workspaceColor;
   console.log(`${selected ? 'PASS' : 'FAIL'} Cold start lands on Chat`);
   if (!selected) failures++;
   // Workspace rests collapsed there: its entries are one tap away.

@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 /** The labels of the rail's top-level entries (outside the Workspace body). */
-function topLevelLabels(container: HTMLElement): string[] {
+function topLevelLabels(container: Element): string[] {
   return [...container.querySelectorAll('.rail-items > .rail-group')]
     .flatMap((g) => [...g.querySelectorAll(':scope > .rail-item, :scope > .rail-group-header .rail-item')])
     .map((el) => el.querySelector('.rail-item-label')?.textContent ?? '');
