@@ -371,3 +371,6 @@ signup:
   existingSecretName: ""
   sharedCertificate: false
   tlsSecretName: ""
+  # Per-host cert via cert-manager into tlsSecretName (ignored with
+  # sharedCertificate), e.g. letsencrypt-production. Empty = bring your own.
+  clusterIssuer: ""

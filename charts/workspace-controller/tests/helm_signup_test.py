@@ -57,6 +57,16 @@ class HelmSignupTest(unittest.TestCase):
         self.assertIn('--cookie-name=__Host-kc_signup', text)
         self.assertIn('--api-route=^/api/.*', text)
 
+    def test_signup_cluster_issuer_only_without_shared_certificate(self):
+        args = ['-f', str(ROOT / 'charts/workspace-controller/tests/test-values.yaml'),
+                '-f', str(ROOT / 'charts/workspace-controller/tests/signup-values.yaml')]
+        self.assertNotIn('cert-manager.io/cluster-issuer: "le-test"', self.render('charts/workspace-controller', *args))
+        text = self.render('charts/workspace-controller', *args, '--set', 'signup.clusterIssuer=le-test')
+        self.assertIn('cert-manager.io/cluster-issuer: "le-test"', text)
+        shared = self.render('charts/workspace-controller', *args, '--set', 'signup.clusterIssuer=le-test',
+                             '--set', 'signup.sharedCertificate=true')
+        self.assertNotIn('cert-manager.io/cluster-issuer: "le-test"', shared)
+
     def test_dex_private_admin_api_and_shared_storage(self):
         text = self.render('charts/dex', '-f', str(ROOT / 'charts/dex/tests/test-values.yaml'))
         for expected in ('replicas: 2', 'type: kubernetes', 'tlsClientCA: /grpc/ca.crt', 'useLoginAsID: false', 'app: workspace-controller'):
