@@ -92,6 +92,13 @@ function groupHeaders(container: Element): string[] {
   );
 }
 
+/** Model / effort / project live behind the header's "Chat settings" button;
+ *  open that panel (idempotently) before reaching for its controls. */
+async function openSettings() {
+  const btn = await screen.findByRole('button', { name: 'Chat settings' });
+  if (btn.getAttribute('aria-expanded') !== 'true') fireEvent.click(btn);
+}
+
 describe('chat list grouped by project (#358)', () => {
   it('renders a header per project plus a trailing "No project" group', async () => {
     const { container } = render(<HypervisorRoute />);
@@ -111,6 +118,7 @@ describe('chat list grouped by project (#358)', () => {
 
   it('offers a project picker seeded from the registry', async () => {
     render(<HypervisorRoute />);
+    await openSettings();
     // The picker is a searchable combobox, not a <select>: opening it is what
     // reveals the options, and typing is what makes a long registry usable.
     const picker = await screen.findByLabelText('Project for this chat');
@@ -131,6 +139,7 @@ describe('chat list grouped by project (#358)', () => {
     // The reason this component exists: a registry long enough to scroll is
     // exactly when a <select> stops being usable.
     render(<HypervisorRoute />);
+    await openSettings();
     fireEvent.click(await screen.findByLabelText('Project for this chat'));
 
     const search = await screen.findByLabelText('Search Project for this chat');
@@ -144,6 +153,7 @@ describe('chat list grouped by project (#358)', () => {
 
   it('picking from the filtered list binds that project', async () => {
     render(<HypervisorRoute />);
+    await openSettings();
     fireEvent.click(await screen.findByLabelText('Project for this chat'));
     fireEvent.input(await screen.findByLabelText('Search Project for this chat'), {
       target: { value: 'pool' },
@@ -167,6 +177,9 @@ describe('chat list grouped by project (#358)', () => {
     })) as unknown as typeof fetch;
     render(<HypervisorRoute />);
     await screen.findByTitle('random question');
+    // Open the panel so this asserts the picker is absent, not merely hidden.
+    await openSettings();
+    await screen.findByRole('dialog', { name: 'Chat settings' });
     await waitFor(() =>
       expect(screen.queryByLabelText('Project for this chat')).toBeNull(),
     );

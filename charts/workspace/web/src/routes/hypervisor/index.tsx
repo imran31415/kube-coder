@@ -62,6 +62,7 @@ import { justOnboarded } from '../../store/onboarding';
 import { refreshClaudeReady } from '../../store/claude';
 import { CtoWelcome } from './CtoWelcome';
 import { BottomSheet } from '../../components/BottomSheet';
+import { Modal } from '../../components/Modal';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { BriefPanel, BriefTab } from './BriefPanel';
 import { SearchSelect } from '../../components/primitives/SearchSelect';
@@ -93,12 +94,6 @@ import {
 } from './sidebarSplit';
 import './hypervisor.css';
 
-const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warn' | 'danger'> = {
-  running: 'success',
-  error: 'danger',
-  idle: 'neutral',
-};
-
 function statusLabel(s: string): string {
   if (s === 'running') return 'thinking';
   return s || 'idle';
@@ -120,6 +115,32 @@ function shortDir(path: string): string {
 
 export function HypervisorRoute() {
   const isMobile = useIsMobile();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // "How Chat works" opens on demand from the header instead of occupying a
+  // permanent row above the transcript.
+  const [guideOpen, setGuideOpen] = useState(false);
+  const settingsBtnRef = useRef<HTMLButtonElement | null>(null);
+  const settingsPanelRef = useRef<HTMLDivElement | null>(null);
+  // Desktop dropdown: dismiss on Escape or a click outside the panel/button.
+  // SearchSelect's option list renders inside the panel (position:fixed, not
+  // portalled), so picking an option doesn't count as "outside".
+  useEffect(() => {
+    if (!settingsOpen || isMobile) return;
+    function onDown(e: MouseEvent) {
+      const t = e.target as Node | null;
+      if (settingsPanelRef.current?.contains(t) || settingsBtnRef.current?.contains(t)) return;
+      setSettingsOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !e.defaultPrevented) setSettingsOpen(false);
+    }
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [settingsOpen, isMobile]);
   // Wide enough to render three columns, too narrow for the chat to be
   // comfortable between them → the brief folds to its edge tab by default.
   const cramped = useMediaQuery(`(max-width: ${BRIEF_AUTO_COLLAPSE_MAX}px)`);
@@ -576,6 +597,151 @@ export function HypervisorRoute() {
     );
   }
 
+  // Chat settings (model / effort / project / voice …) live behind ONE header
+  // button instead of a row of pickers — a dropdown on desktop, a bottom sheet
+  // on phones. Rendered only while open so the header stays a single line.
+  const settingsBody = (
+    <div class="hv-cfg-body">
+            {models.length > 0 && (
+              <label class="hv-cfg-field" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
+                <span class="hv-cfg-label">Model</span>
+                <SearchSelect
+                  class="hv-cfg-select"
+                  ariaLabel="Chat model"
+                  value={currentModel}
+                  disabled={status === 'running'}
+                  onChange={(v) => void setActiveThreadModel(v)}
+                  options={models.map((m) => ({ value: m, label: m }))}
+                />
+              </label>
+            )}
+            {efforts.length > 0 && (
+              <label
+                class="hv-cfg-field"
+                title={
+                  effortClamped
+                    ? `Reasoning effort: ${currentEffort} — this assistant runs ${effortCap}`
+                    : `Reasoning effort: ${currentEffort}`
+                }
+              >
+                <span class="hv-cfg-label">Effort</span>
+                <select
+                  class="hv-cfg-select"
+                  value={currentEffort}
+                  disabled={status === 'running'}
+                  onChange={(e) =>
+                    void setActiveThreadEffort((e.target as HTMLSelectElement).value)
+                  }
+                  aria-label="Reasoning effort"
+                >
+                  {efforts.map((lv) => (
+                    <option key={lv} value={lv}>
+                      {lv}
+                    </option>
+                  ))}
+                </select>
+                {effortClamped && (
+                  <span class="hv-effort-hint mono" aria-label={`Runs ${effortCap}`}>
+                    → {effortCap}
+                  </span>
+                )}
+              </label>
+            )}
+            {projectList.length > 0 && (
+              <label
+                class="hv-cfg-field"
+                title={
+                  active
+                    ? 'Project this chat belongs to — applies from the next turn'
+                    : 'Project the next new chat is filed into'
+                }
+              >
+                <span class="hv-cfg-label">Project</span>
+                <SearchSelect
+                  class="hv-cfg-select"
+                  ariaLabel="Project for this chat"
+                  value={currentProject}
+                  onChange={(v) => void setActiveThreadProject(v)}
+                  emptyLabel="No project"
+                  options={[
+                    // Keep an unknown binding (archived/deleted project) shown
+                    // rather than silently snapping the picker to "No project".
+                    ...(currentProject &&
+                    !projectList.some((p) => p.id === currentProject)
+                      ? [{ value: currentProject, label: currentProject }]
+                      : []),
+                    ...projectList.map((p) => ({ value: p.id, label: p.name || p.id })),
+                  ]}
+                />
+              </label>
+            )}
+            {boundRecord && (
+              <button
+                type="button"
+                class="hv-project-default hv-cfg-action"
+                disabled={savingDefault || isProjectDefault}
+                onClick={() => void saveProjectDefaults()}
+                title={
+                  isProjectDefault
+                    ? `This is already ${boundRecord.name}'s default`
+                    : `Make this ${boundRecord.name}'s default agent, model and effort`
+                }
+              >
+                {savedDefault
+                  ? 'Saved'
+                  : isProjectDefault
+                    ? 'Project default'
+                    : 'Set as project default'}
+              </button>
+            )}
+            {ttsSupported() && (
+              <label class="hv-cfg-switch">
+                <span class="hv-cfg-switch-text">
+                  <Icon name="speaker" size={14} /> Speak replies aloud
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={speakReplies.value}
+                  onChange={(e) => setSpeakReplies((e.target as HTMLInputElement).checked)}
+                />
+              </label>
+            )}
+            {/* Walkie-Talkie is its own top-level tab (/walkie); keep a link
+                here so the loopback preview is still one hop from a chat. */}
+            <a
+              class="hv-cfg-link"
+              href={routeHref('/walkie')}
+              onClick={(e) => {
+                e.preventDefault();
+                setSettingsOpen(false);
+                navigate('/walkie');
+              }}
+              title="Talk to your workspace over the internal loopback"
+            >
+              <Icon name="walkie" size={14} />
+              <span>Open Walkie-Talkie</span>
+              <Icon name="chevron-right" size={12} />
+            </a>
+            {(effectiveAssistant || (activeThread && personaLabel(activeThread.persona))) && (
+              <div class="hv-cfg-meta">
+                {effectiveAssistant && <Pill mono>{effectiveAssistant}</Pill>}
+                {/* The open thread's mode, read-only (#683) — see renderThread. */}
+                {activeThread && personaLabel(activeThread.persona) && (
+                  <Pill tone="info" title={personaHint(activeThread.persona)}>
+                    {personaLabel(activeThread.persona)}
+                  </Pill>
+                )}
+              </div>
+            )}
+    </div>
+  );
+  // One-line summary on the settings button so the current model is visible
+  // without opening the panel (desktop only — phones show just the icon).
+  const settingsSummary = [currentModel, efforts.length > 0 ? currentEffort : '']
+    .filter(Boolean)
+    .join(' · ');
+
   return (
     // The inline column template implements the draggable sidebar splitter —
     // only set on desktop so it can't override the mobile slide-over layout.
@@ -964,22 +1130,17 @@ export function HypervisorRoute() {
               {list.length > 0 && <span class="hv-topbar-menu-count">{list.length}</span>}
             </button>
           )}
+          {active && status && (
+            <span
+              class={`hv-dot ${status === 'running' ? 'hv-dot-running' : status === 'error' ? 'hv-dot-error' : ''}`}
+              title={statusLabel(status as ThreadStatus)}
+              role="img"
+              aria-label={`Status: ${statusLabel(status as ThreadStatus)}`}
+            />
+          )}
           <span class="hv-topbar-title">
             {activeThread ? activeThread.title || 'Chat' : 'Kube-Coder'}
           </span>
-          {/* Walkie-Talkie is now its own top-level tab (/walkie); keep a link
-              here so the loopback preview is still one hop from a chat. */}
-          <a
-            class="hv-walkie-link"
-            href={routeHref('/walkie')}
-            onClick={(e) => {
-              e.preventDefault();
-              navigate('/walkie');
-            }}
-            title="Open the Walkie-Talkie — talk to your workspace over the internal loopback"
-          >
-            <Icon name="walkie" size={13} /> Walkie-Talkie
-          </a>
           <div class="hv-topbar-meta">
             {/* On a phone the brief is a bottom sheet rather than a third
                 column — same treatment the AI CTO page used (#683). */}
@@ -995,179 +1156,78 @@ export function HypervisorRoute() {
                 Brief
               </button>
             )}
-            {/* Speak replies (issue #396, tier 0) — read agent prose aloud via
-                the browser's speechSynthesis. Feature-detected; persists per
-                browser like the sidebar width. */}
-            {ttsSupported() && (
-              <button
-                type="button"
-                class={`hv-voice-toggle ${speakReplies.value ? 'is-on' : ''}`}
-                onClick={() => setSpeakReplies(!speakReplies.value)}
-                title={speakReplies.value ? 'Stop speaking replies' : 'Speak replies aloud'}
-                aria-label="Speak replies aloud"
-                aria-pressed={speakReplies.value}
-              >
-                <Icon name="speaker" size={14} />
-              </button>
-            )}
-            {/* Model switcher (#308) — works for a not-yet-created chat (sets the
-                new-thread default) and for the open thread (switches it live; the
-                change lands on the next turn). Shown only when the effective
-                assistant offers a model choice. */}
-            {models.length > 0 && (
-              <label class="hv-model-picker" title={currentModel ? `Model: ${currentModel}` : 'Model for this chat'}>
-                <span class="hv-model-label">Model</span>
-                <SearchSelect
-                  class="hv-model-select"
-                  ariaLabel="Chat model"
-                  value={currentModel}
-                  disabled={status === 'running'}
-                  onChange={(v) => void setActiveThreadModel(v)}
-                  options={models.map((m) => ({ value: m, label: m }))}
-                />
-              </label>
-            )}
-            {/* Reasoning-effort selector (#362). Same behaviour as the model
-                picker: sets the new-thread default with no thread open, switches
-                the open thread live (next turn). Shown only when the effective
-                assistant has an effort knob; a clamped pick shows "→ <cap>". */}
-            {efforts.length > 0 && (
-              <label
-                class="hv-model-picker"
-                title={
-                  effortClamped
-                    ? `Reasoning effort: ${currentEffort} — this assistant runs ${effortCap}`
-                    : `Reasoning effort: ${currentEffort}`
-                }
-              >
-                <span class="hv-model-label">Effort</span>
-                <select
-                  class="hv-model-select"
-                  value={currentEffort}
-                  disabled={status === 'running'}
-                  onChange={(e) =>
-                    void setActiveThreadEffort((e.target as HTMLSelectElement).value)
-                  }
-                  aria-label="Reasoning effort"
-                >
-                  {efforts.map((lv) => (
-                    <option key={lv} value={lv}>
-                      {lv}
-                    </option>
-                  ))}
-                </select>
-                {effortClamped && (
-                  <span class="hv-effort-hint mono" aria-label={`Runs ${effortCap}`}>
-                    → {effortCap}
-                  </span>
-                )}
-              </label>
-            )}
-            {/* Project binding (#358) — files the open chat into a project (or
-                sets what the next new chat is filed into). The chat's turns
-                then carry KC_PROJECT_ID, so its memories and the project tools
-                land in that project rather than the workspace at large. Hidden
-                when the registry is empty. */}
-            {projectList.length > 0 && (
-              <label
-                class="hv-model-picker"
-                title={
-                  active
-                    ? 'Project this chat belongs to — applies from the next turn'
-                    : 'Project the next new chat is filed into'
-                }
-              >
-                <span class="hv-model-label">Project</span>
-                <SearchSelect
-                  class="hv-model-select"
-                  ariaLabel="Project for this chat"
-                  value={currentProject}
-                  onChange={(v) => void setActiveThreadProject(v)}
-                  emptyLabel="No project"
-                  options={[
-                    // Keep an unknown binding (archived/deleted project) shown
-                    // rather than silently snapping the picker to "No project".
-                    ...(currentProject &&
-                    !projectList.some((p) => p.id === currentProject)
-                      ? [{ value: currentProject, label: currentProject }]
-                      : []),
-                    ...projectList.map((p) => ({ value: p.id, label: p.name || p.id })),
-                  ]}
-                />
-              </label>
-            )}
-            {/* The one thing the AI CTO's gear had that Chat didn't (#483):
-                persist this agent/model/effort on the project, so every chat
-                filed into it — and every build it dispatches — starts there.
-                Same PUT /api/projects/{id} field the CTO writes through its own
-                `update_project` tool, so a choice made here and one the agent
-                makes for itself land in the same place. */}
-            {boundRecord && (
-              <button
-                type="button"
-                class="hv-project-default"
-                disabled={savingDefault || isProjectDefault}
-                onClick={() => void saveProjectDefaults()}
-                title={
-                  isProjectDefault
-                    ? `This is already ${boundRecord.name}'s default`
-                    : `Make this ${boundRecord.name}'s default agent, model and effort`
-                }
-              >
-                {savedDefault
-                  ? 'Saved'
-                  : isProjectDefault
-                    ? 'Project default'
-                    : 'Set as project default'}
-              </button>
-            )}
-            {active && status && (
-              <Pill tone={STATUS_TONE[status] ?? 'neutral'}>
-                {statusLabel(status as ThreadStatus)}
-              </Pill>
-            )}
-            {/* The open thread's mode, read-only (#683) — see renderThread. */}
-            {activeThread && personaLabel(activeThread.persona) && (
-              <Pill tone="info" title={personaHint(activeThread.persona)}>
-                {personaLabel(activeThread.persona)}
-              </Pill>
-            )}
-            {effectiveAssistant && (
-              <Pill mono>{effectiveAssistant}</Pill>
-            )}
+            <button
+              type="button"
+              class="hv-cfg-btn hv-help-btn"
+              onClick={() => setGuideOpen(true)}
+              aria-label="How Chat works"
+              title="How Chat works"
+            >
+              <Icon name="info" size={15} />
+            </button>
+            <button
+              ref={settingsBtnRef}
+              type="button"
+              class={`hv-cfg-btn ${settingsOpen ? 'is-open' : ''}`}
+              onClick={() => setSettingsOpen((v) => !v)}
+              aria-expanded={settingsOpen}
+              aria-haspopup="dialog"
+              aria-label="Chat settings"
+              title="Chat settings — model, effort, project, voice"
+            >
+              <Icon name="settings" size={15} />
+              {!isMobile && settingsSummary && <span class="hv-cfg-btn-summary mono">{settingsSummary}</span>}
+            </button>
           </div>
         </header>
+        {settingsOpen && !isMobile && (
+          <div ref={settingsPanelRef} class="hv-cfg-panel" role="dialog" aria-label="Chat settings">
+            {settingsBody}
+          </div>
+        )}
+        {isMobile && (
+          <BottomSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} title="Chat settings">
+            {settingsBody}
+          </BottomSheet>
+        )}
 
         {configError.value && <div class="hv-banner hv-banner-error">{configError.value}</div>}
 
-        <GuidePanel
-          title="How Chat works"
-          storageKey="kc.guide.hypervisor"
-          intro="Chat is a conversation layer over your workspace's coding agents (internally: the Hypervisor). Every chat is a real agent session (Claude, OpenCode, …) that reads your live workspace and acts on it through the same tools you use — not a sandboxed toy. Use Chat when you want to talk something through; use Builds when you want to hand off a job and walk away."
-          steps={[
-            {
-              title: 'Pick an agent, then New',
-              body: 'Choose the CLI agent (plus model and starting folder) in the left sidebar, then start a chat with New.',
-            },
-            {
-              title: 'Ask or instruct',
-              body: 'Ask about your workspace or hand it a task — it reads live state (files, git, running apps) and acts on it.',
-            },
-            {
-              title: 'Watch it work',
-              body: 'The status pill shows thinking → idle. Switch the model mid-thread; the change lands on the next turn.',
-            },
-            {
-              title: 'Everything persists',
-              body: 'Chats are saved under Active and Past. Rename, delete, or restore them from Recently deleted anytime.',
-            },
-          ]}
-          scenarios={[
-            { prompt: 'What is running on this workspace right now?', outcome: 'lists the live loopback ports and apps' },
-            { prompt: 'Clone imran31415/pool-hall and run its tests', outcome: 'clones, installs, runs, and reports back' },
-            { prompt: 'Open a PR for the change on my branch', outcome: 'pushes and opens a GitHub PR with gh' },
-          ]}
-        />
+        <Modal open={guideOpen} onClose={() => setGuideOpen(false)} label="How Chat works" width={620} class="hv-guide-modal">
+          <GuidePanel
+            title="How Chat works"
+            defaultOpen
+            intro="Chat is a conversation layer over your workspace's coding agents (internally: the Hypervisor). Every chat is a real agent session (Claude, OpenCode, …) that reads your live workspace and acts on it through the same tools you use — not a sandboxed toy. Use Chat when you want to talk something through; use Builds when you want to hand off a job and walk away."
+            steps={[
+              {
+                title: 'Pick an agent, then New',
+                body: 'Choose the CLI agent (plus model and starting folder) in the left sidebar, then start a chat with New.',
+              },
+              {
+                title: 'Ask or instruct',
+                body: 'Ask about your workspace or hand it a task — it reads live state (files, git, running apps) and acts on it.',
+              },
+              {
+                title: 'Watch it work',
+                body: 'The dot beside the title pulses while it works. Switch the model from the ⚙ settings button mid-thread; the change lands on the next turn.',
+              },
+              {
+                title: 'Everything persists',
+                body: 'Chats are saved under Active and Past. Rename, delete, or restore them from Recently deleted anytime.',
+              },
+            ]}
+            scenarios={[
+              { prompt: 'What is running on this workspace right now?', outcome: 'lists the live loopback ports and apps' },
+              { prompt: 'Clone imran31415/pool-hall and run its tests', outcome: 'clones, installs, runs, and reports back' },
+              { prompt: 'Open a PR for the change on my branch', outcome: 'pushes and opens a GitHub PR with gh' },
+            ]}
+          />
+          <div class="hv-guide-modal-foot">
+            <Button variant="primary" onClick={() => setGuideOpen(false)}>
+              Got it
+            </Button>
+          </div>
+        </Modal>
 
         {/* The AI CTO's opening beat (#683). Handed to <Chat> rather than
             rendered above it so opener, chips and composer land in the
