@@ -57,6 +57,7 @@ import {
   stopProjectsPolling,
 } from '../../store/projects';
 import { serverMode } from '../../store/server-mode';
+import { railCollapsed } from '../../store/ui';
 import { ctoHandoff } from '../../store/feed';
 import { justOnboarded } from '../../store/onboarding';
 import { refreshClaudeReady } from '../../store/claude';
@@ -85,6 +86,7 @@ import {
   SIDEBAR_W_KEY,
   SIDEBAR_W_MAX,
   SIDEBAR_W_MIN,
+  SIDEBAR_COLLAPSED_KEY,
   chatGridTemplate,
   clampSidebarW,
   initialSidebarW,
@@ -145,6 +147,23 @@ export function HypervisorRoute() {
   // comfortable between them → the brief folds to its edge tab by default.
   const cramped = useMediaQuery(`(max-width: ${BRIEF_AUTO_COLLAPSE_MAX}px)`);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop: the Chats pane can collapse to a "Chats N" badge in the chat
+  // header so the conversation gets the full width. Persisted per browser.
+  const [chatsCollapsed, setChatsCollapsedState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  function setChatsCollapsed(v: boolean) {
+    setChatsCollapsedState(v);
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, v ? '1' : '0');
+    } catch {
+      /* noop */
+    }
+  }
   const [chatTab, setChatTab] = useState<ChatTab>('active');
   const [threadsReady, setThreadsReady] = useState(false);
   const firstListPoll = useRef(true);
@@ -738,6 +757,8 @@ export function HypervisorRoute() {
   );
   // One-line summary on the settings button so the current model is visible
   // without opening the panel (desktop only — phones show just the icon).
+  // Both side panes folded = focus mode (drives the header toggle's state).
+  const focusMode = chatsCollapsed && railCollapsed.value;
   const settingsSummary = [currentModel, efforts.length > 0 ? currentEffort : '']
     .filter(Boolean)
     .join(' · ');
@@ -749,11 +770,13 @@ export function HypervisorRoute() {
       ref={rootRef}
       class={`route route-hypervisor ${splitDragging ? 'hv-split-dragging' : ''}`}
       data-sidebar-open={sidebarOpen ? 'true' : 'false'}
+      data-chats-collapsed={!isMobile && chatsCollapsed ? 'true' : 'false'}
       style={
         !isMobile
           ? {
               gridTemplateColumns: chatGridTemplate({
                 sidebarW,
+                sidebarCollapsed: chatsCollapsed,
                 brief: !briefShown ? 'none' : briefCollapsed ? 'collapsed' : 'expanded',
               }),
             }
@@ -777,6 +800,17 @@ export function HypervisorRoute() {
             >
               <Icon name="plus" size={12} /> New
             </Button>
+            {!isMobile && (
+              <button
+                type="button"
+                class="hv-sidebar-collapse"
+                onClick={() => setChatsCollapsed(true)}
+                title="Collapse chats"
+                aria-label="Collapse chats"
+              >
+                <Icon name="chevron-left" size={14} />
+              </button>
+            )}
             <button
               type="button"
               class="hv-sidebar-close"
@@ -1117,13 +1151,13 @@ export function HypervisorRoute() {
 
       <section class="hv-main">
         <header class="hv-topbar">
-          {isMobile && (
+          {(isMobile || chatsCollapsed) && (
             <button
               type="button"
               class="hv-topbar-menu"
-              onClick={() => setSidebarOpen((v) => !v)}
-              title="Chats"
-              aria-label={`Chats (${list.length})`}
+              onClick={() => (isMobile ? setSidebarOpen((v) => !v) : setChatsCollapsed(false))}
+              title={isMobile ? 'Chats' : 'Show chats'}
+              aria-label={isMobile ? `Chats (${list.length})` : `Show chats (${list.length})`}
             >
               <Icon name="chat" size={15} />
               <span class="hv-topbar-menu-label">Chats</span>
@@ -1154,6 +1188,24 @@ export function HypervisorRoute() {
               >
                 <Icon name="mission" size={15} />
                 Brief
+              </button>
+            )}
+            {/* Focus: fold BOTH side panes (the app rail → icon strip, Chats →
+                header badge) in one click, or bring them both back. */}
+            {!isMobile && (
+              <button
+                type="button"
+                class={`hv-cfg-btn hv-help-btn ${focusMode ? 'is-open' : ''}`}
+                onClick={() => {
+                  const next = !focusMode;
+                  railCollapsed.value = next;
+                  setChatsCollapsed(next);
+                }}
+                aria-pressed={focusMode}
+                aria-label={focusMode ? 'Show side panels' : 'Focus on the chat'}
+                title={focusMode ? 'Show side panels' : 'Focus — collapse the side panels'}
+              >
+                <Icon name={focusMode ? 'fullscreen-exit' : 'fullscreen'} size={15} />
               </button>
             )}
             <button
