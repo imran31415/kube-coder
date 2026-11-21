@@ -141,7 +141,9 @@ configuration and launches the provisioner Job. The UI polls deployment status.
 
 **Dex public signup.** Enable `dex.enabled` and `signup.enabled` after completing
 [the Dex setup](../../docs/DEX_SIGNUP.md). Approved numeric GitHub IDs can create
-their own workspace through a separate restricted listener. Each workspace gets
+their own workspace through a separate restricted listener. Admins approve people
+in the console's **Signup access** page, with no redeploy; `signup.allowedGithubIds`
+is a read-only seed. Each workspace gets
 its own Dex client and owner-only OIDC access. Existing workspaces migrate only
 through an explicit admin action; legacy mode remains the default.
 

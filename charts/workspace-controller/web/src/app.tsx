@@ -12,7 +12,7 @@ import {
   provisionConfig,
   loadProvisionConfig,
 } from './store';
-import { route, detailUser, isProvisionRoute, isCapacityRoute, navigate } from './router';
+import { route, detailUser, isProvisionRoute, isCapacityRoute, isSignupAccessRoute, navigate } from './router';
 import { MetricsPanel } from './components/MetricsPanel';
 import { WorkspaceDetail } from './components/WorkspaceDetail';
 import { InsightsBar } from './components/InsightsBar';
@@ -21,6 +21,7 @@ import { SpendPanel } from './components/SpendPanel';
 import { HealthSummary } from './components/HealthSummary';
 import { ProvisionForm } from './components/ProvisionForm';
 import { MobileAccessCard } from './components/MobileAccessCard';
+import { SignupAccess } from './components/SignupAccess';
 
 // The single workspace whose inline metrics panel is expanded (null = collapsed).
 const expanded = signal<string | null>(null);
@@ -40,6 +41,7 @@ export function App() {
   const path = route.value;
   if (isProvisionRoute(path)) return <ProvisionForm />;
   if (isCapacityRoute(path)) return <CapacityView />;
+  if (isSignupAccessRoute(path)) return <SignupAccess />;
   const user = detailUser(path);
   return user ? <WorkspaceDetail user={user} /> : <WorkspaceList />;
 }
@@ -146,6 +148,11 @@ function WorkspaceList() {
           {provisionConfig.value?.enabled && (
             <button class="btn start" onClick={() => navigate('/provision')}>
               + New workspace
+            </button>
+          )}
+          {provisionConfig.value?.signupEnabled && (
+            <button class="btn ghost" onClick={() => navigate('/signup-access')}>
+              Signup access
             </button>
           )}
           <button class="btn ghost" onClick={() => void refresh()}>

@@ -26,9 +26,14 @@ vi.mock('./api/workspaces', async (orig) => ({
   // own state, which is the path that has to tell sleeping from stopped.
   getWorkspaceMetrics: () => Promise.reject(new Error('no metrics in tests')),
 }));
+let signupEnabled = false;
 vi.mock('./api/provision', async (orig) => ({
   ...(await orig<typeof import('./api/provision')>()),
-  getProvisionConfig: () => Promise.resolve({ enabled: false, workspaceDomain: '', oauthAppNewUrl: '' }),
+  getProvisionConfig: () => Promise.resolve({ enabled: false, signupEnabled, workspaceDomain: '', oauthAppNewUrl: '' }),
+}));
+vi.mock('./api/allowlist', async (orig) => ({
+  ...(await orig<typeof import('./api/allowlist')>()),
+  getAccessList: () => Promise.resolve({ entries: [], limit: 1000, signupUrl: '' }),
 }));
 vi.mock('./api/capacity', async (orig) => ({
   ...(await orig<typeof import('./api/capacity')>()),
@@ -290,3 +295,31 @@ describe('Sleeping workspaces (#728 step 5)', () => {
   });
 });
 
+
+describe('Signup access entry point', () => {
+  beforeEach(() => {
+    location.hash = '#/';
+    route.value = '/';
+    rows = [];
+    workspaces.value = [];
+    loaded.value = true;
+    error.value = null;
+  });
+
+  it('is hidden while public signup is off', async () => {
+    signupEnabled = false;
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('No workspaces found.')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Signup access' })).toBeNull();
+  });
+
+  it('opens the signup access page when public signup is on', async () => {
+    signupEnabled = true;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Signup access' }));
+    route.value = '/signup-access';
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Signup access' })).toBeInTheDocument());
+    expect(location.hash).toBe('#/signup-access');
+    expect(await screen.findByText('No one is on the list yet.')).toBeInTheDocument();
+  });
+});

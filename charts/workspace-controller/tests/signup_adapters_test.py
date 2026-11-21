@@ -89,6 +89,20 @@ class DexTest(unittest.TestCase):
 
 
 class BackendTest(unittest.TestCase):
+    def test_lookup_tells_an_unknown_user_from_a_github_outage(self):
+        import controller as real
+        controller = Mock(GithubError=real.GithubError, _GH_LOGIN_RE=real._GH_LOGIN_RE, GITOPS_TOKEN='t')
+        backend = Backend(controller, 'https://auth.test', True)
+        for status, code in ((404, 'github_user_not_found'), (401, 'github_unavailable'),
+                             (500, 'github_unavailable'), (0, 'github_unavailable')):
+            controller._github_api.side_effect = real.GithubError('failed', status)
+            with self.subTest(status=status), self.assertRaises(SignupError) as raised:
+                backend.lookup('octocat')
+            self.assertEqual(raised.exception.code, code)
+        with self.assertRaises(SignupError) as raised:
+            backend.lookup('not a login')
+        self.assertEqual(raised.exception.code, 'invalid_request')
+
     def test_migration_rejects_shared_namespace_and_custom_hosts(self):
         controller = Mock()
         controller.WORKSPACE_DOMAIN = 'example.test'

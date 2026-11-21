@@ -366,7 +366,16 @@ dex:
 signup:
   enabled: false
   host: ""
+  # Numeric GitHub IDs (quoted strings) that may always create a workspace: the
+  # read-only seed and break-glass list. Day-to-day, admins add and remove
+  # people in the console ("Signup access"); the effective list is both.
   allowedGithubIds: []
+  # The console list ("Signup access"), stored in one ConfigMap in
+  # dex.stateNamespace. maxEntries caps the people admins can add there (Helm
+  # IDs above don't count). The list also stops short of Kubernetes' 1 MiB
+  # ConfigMap limit, so a very large value is bounded by that instead.
+  allowlist:
+    maxEntries: 1000
   # client-id, client-secret, cookie-secret, csrf-secret (>=32 chars)
   existingSecretName: ""
   sharedCertificate: false

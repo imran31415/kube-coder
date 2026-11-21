@@ -28,6 +28,11 @@ export function isCapacityRoute(path: string): boolean {
   return path === '/capacity';
 }
 
+/** Who may create a workspace at public signup. */
+export function isSignupAccessRoute(path: string): boolean {
+  return path === '/signup-access';
+}
+
 /** True for the provision form/status routes (/provision, /provision/<slug>). */
 export function isProvisionRoute(path: string): boolean {
   return path === '/provision' || path.startsWith('/provision/') || path.startsWith('/provision?');

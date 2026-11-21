@@ -3,7 +3,9 @@
 Dex provisioning and public signup are opt-in. Existing workspaces keep GitHub
 authentication until an administrator explicitly migrates them. Public signup
 allows authentication by any GitHub user, but workspace creation is restricted
-to `signup.allowedGithubIds`. An empty list permits no public creation.
+to the signup allowlist: the IDs an admin adds in the console's **Signup
+access** page, plus the read-only seed in `signup.allowedGithubIds`. An empty
+list permits no public creation.
 
 ## Components and boundaries
 
@@ -12,9 +14,10 @@ to `signup.allowedGithubIds`. An empty list permits no public creation.
   installs the CRDs; the running Dex service account has only namespaced access.
 - Existing controller admin listener: port 8080, existing admin authentication.
 - Signup listener: port 8082, a separate proxy and host. It has no admin routes.
-- State namespace: owner/slug ConfigMaps, immutable credential Secrets, and a
-  Lease coordinating reconciliation across controller replicas. Only the
-  controller gets access. Include this namespace and Dex storage in backups.
+- State namespace: owner/slug ConfigMaps, the `signup-allowlist` ConfigMap,
+  immutable credential Secrets, and a Lease coordinating reconciliation across
+  controller replicas. Only the controller gets access. Include this namespace
+  and Dex storage in backups: the console's allowlist entries live only here.
 - One confidential Dex client per GitHub numeric ID, with one exact callback.
   Each workspace proxy compares `federated_claims.user_id` against its owner ID.
   This configuration requires the GitHub-only Dex connector shipped here; do not
@@ -171,20 +174,66 @@ cert-manager certificate. Values live in the private GitOps checkout
 
    `make ship-controller-config`. With an empty list the page is live and
    anyone can sign in, but nobody can create a workspace, which is a safe way
-   to preview it.
+   to preview it. From here on, add people in the console (next section); no
+   further redeploy is needed.
 
 ## Managing the signup allowlist
 
-`signup.allowedGithubIds` controls who may **create** a workspace through
-public signup. Anyone with a GitHub account can sign in to the signup page;
-only listed IDs see a working **Create workspace** button.
+The allowlist controls who may **create** a workspace through public signup.
+Anyone with a GitHub account can sign in to the signup page; only allowed
+people see a working **Create workspace** button.
+
+### In the console (day to day)
+
+Open the admin console and choose **Signup access** (shown when public signup
+is on). It is served only on the admin listener, behind the existing admin
+sign-in; the signup host has no route to it.
+
+- **Add:** type a GitHub username and **Look up**. Check the account it found
+  (avatar, name, numeric ID), add an optional note, then **Allow**. The
+  console stores the numeric ID, never the username, and the person can create
+  a workspace within a few seconds: no Helm upgrade, no controller restart.
+  Organizations and bots are refused.
+- **Remove:** **Remove** on their row, then confirm. New creation is blocked at
+  once on every controller replica. An existing workspace keeps working for its
+  owner; delete it from its page (or `make delete-user USER=<slug>`) if access
+  must end. The slug stays reserved to that GitHub ID.
+- **Copy signup link** gives you `https://signup.<domain>` to send them. They
+  get `<login>.<domain>`.
+
+The effective allowlist is the console entries **plus** the Helm seed below.
+Each controller replica caches it for up to 5 seconds; creating a workspace
+always reads it fresh. Entries are kept in the `signup-allowlist` ConfigMap in
+the state namespace, so include that namespace in backups.
+
+Admins can add up to `signup.allowlist.maxEntries` people (default 1000; Helm
+IDs don't count):
+
+```yaml
+signup:
+  allowlist:
+    maxEntries: 1000
+```
+
+Whatever that says, the list stops short of Kubernetes' 1 MiB ConfigMap limit:
+roughly 8,000 entries with short notes, 2,700 with full-length (200-character)
+notes, fewer when notes use non-Latin scripts.
+
+Every add and remove is logged with the admin who did it:
+`signup_allowlist_added` / `signup_allowlist_removed` with `github_id`,
+`login` and `actor`. `kubecoder_signup_allowlist_entries{source}` (on the
+controller metrics port) reports the list size per source.
+
+### Helm seed (break-glass)
+
+`signup.allowedGithubIds` still works and is merged with the console entries.
+Use it to bootstrap, or when the console is unreachable. These entries show in
+the console as **Helm** and are read-only there.
 
 - Entries are **numeric GitHub IDs as quoted strings**, never usernames. IDs
   survive username changes, so a recycled username cannot inherit an
   allowlisted slot. The chart fails to render on a non-numeric entry.
 - Look one up with `gh api users/<login> --jq .id`.
-
-To add (or remove) someone:
 
 ```sh
 make users-sync
@@ -193,12 +242,6 @@ cd .users && git add users-private/_controller/values.yaml \
   && git commit -m "signup: allow <login>" && git push && cd ..
 make ship-controller-config
 ```
-
-Then point them at `https://signup.<domain>`. They get `<login>.<domain>`.
-
-Removing an ID only stops **new** creation. An existing workspace keeps
-working for its owner; delete it with `make delete-user USER=<slug>` if access
-must end. The slug stays reserved to that GitHub ID.
 
 ## Troubleshooting
 
@@ -214,6 +257,20 @@ must end. The slug stays reserved to that GitHub ID.
   -o jsonpath='{.data.record}'`.
 - **Clicking Create twice** is harmless: creation is idempotent per GitHub ID
   and returns the same operation.
+- **Signup access says "Couldn't reach the signup list storage"**: the
+  controller cannot read or write the `signup-allowlist` ConfigMap. The logs
+  show `signup_state_failed` with the Kubernetes status (403 means the
+  `signup-state` Role or RoleBinding is missing). Inspect the list with
+  `kubectl -n kube-coder-signup get cm signup-allowlist -o jsonpath='{.data.record}'`.
+  A hand-edited, malformed record is refused (`signup_allowlist_invalid`)
+  rather than overwritten; fix or delete the ConfigMap.
+- **Signup access says "The list is full"**: the console list reached
+  `signup.allowlist.maxEntries`. Remove people, or raise the value and run
+  `make ship-controller-config`. If the logs show `signup_allowlist_too_large`
+  instead, the ConfigMap is near Kubernetes' 1 MiB limit: raising
+  `maxEntries` won't help; remove people or shorten notes.
+- **An error in the console shows "Ref …"**: that is the `error_id`; grep the
+  controller logs for it to find the matching event.
 - **`make ship-controller-config` reports "rollout timed out"** right after a
   release: usually the first pull of the multi-GB devlaptop image on a node.
   Check `kubectl -n coder get pods`; it typically finishes a minute later.

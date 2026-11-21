@@ -1,5 +1,6 @@
 """Bridge the signup state machine to the existing GitOps/Job implementation."""
 import json
+import logging
 import subprocess
 from signup_errors import SignupError
 from observability_logging import event
@@ -14,8 +15,13 @@ class Backend:
             raise SignupError('invalid_request')
         try:
             return self.c._github_api('GET', '/users/' + login, token=self.c.GITOPS_TOKEN)
-        except self.c.GithubError:
-            raise SignupError('state_unavailable') from None
+        except self.c.GithubError as exc:
+            # An unknown login is the caller's typo; anything else is GitHub or
+            # the token, which only the log can tell apart.
+            if exc.status == 404:
+                raise SignupError('github_user_not_found') from None
+            event('controller', 'signup_github_failed', logging.WARNING, login=login, upstream_status=exc.status)
+            raise SignupError('github_unavailable') from None
 
     def valid_slug(self, slug):
         return bool(self.c._GH_LOGIN_RE.fullmatch(slug))

@@ -20,7 +20,7 @@ from observability_logging import legacy_log
 import functools
 from observability_http import ObservedHTTP, MetricsHandler, RequestDeadlineExceeded, remaining_timeout, without_deadline
 from observability_metrics import REGISTRY
-from observability_logging import event_every, problem, safe_text
+from observability_logging import event, event_every, problem, safe_text
 import base64
 import concurrent.futures
 import contextvars
@@ -2543,19 +2543,57 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             # a noisy traceback, so swallow it.
             self._obs_aborted = True
 
-    def read_json_body(self):
+    def read_body(self):
+        """The raw request body, bounded. Raises ValueError when it's too large
+        or the length is malformed (a negative read would block until EOF)."""
         n = int(self.headers.get('Content-Length', 0))
-        if n == 0:
-            return {}
-        if n > MAX_REQUEST_BODY_BYTES:
+        if n < 0 or n > MAX_REQUEST_BODY_BYTES:
             raise ValueError('request body too large')
-        raw = self.rfile.read(n).decode('utf-8')
+        return self.rfile.read(n)
+
+    def read_json_body(self):
+        raw = self.read_body().decode('utf-8')
         return json.loads(raw) if raw else {}
 
     def _bearer(self):
         """The Bearer credential from the Authorization header, or ''."""
         auth = self.headers.get('Authorization', '')
         return auth[7:].strip() if auth.startswith('Bearer ') else ''
+
+    def _proxy_identity(self):
+        """(user, email) as oauth2-proxy forwarded them; '' when absent.
+
+        oauth2-proxy injects identity differently per mode: as a REVERSE PROXY
+        (our setup) --pass-user-headers sends X-Forwarded-User / -Email /
+        -Preferred-Username to the upstream; in nginx auth_request
+        (external-auth) mode it's X-Auth-Request-*. Accept either so the same
+        backend works behind both."""
+        user = (self.headers.get('X-Forwarded-Preferred-Username')
+                or self.headers.get('X-Forwarded-User')
+                or self.headers.get('X-Auth-Request-User')
+                or self.headers.get('Remote-User') or '')
+        email = (self.headers.get('X-Forwarded-Email')
+                 or self.headers.get('X-Auth-Request-Email') or '')
+        return user, email
+
+    def _admin_actor(self):
+        """Who an admin action is attributed to in the audit log. Call only
+        after check_admin() passed. Bearer callers carry no person."""
+        token = self._bearer()
+        if token and DEV_TOKEN and hmac.compare_digest(token, DEV_TOKEN):
+            return 'dev-token'
+        if token and ADMIN_TOKEN and hmac.compare_digest(token, ADMIN_TOKEN):
+            return 'admin-token'
+        user, email = self._proxy_identity()
+        return user or email or 'unknown'
+
+    def _same_origin(self):
+        """CSRF guard for cookie-authenticated writes. Browsers always send
+        Origin on POST/DELETE, so a page on another site is refused here.
+        Non-browser callers (CLI, the mobile app's bearer token) send none and
+        carry no ambient cookie to abuse."""
+        origin = self.headers.get('Origin')
+        return origin is None or urllib.parse.urlsplit(origin).netloc == self.headers.get('Host', '')
 
     def check_admin(self, allow_token=True):
         """True if the request is from an allowed admin.
@@ -2576,17 +2614,7 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
                 if ADMIN_TOKEN and hmac.compare_digest(tok, ADMIN_TOKEN):
                     return True
         if TRUSTED_PROXY:
-            # oauth2-proxy injects identity differently per mode: as a REVERSE
-            # PROXY (our setup) --pass-user-headers sends X-Forwarded-User /
-            # -Email / -Preferred-Username to the upstream; in nginx
-            # auth_request (external-auth) mode it's X-Auth-Request-*. Accept
-            # either so the same backend works behind both.
-            user = (self.headers.get('X-Forwarded-Preferred-Username')
-                    or self.headers.get('X-Forwarded-User')
-                    or self.headers.get('X-Auth-Request-User')
-                    or self.headers.get('Remote-User') or '')
-            email = (self.headers.get('X-Forwarded-Email')
-                     or self.headers.get('X-Auth-Request-Email') or '')
+            user, email = self._proxy_identity()
             if not (user or email):
                 return False
             # If an allowlist is configured, require a username AND require
@@ -2790,6 +2818,8 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             self.send_json({
                 'enabled': provisioning_enabled(),
                 'authMode': 'dex' if DEX_ENABLED else 'github',
+                # Public signup is on: the console offers the allowlist page.
+                'signupEnabled': bool(SIGNUP_SERVICE and SIGNUP_ENABLED),
                 'workspaceDomain': WORKSPACE_DOMAIN,
                 # Where the admin creates the OAuth App they'll paste creds from.
                 'oauthAppNewUrl': 'https://github.com/settings/applications/new',
@@ -2824,6 +2854,9 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
                 self.send_json(provision_status(m.group(1)))
             except KubectlError as exc:
                 self.send_json({'error': str(exc)}, 502)
+            return
+        if path in ('/api/allowlist', '/api/allowlist/lookup'):
+            self.handle_allowlist('GET', path)
             return
         if path.startswith('/api/'):
             self.send_json({'error': 'not found'}, 404)
@@ -2862,9 +2895,66 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
             legacy_log('controller', f'[controller] provision failed: {exc}\n')
             self.send_json({'error': str(exc)[:200]}, 502)
 
+    ALLOWLIST_ENTRY_RE = re.compile(r'/api/allowlist/([0-9]{1,20})')
+
+    def handle_allowlist(self, method, path):
+        """Admin console: the runtime signup allowlist.
+
+        Admin listener only — the signup listener has its own closed route set
+        and never reaches this Handler. Writes need the admin boundary, a
+        same-origin browser request and (for POST) a JSON body."""
+        from signup_allowlist import AllowlistConsole
+        from signup_errors import SignupError
+        # Read the body before any early answer: replying while it is unread
+        # resets the connection, and the browser then shows "can't reach the
+        # server" (or the proxy a 502) instead of the real reason.
+        try:
+            raw = self.read_body() if method == 'POST' else b''
+        except ValueError:
+            self.send_json(SignupError('invalid_request').public(method=method, route=path), 400)
+            return
+        if getattr(self.server, 'restricted', False) or not (SIGNUP_SERVICE and SIGNUP_ENABLED):
+            self.send_json({'error': 'not found'}, 404)
+            return
+        if not self.check_admin():
+            self.send_json({'error': 'unauthorized'}, 401)
+            return
+        console = AllowlistConsole(SIGNUP_SERVICE, os.environ.get('SIGNUP_ORIGIN', ''))
+        entry = self.ALLOWLIST_ENTRY_RE.fullmatch(path)
+        try:
+            if method != 'GET' and not self._same_origin():
+                event('controller', 'signup_allowlist_cross_origin', logging.WARNING, method=method,
+                      origin=self.headers.get('Origin'), host=self.headers.get('Host'))
+                raise SignupError('forbidden')
+            if method == 'GET' and path == '/api/allowlist':
+                self.send_json(console.overview())
+            elif method == 'GET' and path == '/api/allowlist/lookup':
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                self.send_json(console.lookup(query.get('login', [''])[0].strip()))
+            elif method == 'POST' and path == '/api/allowlist':
+                if not self.headers.get('Content-Type', '').startswith('application/json'):
+                    raise SignupError('invalid_request')
+                result = console.add(json.loads(raw.decode('utf-8') or '{}'), self._admin_actor())
+                self.send_json(result, 201 if result['created'] else 200)
+            elif method == 'DELETE' and entry:
+                self.send_json(console.remove(entry[1], self._admin_actor()))
+            else:
+                self.send_json({'error': 'not found'}, 404)
+        except SignupError as exc:
+            self.send_json(exc.public(method=method, route=path), exc.status)
+        except (ValueError, TypeError):
+            self.send_json(SignupError('invalid_request').public(method=method, route=path), 400)
+        except Exception:
+            event('controller', 'signup_allowlist_exception', logging.ERROR,
+                  exc_info=sys.exc_info(), method=method, route=path)
+            self.send_json(SignupError('internal_error').public(), 500)
+
     def do_POST(self):
         path = self._norm_path()
         if self._restricted_block(path, _SELF_SERVE_POST_RE):
+            return
+        if path == '/api/allowlist':
+            self.handle_allowlist('POST', path)
             return
         if path == '/api/provision/create':
             if not self.check_admin():
@@ -3020,6 +3110,9 @@ class Handler(ObservedHTTP, http.server.SimpleHTTPRequestHandler):
         if getattr(self.server, 'restricted', False):
             self.send_json({'error': 'not found'}, 404)
             return
+        if path.startswith('/api/allowlist/'):
+            self.handle_allowlist('DELETE', path)
+            return
         if not self.check_admin():
             self.send_json({'error': 'unauthorized'}, 401)
             return
@@ -3072,17 +3165,25 @@ def main():
         from provision_backend import Backend
         from provisioning import Provisioning
         from signup import handler as signup_handler, reconcile_forever, signup_html
+        from signup_allowlist import Allowlist, MAX_ENTRIES
         required = ('DEX_GRPC_ADDRESS', 'DEX_ISSUER_URL', 'SIGNUP_STATE_NAMESPACE')
         if not provisioning_enabled() or any(not os.environ.get(k) for k in required):
             raise ValueError('Dex provisioning configuration is incomplete')
         validate_chart_ref(CHART_REF)
         if not PROVISIONER_IMAGE:
             raise ValueError('Dex provisioning requires the pinned provisioner image')
-        SIGNUP_SERVICE = Provisioning(KubeStore(os.environ['SIGNUP_STATE_NAMESPACE']),
+        store = KubeStore(os.environ['SIGNUP_STATE_NAMESPACE'])
+        # Helm's signup.allowedGithubIds is the read-only seed; the console adds
+        # the rest at runtime (signup_allowlist.py).
+        seed_ids = set(filter(None, os.environ.get('SIGNUP_ALLOWED_IDS', '').split(',')))
+        max_entries = os.environ.get('SIGNUP_ALLOWLIST_MAX_ENTRIES') or str(MAX_ENTRIES)
+        if not max_entries.isdigit() or int(max_entries) < 1:
+            raise ValueError('SIGNUP_ALLOWLIST_MAX_ENTRIES must be a whole number of at least 1')
+        SIGNUP_SERVICE = Provisioning(store,
             DexClient(os.environ['DEX_GRPC_ADDRESS'], '/dex-client'),
             Backend(sys.modules[__name__], os.environ['DEX_ISSUER_URL'],
                     os.environ.get('SIGNUP_SHARED_TLS', '').lower() == 'true'),
-            WORKSPACE_DOMAIN, set(filter(None, os.environ.get('SIGNUP_ALLOWED_IDS', '').split(','))))
+            WORKSPACE_DOMAIN, Allowlist(store, seed_ids, int(max_entries)))
         threading.Thread(target=reconcile_forever, args=(SIGNUP_SERVICE,), daemon=True).start()
         if SIGNUP_ENABLED:
             origin = os.environ.get('SIGNUP_ORIGIN', '')

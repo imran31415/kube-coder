@@ -34,6 +34,17 @@ export function fmtRate(b: number | null): string {
   return Math.round(b) + ' B/s';
 }
 
+/** "3 days ago" from epoch seconds; '' when unknown. */
+export function fmtAgo(epochSeconds: number | null | undefined, nowMs = Date.now()): string {
+  if (!epochSeconds) return '';
+  const s = Math.max(0, Math.round(nowMs / 1000 - epochSeconds));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  const d = Math.floor(s / 86400);
+  return d === 1 ? 'yesterday' : `${d} days ago`;
+}
+
 export function fmtUsd(n: number): string {
   return '$' + n.toFixed(2);
 }

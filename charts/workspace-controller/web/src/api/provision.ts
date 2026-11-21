@@ -10,6 +10,8 @@ export interface ProvisionConfig {
   /** Whether the controller has all provisioning wiring (else the tab hides). */
   enabled: boolean;
   authMode?: 'github' | 'dex';
+  /** Public signup is on, so the console offers the signup-access page. */
+  signupEnabled?: boolean;
   /** Base domain new workspaces are created under: <slug>.<workspaceDomain>. */
   workspaceDomain: string;
   /** GitHub URL where the admin creates the OAuth App to paste creds from. */

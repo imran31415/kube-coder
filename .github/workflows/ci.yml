@@ -60,10 +60,11 @@ jobs:
           fixture_pid=$!
           trap 'kill "$fixture_pid"' EXIT
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8089/api/signup/config >/dev/null; then break; fi
+            if curl -fsS http://127.0.0.1:8089/api/signup/config >/dev/null && curl -fsS -o /dev/null http://127.0.0.1:8088/health; then break; fi
             sleep 1
           done
-          node charts/workspace/web/scripts/signup-e2e.mjs
+          node charts/workspace/web/scripts/signup-e2e.mjs && node charts/workspace/web/scripts/allowlist-e2e.mjs \
+            || { echo '--- fixture log ---'; tail -n 80 /tmp/signup-fixture.log; exit 1; }
       - name: Stop fixture services
         if: always()
         run: docker compose -p kc-dex-test -f charts/workspace-controller/tests/integration/compose.yaml -f charts/workspace-controller/tests/integration/compose-grpc.yaml down
