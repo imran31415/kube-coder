@@ -8,7 +8,7 @@
 
 ---
 
-<img width="1072" height="732" alt="kube-coder dashboard" src="https://github.com/user-attachments/assets/3ce75784-2989-4cd2-8dc7-d4fad8ecc084" />
+<img width="100%" alt="kube-coder Chat — the agent started a dev server and is showing the live app inline, with the project brief beside it" src="docs/screenshots/readme/chat-app-preview.png" />
 
 <h1>kube-coder</h1>
 
@@ -118,19 +118,16 @@ python3 harness/bench.py --lang python --backend claude --workers 6
 
 ## See it
 
-Three screenshots that capture the whole idea — a workspace home you drive from one composer, every agent in one queue, and a chat that operates the pod for you:
+A workspace home you drive from one composer, every agent in one queue, and a chat that operates the pod for you:
 
-<img width="100%" alt="Desktop home — start-a-build composer with the Mission Control strip" src="docs/screenshots/desktop-home-mission-strip.png" />
-<p align="center"><sub><b>Desktop home</b> — ask anything or start a build in one line; the Mission Control strip keeps running, waiting, and finished agents one glance away</sub></p>
+<img width="100%" alt="Desktop home — ask-anything composer with the Mission Control strip and a dock of shortcuts" src="docs/screenshots/readme/desktop-home.png" />
+<p align="center"><sub><b>Home</b> — ask anything or start a build in one line; the Mission Control strip keeps running, waiting and finished agents one glance away, and a permission prompt can be answered right there</sub></p>
 
-<img width="100%" alt="Mission Control — every agent across builds, chats and sub-agents in one board" src="docs/screenshots/mission-control-board.png" />
-<p align="center"><sub><b>Mission Control</b> — every agent across builds, chats, and sub-agents in one queue: waiting on you, running, needs review, done</sub></p>
+<img width="100%" alt="Mission Control — every agent across builds, chats and sub-agents in one board" src="docs/screenshots/readme/mission-control.png" />
+<p align="center"><sub><b>Mission Control</b> — every agent across builds, chats and sub-agents in one queue: waiting on you, running, needs review, done — with test and PR evidence on finished cards</sub></p>
 
-<img width="100%" alt="Hypervisor chat rendering a screenshot it captured inline" src="docs/screenshots/hypervisor-inline-media.png" />
-<p align="center"><sub><b>Hypervisor</b> — chat with the workspace and it acts; here it captured a screenshot and rendered it right in the thread</sub></p>
-
-<img width="100%" alt="Chat in AI CTO mode, with the project brief open beside it" src="docs/screenshots/chat-brief-desktop-dark.png" />
-<p align="center"><sub><b>One chat surface</b> — Workspace and CTO chats in one list with a mode badge each, the Mode picker beside Agent and Folder, and the project brief as a pane of any chat filed into a project</sub></p>
+<img width="100%" alt="Chat in CTO mode, with the project brief open beside it" src="docs/screenshots/readme/chat-cto-brief.png" />
+<p align="center"><sub><b>One chat surface</b> — Workspace, CTO and Board chats in one list grouped by project, a Mode picker beside Agent and Folder, and the project brief (north star, decisions, live tasks) as a pane of any chat filed into a project</sub></p>
 
 ### More surfaces
 
@@ -151,8 +148,8 @@ Three screenshots that capture the whole idea — a workspace home you drive fro
       <br/><sub><b>Agent + app side by side</b> — an agent working next to its live UI</sub>
     </td>
     <td width="50%" valign="top">
-      <img width="100%" alt="Live build sessions list with inline output previews" src="docs/screenshots/session-list-live-preview.png" />
-      <br/><sub><b>Build sessions</b> — every agent session, with live output inline</sub>
+      <img width="100%" alt="Builds — every session with live output inline, and the selected Build's Claude Code session" src="docs/screenshots/readme/builds.png" />
+      <br/><sub><b>Builds</b> — every agent session with live output inline; open one for its terminal, preview, changes and follow-ups</sub>
     </td>
   </tr>
 </table>
@@ -163,7 +160,7 @@ Three screenshots that capture the whole idea — a workspace home you drive fro
 
 ## Chat — talk to your workspace, and it acts
 
-<img width="100%" alt="Hypervisor chat calling get_metrics and list_tasks" src="docs/screenshots/hypervisor-chat.png" />
+<img width="100%" alt="Chat calling get_metrics and list_tasks, then summarizing the active agents in a table" src="docs/screenshots/readme/chat-tools.png" />
 
 **Chat** is the feature that makes a kube-coder pod feel alive — internally the *Hypervisor*, which is the name you'll see in the code and specs. You talk to the workspace in plain language and it *does the thing*:
 
@@ -258,7 +255,7 @@ Every workspace exposes the same set of surfaces, all behind a single GitHub OAu
 
 ### The dashboard
 
-<img width="100%" alt="Desktop home tab (light theme) with the centered composer and Mission Control strip" src="docs/screenshots/desktop-redesign-light.png" />
+<img width="100%" alt="Desktop home (light theme) with the centered composer and Mission Control strip" src="docs/screenshots/readme/desktop-home-light.png" />
 
 The dashboard at `/` is a single Preact app:
 
@@ -338,7 +335,7 @@ Pair the [**Ante**](https://ante.run/) CLI — pre-installed in every workspace 
 
 ## Mobile app (iOS & Android)
 
-<img width="500" height="580" alt="kube-coder mobile app" src="https://github.com/user-attachments/assets/d2f2e7ad-7939-4ad1-9623-d9fa1d4e3278" />
+<img width="100%" alt="kube-coder mobile app — Home, Chat and a live Build session" src="docs/screenshots/readme/mobile-app.png" />
 
 Beyond the responsive web dashboard, kube-coder ships a native **Expo / React Native app** ([`mobile/`](mobile/)) to drive your workspace from your phone: list / create / message / kill agent sessions, tail their **color terminal output** with a control-key bar (Shift-Tab, Esc, arrows, Ctrl-C, Paste), chat with the **Hypervisor**, attach photos to a follow-up, search memory, and watch live metrics — all over the workspace's Bearer-token API. It points at **any** kube-coder host: a cloud workspace, or a local minikube one via `make mobile-forward`.
 
@@ -388,8 +385,11 @@ Once [Option B](#option-b--cloud--multi-tenant) is deployed, two things make sel
 
 #### Manage a user — limits, updates, lifecycle
 
-<img width="406" height="292" alt="controller edit-limits panel" src="https://github.com/user-attachments/assets/c82035dc-2c67-4aae-ac39-5041f7a4e7f5" />
-<img width="375" height="556" alt="controller mobile management" src="https://github.com/user-attachments/assets/261df033-7576-43f1-b094-8aea551acc6f" />
+<img width="100%" alt="Admin console — every workspace with its state, isolation and version, plus cluster health" src="docs/screenshots/readme/console-workspaces.png" />
+<p>
+  <img width="62%" alt="Admin console — editing a workspace's CPU and memory limits" src="docs/screenshots/readme/console-edit-limits.png" />
+  <img width="30%" alt="Admin console on a phone" src="docs/screenshots/readme/console-mobile.png" />
+</p>
 
 All per-workspace, in the same console:
 
