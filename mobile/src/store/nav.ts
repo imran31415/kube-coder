@@ -9,11 +9,13 @@
  */
 import { useEffect, useState } from 'react';
 import { createNavigationContainerRef } from '@react-navigation/native';
+import { HOME_SCREEN } from '../navGroups';
 
 export const navigationRef = createNavigationContainerRef();
 
 let drawerOpen = false;
-let activeTab = 'Desktop';
+// The navigator's initial route, until its first state event says otherwise.
+let activeTab: string = HOME_SCREEN;
 const openListeners = new Set<(v: boolean) => void>();
 const tabListeners = new Set<(v: string) => void>();
 

@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loaded: string[] = [];
 const SCREEN_FILES = [
-  'HypervisorScreen', 'WalkieScreen', 'MissionControlScreen', 'FeedScreen', 'BoardScreen',
+  'DesktopScreen', 'WalkieScreen', 'MissionControlScreen', 'FeedScreen', 'BoardScreen',
   'MemoryScreen', 'FilesScreen', 'SkillsScreen', 'TriggersScreen', 'MetricsScreen',
   'ControllerScreen', 'SettingsScreen', 'TasksScreen', 'TaskDetailScreen', 'NewTaskScreen',
   'AppsScreen', 'AppViewScreen', 'SecurityScreen', 'ScanDetailScreen', 'DocsScreen',
@@ -33,10 +33,13 @@ import {
   type LazyScreenName,
 } from './screenRegistry';
 import { pushTargetFromData, tapRoute } from './util/push';
+import { HOME_SCREEN } from './navGroups';
 
 /** The file each route's screen lives in — App.tsx's mapping before #833. */
 const EXPECTED_FILE: Record<LazyScreenName, string> = {
-  Hypervisor: 'HypervisorScreen',
+  // Desktop was the eager home screen until Chat took that place; it now
+  // loads on first open like the rest.
+  Desktop: 'DesktopScreen',
   Walkie: 'WalkieScreen',
   MissionControl: 'MissionControlScreen',
   Feed: 'FeedScreen',
@@ -140,7 +143,15 @@ describe('App.tsx uses the registry', () => {
 
   it('imports no other screen eagerly', () => {
     const eager = [...app.matchAll(/^import \w+ from '\.\/src\/screens\/(\w+)'/gm)].map((m) => m[1]);
-    expect(eager.sort()).toEqual(['DesktopScreen', 'OnboardingScreen']);
+    expect(eager.sort()).toEqual(['HypervisorScreen', 'OnboardingScreen']);
+  });
+
+  it('opens on Chat: Hypervisor is the first and the initial tab, and loads with the shell', () => {
+    expect(TAB_ROUTES[0]).toBe('Hypervisor');
+    expect(app).toMatch(/initialRouteName=\{HOME_SCREEN\}/);
+    expect(HOME_SCREEN).toBe('Hypervisor');
+    expect(EAGER_SCREENS).toContain(HOME_SCREEN);
+    expect(isLazy(HOME_SCREEN)).toBe(false);
   });
 });
 
@@ -151,7 +162,6 @@ describe('deep links reach screens that have not loaded yet', () => {
     ['kubecoder://board/acme-jira/812', 'BoardScreen', { tab: 'Board' }],
     ['kubecoder://board:kube-coder-gh:I_kwDOA:4102', 'BoardScreen', { tab: 'Board' }],
     ['kubecoder://task/t-42', 'TaskDetailScreen', { tab: 'Tasks', screen: 'TaskDetail' }],
-    ['kubecoder://thread/th-9', 'HypervisorScreen', { tab: 'Hypervisor' }],
     ['kubecoder://scan/sc-1', 'ScanDetailScreen', { tab: 'Security', screen: 'ScanDetail' }],
     ['kubecoder://feed', 'FeedScreen', { tab: 'Feed' }],
     ['kubecoder://nonsense/x', 'FeedScreen', { tab: 'Feed' }],
@@ -168,6 +178,12 @@ describe('deep links reach screens that have not loaded yet', () => {
       expect(loaded).toContain(file);
     });
   }
+
+  it('kubecoder://thread/… opens Chat, which ships with the shell', () => {
+    const route = tapRoute(pushTargetFromData({ ref: refFromDeepLink('kubecoder://thread/th-9') }));
+    expect(route).toMatchObject({ kind: 'screen', tab: 'Hypervisor' });
+    expect((EAGER_SCREENS as readonly string[]).includes('Hypervisor')).toBe(true);
+  });
 
   it('keeps the routing details each screen reads', () => {
     expect(tapRoute(pushTargetFromData({ ref: 'board:acme-jira:812' }))).toEqual({

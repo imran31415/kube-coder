@@ -248,6 +248,11 @@ check(end.listeners === baseStats.listeners, `core event listeners unchanged (${
 check(kbPerMin < 1024, `an idle open chat reads ${kbPerMin.toFixed(0)} KB/min (< 1 MB/min)`);
 
 // ---- 2. Running Builds, then the window hidden.
+// Builds sits inside the sidebar's Workspace disclosure, closed on Chat.
+if (await page.getByLabel('Show Workspace').first().isVisible().catch(() => false)) {
+  await page.getByLabel('Show Workspace').first().click();
+  await sleep(300);
+}
 await page.getByLabel('Go to Builds').first().click();
 await sleep(3000);
 const spinners = await page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running').length);

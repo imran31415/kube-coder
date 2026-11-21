@@ -9,7 +9,8 @@
  * Navigation is the hamburger NavDrawer (#196) that replaced the bottom tab
  * bar: every top-level screen exposes an "Open menu" ☰ button, and the drawer
  * lists the destinations by label (Desktop, Builds, Apps, Memory, Metrics…).
- * The demo build boots on the Desktop home. Hidden tab screens stay in the
+ * The demo build boots on Chat (the home screen); everything else sits in
+ * the drawer's Workspace disclosure. Hidden tab screens stay in the
  * react-native-web DOM, so we always act on the *topmost* match (see
  * clickVisible / waitVisible), mirroring scripts/check-nav.mjs.
  *
@@ -121,12 +122,24 @@ async function clickVisible(loc, what) {
   await el.click();
 }
 
+/** Every drawer destination except Chat lives inside the Workspace
+ *  disclosure, which rests collapsed on Chat (the home screen). Open it when
+ *  it is closed; a no-op when the active screen already revealed it. */
+async function revealWorkspace(page) {
+  const show = page.getByLabel('Show Workspace');
+  if ((await visibleNth(show)) >= 0) {
+    await clickVisible(show, 'Workspace');
+    await sleep(300);
+  }
+}
+
 /** Open the drawer and jump to a top-level destination by its drawer label.
  *  Entries expose an aria-label ("Go to Memory") and the list scrolls, so the
  *  target is scrolled in before it's clicked (mirrors scripts/check-nav.mjs). */
 async function go(page, label) {
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
+  if (label !== 'Chat') await revealWorkspace(page);
   const entry = page.getByLabel(`Go to ${label}`);
   await entry.first().scrollIntoViewIfNeeded();
   await clickVisible(entry, `drawer item ${label}`);
@@ -142,10 +155,12 @@ async function shots(page, device, outDir) {
     console.log(`    ✓ ${device.name}/${file}`);
   };
 
-  // Boots on the Desktop home (the "AI workspace" launcher shared with the web
-  // dashboard). The composer defaults to chat mode ("Ask anything or start a
+  // Boots on Chat (the home screen); the store set still leads with the
+  // Desktop launcher (shared with the web dashboard), so open it from the
+  // drawer first. The composer defaults to chat mode ("Ask anything or start a
   // build…") with a pill toggle to build mode ("Describe a build to run…");
   // accept either so the wait doesn't depend on which default the app ships.
+  await go(page, 'Desktop');
   await waitVisible(
     page.getByPlaceholder(/Ask anything or start a build|Describe a build to run/),
     'Desktop home',

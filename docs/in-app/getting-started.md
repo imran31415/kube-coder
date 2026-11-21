@@ -39,30 +39,43 @@ preview appears.** Everything below is the map for what surrounds it.
 
 ## The surfaces
 
-The left rail (or the bottom-nav + **More** sheet on mobile) is grouped
-into three sections. Open the command palette with **⌘K** / **Ctrl-K**
-to jump to any of them — or any task, memory, or doc — and press **?**
-for the keyboard-shortcut sheet.
+The sidebar has two entries: **Chat** — where the dashboard opens — and
+**Workspace**, which folds open to everything else, grouped under three
+headings (Mission Control, Machine, Knowledge) with **Settings** last.
+Workspace opens by itself whenever you are on one of its pages, so you
+never lose your place. On a phone the bottom bar has the same two
+entries: **Chat**, and **Workspace**, which opens the full list as a
+sheet. Open the command palette with **⌘K** / **Ctrl-K** to jump to any
+page — or any task, memory, or doc — and press **?** for the
+keyboard-shortcut sheet.
 
-### Mission Control
+### Chat
+
+**Chat** is the front door, and the only chat surface. Every chat is a
+real agent session (Claude, OpenCode, …) acting on your live files. Pick
+**Mode: CTO** when you want the one that plans and builds across your
+whole workspace — a first message builds right away, and previews surface
+inline. Bind a chat to a **project** and its brief opens as a pane beside
+it.
+
+### Workspace → Mission Control
 
 | Surface | What it's for |
 | --- | --- |
-| **Chat** | The front door, and the only chat surface. Every chat is a real agent session (Claude, OpenCode, …) acting on your live files. Pick **Mode: CTO** when you want the one that plans and builds across your whole workspace — a first message builds right away, and previews surface inline. Bind a chat to a **project** and its brief opens as a pane beside it. |
 | **Feed** | *What changed · what matters* — briefings, news, activity, and decisions your CTO and workspace post as things happen. |
 | **Builds** | Create and watch individual build tasks. Each runs in its own tmux session with a Chat and a raw Terminal view. |
 | **Walkie-Talkie** | A voice-first, push-to-talk channel to your workspace — speak, and a real agent turn answers back on a card and aloud. |
 | **Triggers** | Webhooks and cron jobs that fire builds on a schedule or an external event. |
 
-The **Mission Control** board itself (the group header) is one queue of
+The **Mission Control** board itself (**Overview**) is one queue of
 *every* agent across builds, chats, and sub-agents — with "waiting on
 you" pulled to the front.
 
-### Workspace
+### Workspace → Machine
 
 | Surface | What it's for |
 | --- | --- |
-| **Desktop** | The workspace **home**: a greeting over a centered composer, a live Mission Control strip, and a dock of launcher shortcuts. The place to start work and see work in flight. |
+| **Desktop** | A greeting over a centered composer, a live Mission Control strip, and a dock of launcher shortcuts. The place to start work and see work in flight. |
 | **Apps** | Locally-listening services discovered on the workspace. Pin a port to give it a friendly name and open it from the dashboard. |
 | **Files** | Browse and upload to `/home/dev`. |
 
@@ -70,7 +83,7 @@ you" pulled to the front.
 > viewer) is still here — launch it from the Desktop dock. See
 > **[Workspace → Browser & VNC](/docs/browser)**.
 
-### Knowledge
+### Workspace → Knowledge
 
 | Surface | What it's for |
 | --- | --- |
@@ -78,7 +91,7 @@ you" pulled to the front.
 | **Skills** | Agent capabilities discovered across every harness — reusable, named workflows Claude can invoke. |
 | **Docs** | This site. |
 
-**Settings** (its own item at the bottom of the rail) holds theme, git
+**Settings** (the last item inside Workspace) holds theme, git
 identity, your Claude connection, browser preview, and live metrics.
 
 ## Prefer to drive it yourself?
