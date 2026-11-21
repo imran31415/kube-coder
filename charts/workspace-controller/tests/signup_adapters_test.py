@@ -24,7 +24,21 @@ class StoreTest(unittest.TestCase):
         released = store.request.call_args.args[2]
         self.assertEqual(released['metadata']['resourceVersion'], '7')
         self.assertGreater(released['spec']['leaseDurationSeconds'], 0)
-        self.assertEqual(released['spec']['renewTime'], '1970-01-01T00:00:00Z')
+        self.assertEqual(released['spec']['renewTime'], '1970-01-01T00:00:00.000000Z')
+
+    def test_acquire_sends_microtime_even_on_whole_second(self):
+        # The API server rejects MicroTime without six fractional digits (400),
+        # which left the lease held for its full 600s after every step.
+        import provision_store
+        store = KubeStore('state')
+        store.request = Mock(side_effect=[None, {'metadata': {}, 'spec': {}}, {}])
+        whole = datetime.datetime(2026, 11, 21, 3, 53, 25, 0, tzinfo=datetime.timezone.utc)
+        with patch.object(provision_store.datetime, 'datetime', wraps=datetime.datetime) as dt:
+            dt.now.return_value = whole
+            with store.leader():
+                pass
+        acquired = store.request.call_args_list[1].args[2]
+        self.assertEqual(acquired['spec']['renewTime'], '2026-11-21T03:53:25.000000Z')
 
     def test_live_lease_prevents_second_worker(self):
         store = KubeStore('state')
