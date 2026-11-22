@@ -49,33 +49,47 @@ export const density = signal<Density>(initial.density);
 /** Collapses the left navigation rail to an icon-only strip on desktop. */
 export const railCollapsed = signal<boolean>(initial.railCollapsed);
 
-// Per-group disclosure state for the categorized rail (#267). Stored under
-// its own versioned key (not kube-coder.ui) so the group schema can evolve
-// without migrating the main prefs blob. Holds *collapsed* group ids.
-const RAIL_GROUPS_KEY = 'kc.rail.groups.v1';
+// Per-group disclosure state for the rail (#267). Stored under its own
+// versioned key (not kube-coder.ui) so the group schema can evolve without
+// migrating the main prefs blob. Holds *collapsed* group ids.
+//
+// v2: the rail collapsed to two top-level entries — Chat and a single
+// Workspace disclosure — so the only collapsible group id is 'workspace'.
+// v1 held ids for the old three-group rail ('mission' | 'workspace' |
+// 'knowledge'), where 'workspace' meant what is now the Machine section; its
+// values mean nothing to the new rail, so it is dropped rather than
+// reinterpreted (a v1 `['workspace']` would otherwise collapse the wrong
+// thing, and a v1 `[]` would pin the new Workspace open for someone who only
+// ever expanded the old Machine group).
+const RAIL_GROUPS_KEY = 'kc.rail.groups.v2';
+const LEGACY_RAIL_GROUPS_KEYS = ['kc.rail.groups.v1'];
+
+/** Ids the rail can collapse. Anything else in storage is ignored. */
+export const RAIL_GROUP_IDS = ['workspace'];
 
 /**
  * Groups that start collapsed in a browser that has never set a preference.
  *
- * The rail then rests at five rows — Mission Control and its agent surfaces —
- * instead of thirteen. Workspace and Knowledge are destinations you go to
- * deliberately, not ones you scan, so they cost a click rather than permanent
- * vertical space. Every route still exists and every deep link still resolves;
- * this is disclosure state only.
+ * The rail then rests at two rows — Chat and Workspace — instead of sixteen.
+ * Workspace auto-reveals while you stand on one of its routes (see
+ * `autoExpandedGroup`), so collapsing it costs a click to browse, never your
+ * place. Every route still exists and every deep link still resolves; this is
+ * disclosure state only.
  */
-export const DEFAULT_COLLAPSED_GROUPS = ['workspace', 'knowledge'];
+export const DEFAULT_COLLAPSED_GROUPS = ['workspace'];
 
 export function loadCollapsedGroups(): string[] {
   if (typeof localStorage === 'undefined') return [...DEFAULT_COLLAPSED_GROUPS];
   try {
+    for (const k of LEGACY_RAIL_GROUPS_KEYS) localStorage.removeItem(k);
     const raw = localStorage.getItem(RAIL_GROUPS_KEY);
     // Distinguish "never set" from "set to empty". A user who deliberately
-    // expanded both groups has a stored `[]`, and must keep it — only a
-    // browser with no stored key inherits the new default.
+    // expanded Workspace has a stored `[]`, and must keep it — only a
+    // browser with no stored key inherits the default.
     if (raw === null) return [...DEFAULT_COLLAPSED_GROUPS];
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed)
-      ? parsed.filter((v): v is string => typeof v === 'string')
+      ? parsed.filter((v): v is string => typeof v === 'string' && RAIL_GROUP_IDS.includes(v))
       : [...DEFAULT_COLLAPSED_GROUPS];
   } catch {
     return [...DEFAULT_COLLAPSED_GROUPS];
@@ -90,8 +104,8 @@ export const collapsedRailGroups = signal<string[]>(loadCollapsedGroups());
  *
  * Deliberately NOT persisted and deliberately separate from
  * `collapsedRailGroups`: navigating to /memory should show you where you are,
- * but it should not silently re-expand Knowledge forever. Otherwise the
- * five-row default erodes to thirteen within a session or two and this whole
+ * but it should not silently re-expand Workspace forever. Otherwise the
+ * two-row default erodes to sixteen within a session or two and this whole
  * change delivers nothing durable. Only an explicit chevron click — which goes
  * through `toggleRailGroup` — is remembered.
  */

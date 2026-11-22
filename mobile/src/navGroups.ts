@@ -1,17 +1,22 @@
 /**
- * Categorized drawer navigation (#267) — mirrors the web dashboard's
- * NAV_GROUPS (charts/workspace/web/src/store/router.ts) so both apps present
- * the same information architecture:
+ * Drawer navigation — mirrors the web dashboard's rail
+ * (charts/workspace/web/src/store/router.ts: NAV_TOP / NAV_GROUPS /
+ * WORKSPACE_TAIL) so both apps present the same information architecture.
+ * Exactly two top-level entries:
  *
- *   Mission Control — agents doing work (Overview, Chat, Builds, Walkie-Talkie)
- *   Workspace       — the machine itself (Desktop, Apps, Files, Metrics)
- *   Knowledge       — what the workspace knows (Memory, Skills)
- *   (untitled tail) — Controller + Settings, standalone like the web rail
+ *   Chat       — the home screen (the tab navigator's initial route)
+ *   Workspace  — one collapsible entry holding everything else:
+ *     Mission Control — agents doing work (Overview, Feed, Board, Builds, …)
+ *     Machine         — the machine itself (Desktop, Apps, Files, Metrics)
+ *     Knowledge       — what the workspace knows (Memory, Skills, Docs)
+ *     (untitled tail) — Controller + Settings, pinned (#549)
+ *
+ * "Machine" is the old "Workspace" category: once Workspace became the
+ * container, a sub-heading with the same name read as a mistake.
  *
  * Mobile-only deltas vs the web: Metrics and Controller exist only here
- * (Metrics is machine health → Workspace; the conditional Controller entry
- * stays ungrouped next to Settings). Triggers and Docs landed in #250 and sit
- * in the same groups the web rail files them under.
+ * (Metrics is machine health → Machine; the conditional Controller entry
+ * stays in the untitled tail next to Settings).
  *
  * Pure data — no react-native imports — so the node-side vitest suite can
  * assert the IA without rendering. `icon` values are Ionicons glyph names;
@@ -36,14 +41,22 @@ export interface NavGroupDef {
   items: NavItemDef[];
 }
 
+/** The first top-level entry, and the app's home screen. */
+export const CHAT_ITEM: NavItemDef = { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' };
+
+/** The tab navigator's initial route: Chat (was Desktop). */
+export const HOME_SCREEN = CHAT_ITEM.name;
+
+/** The second top-level entry: the disclosure over NAV_GROUPS. */
+export const WORKSPACE_TITLE = 'Workspace';
+export const WORKSPACE_ICON = 'briefcase-outline';
+
+/** The sections inside Workspace, in order; the untitled tail closes it. */
 export const NAV_GROUPS: NavGroupDef[] = [
   {
     title: 'Mission Control',
     items: [
       { name: 'MissionControl', label: 'Overview', icon: 'file-tray-full-outline' },
-      // The AI CTO had its own entry until #683 folded it into Chat as a mode;
-      // Chat moves up to take its place in the group.
-      { name: 'Hypervisor', label: 'Chat', icon: 'chatbubbles-outline' },
       { name: 'Feed', label: 'Feed', icon: 'newspaper-outline' },
       // Board review (#588). Mission Control, beside Feed: both answer
       // "what needs me?" — Feed for this workspace, Board for someone
@@ -61,7 +74,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
     ],
   },
   {
-    title: 'Workspace',
+    title: 'Machine',
     items: [
       { name: 'Desktop', label: 'Desktop', icon: 'grid-outline' },
       { name: 'Apps', label: 'Apps', icon: 'globe-outline' },
@@ -86,13 +99,44 @@ export const NAV_GROUPS: NavGroupDef[] = [
   },
 ];
 
+/** True when `screen` is reached through the Workspace disclosure — i.e. it
+ *  is anything the drawer lists other than Chat. */
+export function inWorkspace(screen: string): boolean {
+  return NAV_GROUPS.some((g) => g.items.some((i) => i.name === screen));
+}
+
+/**
+ * Whether Workspace is open — the same rule as the web rail: collapsed by
+ * default, open while the active screen lives inside it, and an explicit
+ * collapse on such a screen sticks until the user moves elsewhere (so the
+ * header can take the accent tint instead and the user keeps their place).
+ */
+export interface WorkspaceDisclosure {
+  /** The user explicitly opened it. */
+  open: boolean;
+  /** The screen the user explicitly collapsed it on, if any. */
+  dismissedOn: string | null;
+}
+
+export const WORKSPACE_DEFAULT: WorkspaceDisclosure = { open: false, dismissedOn: null };
+
+export function isWorkspaceExpanded(d: WorkspaceDisclosure, active: string): boolean {
+  return d.open || (inWorkspace(active) && d.dismissedOn !== active);
+}
+
+export function toggleWorkspace(d: WorkspaceDisclosure, active: string): WorkspaceDisclosure {
+  return isWorkspaceExpanded(d, active)
+    ? { open: false, dismissedOn: active }
+    : { open: true, dismissedOn: null };
+}
+
 /** The drawer IA split into the part that scrolls and the tail that does not.
  *
- * Why the tail is pinned (#549): the destination list is taller than any
- * iPhone screen — 16 entries against a ~580-650pt viewport once the safe-area
- * insets, brand row and footer are taken out — so whatever sits last is off
- * the fold. It used to be worse than "off the fold": the list was a plain
- * View, so on iOS (overflow defaults to `visible`, and hitTest: does not
+ * Why the tail is pinned (#549): with Workspace open, the destination list is
+ * taller than any iPhone screen — 17 entries against a ~580-650pt viewport
+ * once the safe-area insets, brand row and footer are taken out — so whatever
+ * sits last is off the fold. It used to be worse than "off the fold": the list
+ * was a plain View, so on iOS (overflow defaults to `visible`, and hitTest: does not
  * descend into subviews drawn outside their parent's frame) Settings rendered
  * but could not be tapped at all. #542 made the list a ScrollView, which fixes
  * the dead tap, but Settings still lands ~190pt below the fold with no
@@ -100,7 +144,9 @@ export const NAV_GROUPS: NavGroupDef[] = [
  *
  * Keeping the untitled tail (Controller + Settings) outside the scroller makes
  * it immune to the list growing again — the drawer has gained five entries
- * since it replaced the tab bar. The web rail solved the same overflow the
+ * since it replaced the tab bar. The tail is still part of Workspace: the
+ * drawer shows it, pinned under the scrolling sections, whenever Workspace is
+ * open. The web rail solved the same overflow the
  * other way (#448: Settings flows with the nav rather than pinning), because a
  * desktop sidebar has the height to spare and a permanent scrollbar; a phone
  * drawer has neither.

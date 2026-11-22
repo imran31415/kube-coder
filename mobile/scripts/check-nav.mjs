@@ -53,13 +53,40 @@ async function assertEscape(page, tag, shotName) {
   return { hasMenu, hasBack };
 }
 
-// ---------- Path A: cold start on Desktop → Mission strip row → Mission
-// Control → card → TaskDetail → back. The Tasks tab has never been visited,
-// so this is the deep-link-as-first-route case that used to strand the user
-// on the detail screen.
+// ---------- Path 0: cold start lands on Chat, the home screen.
 {
   const page = await freshPage();
-  await assertEscape(page, 'Desktop (home)', '01-desktop.png');
+  await clickVisible(page.getByLabel('Open menu'), 'menu button');
+  await sleep(450);
+  // react-native-web drops accessibilityState.selected on a button, so read
+  // the drawer's own active styling: the active entry's icon takes the accent
+  // colour, while Workspace's stays muted (untinted, since Chat is outside it).
+  const iconColor = async (label) => {
+    const loc = page.getByLabel(label);
+    const n = await visibleNth(loc);
+    return n < 0 ? null : loc.nth(n).evaluate((el) => getComputedStyle(el.firstElementChild).color);
+  };
+  const chatColor = await iconColor('Go to Chat');
+  const workspaceColor = await iconColor('Show Workspace');
+  const selected = !!chatColor && !!workspaceColor && chatColor !== workspaceColor;
+  console.log(`${selected ? 'PASS' : 'FAIL'} Cold start lands on Chat`);
+  if (!selected) failures++;
+  // Workspace rests collapsed there: its entries are one tap away.
+  const collapsed = (await visibleNth(page.getByLabel('Show Workspace'))) >= 0;
+  console.log(`${collapsed ? 'PASS' : 'FAIL'} Workspace rests collapsed on Chat`);
+  if (!collapsed) failures++;
+  if (shotsDir) await page.screenshot({ path: path.join(shotsDir, '00-drawer-home.png') });
+  await page.close();
+}
+
+// ---------- Path A: Desktop → Mission strip row → Mission Control → card →
+// TaskDetail → back. The Tasks tab has never been visited, so this is the
+// deep-link-as-first-route case that used to strand the user on the detail
+// screen.
+{
+  const page = await freshPage();
+  await openDrawerAndGo(page, 'Desktop');
+  await assertEscape(page, 'Desktop', '01-desktop.png');
   await clickVisible(
     page.getByLabel('Open Mission Control — Auth middleware refactor'),
     'mission strip row',
@@ -79,9 +106,10 @@ async function assertEscape(page, tag, shotName) {
   await page.close();
 }
 
-// ---------- Path B: cold start → Desktop build composer → TaskDetail
+// ---------- Path B: Desktop build composer → TaskDetail
 {
   const page = await freshPage();
+  await openDrawerAndGo(page, 'Desktop');
   // The composer defaults to chat mode (screenshots.mjs already accounts for
   // this) — flip the mode pill to build before the build placeholder exists.
   await clickVisible(page.getByLabel('Mode: chat — switch to build'), 'switch to build mode');
@@ -93,9 +121,10 @@ async function assertEscape(page, tag, shotName) {
   await page.close();
 }
 
-// ---------- Path C: cold start → Desktop task shortcut → TaskDetail
+// ---------- Path C: Desktop task shortcut → TaskDetail
 {
   const page = await freshPage();
+  await openDrawerAndGo(page, 'Desktop');
   await clickVisible(page.getByLabel('Launch Fix flaky test'), 'task shortcut');
   await sleep(1700);
   await assertEscape(page, 'TaskDetail via Desktop task shortcut', '04-detail-from-shortcut.png');
@@ -105,8 +134,9 @@ async function assertEscape(page, tag, shotName) {
 // ---------- Path D: drawer to every top-level screen, then nested details
 {
   const page = await freshPage();
-  // Drawer labels from src/navGroups.ts (#267): Mission Control is now the
-  // section header; its screen entry is "Overview", and Hypervisor is "Chat".
+  // Drawer labels from src/navGroups.ts (#267): Chat is the top-level entry;
+  // Mission Control is a Workspace sub-heading whose screen entry is
+  // "Overview". openDrawerAndGo opens Workspace when it is closed.
   //
   // Feed and Board were absent from this list — which is precisely why
   // nothing here ever noticed that Board was unreachable from a notification

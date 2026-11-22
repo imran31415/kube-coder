@@ -97,11 +97,23 @@ export async function freshPage(browser, port, settleMs = 1400) {
   return page;
 }
 
+/** Every drawer destination except Chat lives inside the Workspace
+ *  disclosure, which rests collapsed on Chat (the home screen). Open it when
+ *  it is closed; a no-op when the active screen already revealed it. */
+export async function revealWorkspace(page) {
+  const show = page.getByLabel('Show Workspace');
+  if ((await visibleNth(show)) >= 0) {
+    await clickVisible(show, 'Workspace');
+    await sleep(300);
+  }
+}
+
 /** Open the drawer and jump to a destination by its aria-label. The list
  *  scrolls, so the entry is brought into view before the hit-test. */
 export async function openDrawerAndGo(page, item) {
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
+  if (item !== 'Chat') await revealWorkspace(page);
   const entry = page.getByLabel(`Go to ${item}`);
   await entry.first().scrollIntoViewIfNeeded();
   await clickVisible(entry, `drawer item ${item}`);

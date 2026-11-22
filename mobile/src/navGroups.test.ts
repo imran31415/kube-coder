@@ -1,10 +1,69 @@
 import { describe, expect, it } from 'vitest';
-import { NAV_GROUPS, splitNavGroups } from './navGroups';
+import {
+  CHAT_ITEM,
+  HOME_SCREEN,
+  NAV_GROUPS,
+  WORKSPACE_DEFAULT,
+  WORKSPACE_TITLE,
+  inWorkspace,
+  isWorkspaceExpanded,
+  splitNavGroups,
+  toggleWorkspace,
+} from './navGroups';
+import { TAB_ROUTES } from './screenRegistry';
 
-const flat = NAV_GROUPS.flatMap((g) => g.items);
+/** Every drawer destination: Chat, then everything inside Workspace. */
+const flat = [CHAT_ITEM, ...NAV_GROUPS.flatMap((g) => g.items)];
+
+describe('top level: Chat + Workspace', () => {
+  it('has exactly two top-level entries, Chat then Workspace', () => {
+    expect([CHAT_ITEM.label, WORKSPACE_TITLE]).toEqual(['Chat', 'Workspace']);
+    expect(CHAT_ITEM.name).toBe('Hypervisor');
+  });
+
+  it('opens on Chat', () => {
+    expect(HOME_SCREEN).toBe('Hypervisor');
+  });
+
+  it('every tab the navigator registers is reachable from the drawer', () => {
+    expect(flat.map((i) => i.name).sort()).toEqual([...TAB_ROUTES].sort());
+  });
+
+  it('puts everything except Chat inside Workspace', () => {
+    expect(inWorkspace('Hypervisor')).toBe(false);
+    for (const name of TAB_ROUTES.filter((n) => n !== 'Hypervisor')) {
+      expect(inWorkspace(name), name).toBe(true);
+    }
+  });
+});
+
+describe('Workspace disclosure (mirrors the web rail)', () => {
+  it('starts collapsed on Chat', () => {
+    expect(isWorkspaceExpanded(WORKSPACE_DEFAULT, 'Hypervisor')).toBe(false);
+  });
+
+  it('opens by itself while the active screen lives inside it', () => {
+    expect(isWorkspaceExpanded(WORKSPACE_DEFAULT, 'Memory')).toBe(true);
+    expect(isWorkspaceExpanded(WORKSPACE_DEFAULT, 'Settings')).toBe(true);
+  });
+
+  it('an explicit collapse on such a screen sticks until the user moves', () => {
+    const d = toggleWorkspace(WORKSPACE_DEFAULT, 'Memory');
+    expect(isWorkspaceExpanded(d, 'Memory')).toBe(false);
+    // Moving to another Workspace screen reveals it again.
+    expect(isWorkspaceExpanded(d, 'Files')).toBe(true);
+  });
+
+  it('an explicit open stays open, Chat included; toggling again closes it', () => {
+    const open = toggleWorkspace(WORKSPACE_DEFAULT, 'Hypervisor');
+    expect(isWorkspaceExpanded(open, 'Hypervisor')).toBe(true);
+    expect(isWorkspaceExpanded(open, 'Memory')).toBe(true);
+    expect(isWorkspaceExpanded(toggleWorkspace(open, 'Hypervisor'), 'Hypervisor')).toBe(false);
+  });
+});
 
 describe('NAV_GROUPS (#267)', () => {
-  it('covers every top-level screen exactly once', () => {
+  it('covers every top-level screen exactly once (Chat + Workspace)', () => {
     const names = flat.map((i) => i.name);
     expect([...names].sort()).toEqual(
       [
@@ -39,10 +98,12 @@ describe('NAV_GROUPS (#267)', () => {
     expect(names).toContain('Board');
   });
 
-  it('uses the same category titles as the web dashboard, plus an untitled tail', () => {
+  it('uses the same Workspace sub-headings as the web dashboard, plus an untitled tail', () => {
+    // "Machine" is the old "Workspace" category, renamed so it does not share
+    // a name with the container it now sits in.
     expect(NAV_GROUPS.map((g) => g.title)).toEqual([
       'Mission Control',
-      'Workspace',
+      'Machine',
       'Knowledge',
       null,
     ]);
@@ -58,7 +119,8 @@ describe('NAV_GROUPS (#267)', () => {
 
   it('offers no AI CTO destination — it is a mode of Chat (#683)', () => {
     expect(flat.map((i) => i.name)).not.toContain('Cto');
-    expect(NAV_GROUPS[0].items.map((i) => i.name)).toContain('Hypervisor');
+    // Chat is the top-level entry, not a Workspace member.
+    expect(NAV_GROUPS.flatMap((g) => g.items).map((i) => i.name)).not.toContain('Hypervisor');
   });
 
   it('files Triggers under Mission Control and Docs under Knowledge, like the web rail (#250)', () => {
@@ -117,7 +179,7 @@ describe('splitNavGroups (#549)', () => {
 
   it('leaves only titled groups in the scroller, so every scrolled row has a section', () => {
     const { scrolling } = splitNavGroups({ controller: true });
-    expect(scrolling.map((g) => g.title)).toEqual(['Mission Control', 'Workspace', 'Knowledge']);
+    expect(scrolling.map((g) => g.title)).toEqual(['Mission Control', 'Machine', 'Knowledge']);
   });
 
   it('drops empty groups rather than rendering a bare section header', () => {

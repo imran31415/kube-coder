@@ -75,9 +75,21 @@ async function clickVisible(loc, what) {
   await sleep(700);
 }
 
+/** Every drawer destination except Chat lives inside the Workspace
+ *  disclosure, which rests collapsed on Chat (the home screen). Open it when
+ *  it is closed; a no-op when the active screen already revealed it. */
+async function revealWorkspace(page) {
+  const show = page.getByLabel('Show Workspace');
+  if ((await visibleNth(show)) >= 0) {
+    await clickVisible(show, 'Workspace');
+    await sleep(300);
+  }
+}
+
 async function go(page, label) {
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(450);
+  if (label !== 'Chat') await revealWorkspace(page);
   const entry = page.getByLabel(`Go to ${label}`);
   await entry.first().scrollIntoViewIfNeeded();
   await clickVisible(entry, `drawer item ${label}`);
@@ -107,6 +119,8 @@ async function main() {
     };
 
     await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
+    // Boots on Chat; Desktop's composer is the long-standing "app is up" probe.
+    await go(page, 'Desktop');
     await waitVisible(
       page.getByPlaceholder(/Ask anything or start a build|Describe a build to run/),
       'Desktop home',

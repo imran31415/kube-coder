@@ -15,7 +15,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import OnboardingScreen from './src/screens/OnboardingScreen';
-import DesktopScreen from './src/screens/DesktopScreen';
+import HypervisorScreen from './src/screens/HypervisorScreen';
 import { lazyScreen } from './src/components/LazyScreen';
 import { NavDrawer, NavSidebar } from './src/components/NavDrawer';
 import { useWideLayout } from './src/components/WideLayout';
@@ -29,6 +29,7 @@ import type {
 } from './src/navigation';
 import { hasController, hydrate, isConfigured } from './src/store/config';
 import { navigationRef, setActiveTab } from './src/store/nav';
+import { HOME_SCREEN } from './src/navGroups';
 import {
   initPush,
   registerForPush,
@@ -39,14 +40,14 @@ import { initDesktop, onNavigatorReady, saveDesktopNavState } from './src/deskto
 import { initWindowVisibility } from './src/util/useWindowVisible';
 import { colors, font } from './src/theme';
 
-// The home screen and Onboarding load with the shell; every other screen
-// loads the first time it is opened (#833, src/screenRegistry.ts).
+// The home screen (Chat) and Onboarding load with the shell; every other
+// screen loads the first time it is opened (#833, src/screenRegistry.ts).
+const DesktopScreen = lazyScreen('Desktop');
 const TasksScreen = lazyScreen('TaskList');
 const TaskDetailScreen = lazyScreen('TaskDetail');
 const NewTaskScreen = lazyScreen('NewTask');
 const AppsScreen = lazyScreen('AppList');
 const AppViewScreen = lazyScreen('AppView');
-const HypervisorScreen = lazyScreen('Hypervisor');
 const WalkieScreen = lazyScreen('Walkie');
 const MissionControlScreen = lazyScreen('MissionControl');
 const FeedScreen = lazyScreen('Feed');
@@ -158,7 +159,8 @@ function MainTabs() {
   // The bottom tab bar was replaced by a hamburger drawer (too many
   // destinations for a 3–5 slot bar). The tab navigator still owns the screens
   // + their state; we just render no bar (tabBar={() => null}) and drive
-  // navigation from the NavDrawer overlay. Desktop is first so it's the home.
+  // navigation from the NavDrawer overlay. Chat (Hypervisor) is first and the
+  // initial route, so it's the home.
   // The Controller screen is only registered once a controller connection
   // exists — with none, the app is unchanged.
   //
@@ -174,6 +176,7 @@ function MainTabs() {
       <View style={styles.pane}>
         <Tab.Navigator
           tabBar={() => null}
+          initialRouteName={HOME_SCREEN}
           backBehavior="history"
           screenOptions={{ headerShown: false }}
           screenListeners={{
@@ -185,8 +188,8 @@ function MainTabs() {
             },
           }}
         >
-          <Tab.Screen name="Desktop" component={DesktopScreen} />
           <Tab.Screen name="Hypervisor" component={HypervisorScreen} />
+          <Tab.Screen name="Desktop" component={DesktopScreen} />
           <Tab.Screen name="Walkie" component={WalkieScreen} />
           <Tab.Screen name="MissionControl" component={MissionControlScreen} />
           <Tab.Screen name="Feed" component={FeedScreen} />

@@ -10,8 +10,8 @@
  * before; the import only defers evaluating the module.
  *
  * The shell stays eager: App, the drawer/sidebar, the wake banner, the home
- * screen (`Desktop`, the tab navigator's first route) and Onboarding, which is
- * what a fresh install opens on.
+ * screen (`Hypervisor` — Chat — the tab navigator's first and initial route)
+ * and Onboarding, which is what a fresh install opens on.
  *
  * Pure (no react-native imports) so the node-side vitest can check that every
  * route the navigator registers, and every route a deep link opens, has a
@@ -23,7 +23,7 @@ export type ScreenModule = { default: ComponentType<any> };
 
 export const screenLoaders = {
   // Top-level tabs.
-  Hypervisor: () => import('./screens/HypervisorScreen'),
+  Desktop: () => import('./screens/DesktopScreen'),
   Walkie: () => import('./screens/WalkieScreen'),
   MissionControl: () => import('./screens/MissionControlScreen'),
   Feed: () => import('./screens/FeedScreen'),
@@ -52,8 +52,8 @@ export type LazyScreenName = keyof typeof screenLoaders;
 /** The tab navigator's routes, in drawer order. A tab is either a screen of
  *  its own (a key of `screenLoaders`) or a stack whose screens are. */
 export const TAB_ROUTES = [
-  'Desktop',
   'Hypervisor',
+  'Desktop',
   'Walkie',
   'MissionControl',
   'Feed',
@@ -80,7 +80,7 @@ export const STACK_ROUTES = {
 } as const satisfies Record<string, readonly LazyScreenName[]>;
 
 /** Screens that are part of the shell and load with it. */
-export const EAGER_SCREENS = ['Desktop', 'Onboarding'] as const;
+export const EAGER_SCREENS = ['Hypervisor', 'Onboarding'] as const;
 
 /** The screen a tab opens first: the tab itself, or its stack's first route. */
 export function firstScreenOf(tab: string): string {

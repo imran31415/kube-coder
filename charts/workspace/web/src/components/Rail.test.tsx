@@ -1,100 +1,151 @@
-import { render, screen, waitFor } from '@testing-library/preact';
+import { render, screen, waitFor, within } from '@testing-library/preact';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { Rail } from './Rail';
-import { currentPath, navigate } from '../store/router';
-import { railCollapsed, collapsedRailGroups, previewFullscreen } from '../store/ui';
+import { currentPath, navigate, NAV_GROUPS, ROUTES } from '../store/router';
+import { serverMode } from '../store/server-mode';
+import {
+  railCollapsed,
+  collapsedRailGroups,
+  autoExpandedGroup,
+  previewFullscreen,
+} from '../store/ui';
+
+const initialMode = serverMode.value;
 
 beforeEach(() => {
   localStorage.clear();
   railCollapsed.value = false;
   previewFullscreen.value = false;
   collapsedRailGroups.value = [];
+  autoExpandedGroup.value = null;
+  serverMode.value = { ...initialMode, scansEnabled: true };
   navigate('/desktop', true);
 });
 
-describe('Rail categories (#267)', () => {
-  it('renders the three group headers with items, and Settings as a trailing group', () => {
+/** The labels of the rail's top-level entries (outside the Workspace body). */
+function topLevelLabels(container: Element): string[] {
+  return [...container.querySelectorAll('.rail-items > .rail-group')]
+    .flatMap((g) => [...g.querySelectorAll(':scope > .rail-item, :scope > .rail-group-header .rail-item')])
+    .map((el) => el.querySelector('.rail-item-label')?.textContent ?? '');
+}
+
+describe('Rail: Chat + Workspace', () => {
+  it('has exactly two top-level entries: Chat, then Workspace', () => {
     const { container } = render(<Rail />);
-    expect(screen.getByText('Mission Control')).toBeInTheDocument();
-    expect(screen.getByText('Workspace')).toBeInTheDocument();
-    expect(screen.getByText('Knowledge')).toBeInTheDocument();
-    // /hypervisor shows its display label "Chat"; /tasks shows "Builds".
-    expect(screen.getByText('Chat')).toBeInTheDocument();
-    expect(screen.getByText('Builds')).toBeInTheDocument();
+    expect(topLevelLabels(container)).toEqual(['Chat', 'Workspace']);
+    // /hypervisor shows its display label "Chat", never the internal name.
     expect(screen.queryByText('Hypervisor')).toBeNull();
-    // Settings is not a category member — it flows as the last group inside
-    // .rail-items (#448: no pinned bottom slab that overflow can hide).
+    // Collapse still flows with the nav as the final group (#448).
     expect(container.querySelector('.rail-bottom')).toBeNull();
     const groups = container.querySelectorAll('.rail-items > .rail-group');
-    const last = groups[groups.length - 1];
-    expect(last?.querySelector('.rail-divider')).toBeTruthy();
-    expect(last?.textContent).toContain('Settings');
-    expect(last?.textContent).toContain('Collapse');
+    expect(groups[groups.length - 1]?.textContent).toContain('Collapse');
   });
 
-  it('clicking the Mission Control label navigates to /mission', () => {
+  it('Chat navigates to /hypervisor', () => {
     render(<Rail />);
-    screen.getByText('Mission Control').click();
-    expect(currentPath.value).toBe('/mission');
+    screen.getByText('Chat').click();
+    expect(currentPath.value).toBe('/hypervisor');
   });
 
-  it('collapsing a group hides its items and persists to localStorage', async () => {
+  it('Workspace holds the old categories as sub-headings, then Settings', () => {
+    const { container } = render(<Rail />);
+    const body = container.querySelector('#rail-workspace-items') as HTMLElement;
+    expect(body).toBeTruthy();
+    const titles = [...body.querySelectorAll('.rail-section-title')].map((t) => t.textContent);
+    expect(titles).toEqual(['Mission Control', 'Machine', 'Knowledge']);
+    const w = within(body);
+    // Mission Control's landing reads "Overview" and opens /mission.
+    w.getByText('Overview').click();
+    expect(currentPath.value).toBe('/mission');
+    expect(w.getByText('Builds')).toBeInTheDocument();
+    // Settings closes Workspace, after the sections.
+    const items = [...body.querySelectorAll('.rail-item-label')].map((l) => l.textContent);
+    expect(items[items.length - 1]).toBe('Settings');
+  });
+
+  it('every navigable route is reachable from the rail', () => {
+    const { container } = render(<Rail />);
+    const reachable = new Set<string>();
+    for (const btn of container.querySelectorAll<HTMLButtonElement>('.rail-item')) {
+      if (btn.classList.contains('rail-group-toggle')) continue;
+      btn.click();
+      reachable.add(currentPath.value);
+    }
+    // /cto is resolvable but deliberately not a destination (#683).
+    const expected = ROUTES.map((r) => r.path).filter((p) => p !== '/cto');
+    expect([...reachable].sort()).toEqual(expected.sort());
+  });
+
+  it('collapses by default and stays collapsed while on Chat', () => {
+    collapsedRailGroups.value = ['workspace'];
+    navigate('/hypervisor', true);
+    render(<Rail />);
+    expect(screen.queryByText('Memory')).toBeNull();
+    const toggle = screen.getByText('Workspace').closest('button');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('toggling Workspace hides its items and persists to localStorage', async () => {
+    navigate('/hypervisor', true);
     render(<Rail />);
     expect(screen.getByText('Memory')).toBeInTheDocument();
-    // Knowledge has no landing page, so the whole header toggles.
-    screen.getByText('Knowledge').click();
+    screen.getByText('Workspace').click();
     await waitFor(() => expect(screen.queryByText('Memory')).toBeNull());
-    expect(screen.queryByText('Skills')).toBeNull();
-    // Other groups stay expanded.
-    expect(screen.getByText('Desktop')).toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v1')!)).toContain('knowledge');
-    // Chevron reflects the disclosure state.
-    const header = screen.getByText('Knowledge').closest('button');
-    expect(header?.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Settings')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v2')!)).toEqual(['workspace']);
+    expect(screen.getByText('Workspace').closest('button')?.getAttribute('aria-expanded')).toBe(
+      'false',
+    );
   });
 
-  it('tints the header of a collapsed group that holds the active route', async () => {
+  it('tints the Workspace header when collapsed while the active route is inside it', async () => {
     const { container } = render(<Rail />);
-    // Active route is /desktop (Workspace). Collapse Workspace.
+    // Active route is /desktop (inside Workspace). Collapse Workspace.
     screen.getByText('Workspace').click();
     await waitFor(() =>
       expect(container.querySelector('.rail-group-header-active')).toBeTruthy(),
     );
   });
 
-  it('reveals the group containing the active route without persisting it', async () => {
+  it('auto-reveals Workspace for an active route inside it without persisting it', async () => {
+    collapsedRailGroups.value = ['workspace'];
+    navigate('/hypervisor', true);
     render(<Rail />);
-    collapsedRailGroups.value = ['knowledge'];
     await waitFor(() => expect(screen.queryByText('Memory')).toBeNull());
     navigate('/memory');
     await waitFor(() => expect(screen.getByText('Memory')).toBeInTheDocument());
-    // The reveal is transient: the stored preference still says collapsed, so
-    // the five-row default survives a visit to a Knowledge route.
-    expect(collapsedRailGroups.value).toContain('knowledge');
+    // The reveal is transient: the stored preference still says collapsed.
+    expect(collapsedRailGroups.value).toEqual(['workspace']);
   });
 
-  it('re-collapses a revealed group once the active route leaves it', async () => {
+  it('re-collapses once the active route goes back to Chat', async () => {
+    collapsedRailGroups.value = ['workspace'];
     render(<Rail />);
-    collapsedRailGroups.value = ['knowledge'];
     navigate('/memory');
     await waitFor(() => expect(screen.getByText('Memory')).toBeInTheDocument());
     navigate('/hypervisor');
     await waitFor(() => expect(screen.queryByText('Memory')).toBeNull());
   });
 
-  it('collapsed rail flattens groups to icons with hairline dividers', () => {
+  it('keeps capability gates: gated items drop out of Workspace', () => {
+    serverMode.value = { ...initialMode, ctoEnabled: false, boardEnabled: false, scansEnabled: false };
+    render(<Rail />);
+    expect(screen.queryByText('Feed')).toBeNull();
+    expect(screen.queryByText('Board')).toBeNull();
+    expect(screen.queryByText('Security')).toBeNull();
+    expect(screen.getByText('Builds')).toBeInTheDocument();
+  });
+
+  it('collapsed rail: Chat + Workspace icons, Workspace expands to icon runs', () => {
     railCollapsed.value = true;
     const { container } = render(<Rail />);
-    // No group headers or text labels in icon-only mode.
-    expect(screen.queryByText('Workspace')).toBeNull();
+    // No sub-heading text in icon-only mode.
     expect(screen.queryByText('Knowledge')).toBeNull();
-    // Two dividers separate the three groups, plus one leading the
-    // trailing Settings/Collapse group.
-    expect(container.querySelectorAll('.rail-divider')).toHaveLength(3);
-    // Settings + Collapse flow inside .rail-items, not a pinned slab.
-    expect(container.querySelector('.rail-bottom')).toBeNull();
+    expect(container.querySelector('.rail-item[title="Chat"]')).toBeTruthy();
+    // One divider per section, one before Settings, one before Collapse.
+    expect(container.querySelectorAll('.rail-divider')).toHaveLength(NAV_GROUPS.length + 2);
     expect(container.querySelector('.rail-items .rail-toggle')).toBeTruthy();
-    // The Mission landing gets an icon slot (leads its group).
+    // The Mission landing gets an icon slot (leads its run).
     expect(container.querySelector('.rail-item[title="Mission Control"]')).toBeTruthy();
     // Active route still marked for orientation.
     const active = container.querySelector('.rail-item[aria-current="page"]');

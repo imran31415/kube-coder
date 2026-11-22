@@ -43,8 +43,15 @@ try {
   const page = await ctx.newPage();
   await page.goto(url, { waitUntil: 'networkidle' });
 
-  // The demo build boots on the Desktop home (#196); open a task straight from
-  // its Activity list to land on the TaskDetail composer.
+  // The demo build boots on Chat; open Desktop from the drawer (inside the
+  // Workspace disclosure), then a task straight from its Activity list to
+  // land on the TaskDetail composer.
+  await page.getByLabel('Open menu').first().click();
+  await sleep(450);
+  await page.getByLabel('Show Workspace').first().click();
+  await sleep(300);
+  await page.getByLabel('Go to Desktop').first().click();
+  await sleep(900);
   await page.getByPlaceholder('Describe a build to run…').waitFor({ timeout: 20000 });
   await sleep(600);
   await page.getByText('Add a /healthz endpoint to server.py and a unit test for it').click();

@@ -75,10 +75,10 @@ describe('collapsedRailGroups (#267)', () => {
     expandRailGroup('workspace');
     // Rendered open...
     expect(isRailGroupExpanded('workspace')).toBe(true);
-    // ...but the persisted preference is untouched, so the five-row default
+    // ...but the persisted preference is untouched, so the two-row default
     // survives a visit to a Workspace route.
     expect(collapsedRailGroups.value).toEqual(['workspace']);
-    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v1')!)).toEqual([
+    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v2')!)).toEqual([
       'workspace',
     ]);
   });
@@ -108,32 +108,51 @@ describe('collapsedRailGroups (#267)', () => {
   });
 
   it('persists under its own versioned key', () => {
-    toggleRailGroup('mission');
-    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v1')!)).toEqual(['mission']);
+    toggleRailGroup('workspace');
+    expect(JSON.parse(localStorage.getItem('kc.rail.groups.v2')!)).toEqual(['workspace']);
   });
 });
 
 describe('rail group defaults', () => {
   // The signal is initialized once at module load, so exercise the loader
   // directly — it reads localStorage on every call.
-  function load(stored: string | null): string[] {
+  function load(stored: string | null, legacyV1?: string): string[] {
     localStorage.clear();
-    if (stored !== null) localStorage.setItem('kc.rail.groups.v1', stored);
+    if (stored !== null) localStorage.setItem('kc.rail.groups.v2', stored);
+    if (legacyV1 !== undefined) localStorage.setItem('kc.rail.groups.v1', legacyV1);
     return loadCollapsedGroups();
   }
 
-  it('collapses Workspace and Knowledge in a browser that never set one', () => {
-    expect(load(null)).toEqual(DEFAULT_COLLAPSED_GROUPS);
+  it('collapses Workspace in a browser that never set one', () => {
+    expect(DEFAULT_COLLAPSED_GROUPS).toEqual(['workspace']);
+    expect(load(null)).toEqual(['workspace']);
   });
 
   it('keeps a deliberate empty preference expanded', () => {
-    // A user who opened both groups stored `[]`. That is a real preference
-    // and must not be overwritten by the new default.
+    // A user who opened Workspace stored `[]`. That is a real preference
+    // and must not be overwritten by the default.
     expect(load('[]')).toEqual([]);
   });
 
   it('keeps an explicit stored preference', () => {
-    expect(load('["mission"]')).toEqual(['mission']);
+    expect(load('["workspace"]')).toEqual(['workspace']);
+  });
+
+  it('ignores ids the rail no longer has', () => {
+    // Old three-group ids mean nothing to the Chat + Workspace rail.
+    expect(load('["mission","knowledge"]')).toEqual([]);
+    expect(load('["knowledge","workspace"]')).toEqual(['workspace']);
+  });
+
+  it('migrates off the v1 three-group key: ignores it and removes it', () => {
+    // v1 'workspace' meant the old machine group, so neither a v1 `[]` nor a
+    // v1 `["workspace"]` says anything about the new Workspace disclosure.
+    expect(load(null, '[]')).toEqual(DEFAULT_COLLAPSED_GROUPS);
+    expect(localStorage.getItem('kc.rail.groups.v1')).toBeNull();
+    expect(load(null, '["workspace","knowledge"]')).toEqual(DEFAULT_COLLAPSED_GROUPS);
+    expect(localStorage.getItem('kc.rail.groups.v1')).toBeNull();
+    // A v2 preference wins over whatever v1 held.
+    expect(load('[]', '["workspace"]')).toEqual([]);
   });
 
   it('falls back to the default on non-array JSON', () => {

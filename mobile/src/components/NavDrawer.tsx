@@ -11,7 +11,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { closeDrawer, navigateTo, useActiveTab, useDrawerOpen } from '../store/nav';
 import { hasController } from '../store/config';
 import { useConfig } from '../store/useConfig';
-import { splitNavGroups } from '../navGroups';
+import {
+  CHAT_ITEM,
+  WORKSPACE_DEFAULT,
+  WORKSPACE_ICON,
+  WORKSPACE_TITLE,
+  inWorkspace,
+  isWorkspaceExpanded,
+  splitNavGroups,
+  toggleWorkspace,
+} from '../navGroups';
 import { listFeed } from '../api/client';
 import { onLiveEventDebounced } from '../store/liveEvents';
 import { useWindowVisible } from '../util/useWindowVisible';
@@ -131,12 +140,22 @@ function NavPanelBody({
   footerPad: number;
 }) {
   const cfg = useConfig();
-  // Same categorized IA as the web dashboard (#267); a group whose items are
-  // all filtered out (Controller unconfigured) drops entirely. The untitled
-  // tail (Controller + Settings) comes back separately so it can be pinned in
-  // view rather than scrolled off the bottom (#549).
+  // Same IA as the web dashboard's rail: Chat, then one Workspace disclosure
+  // holding every other destination. A section whose items are all filtered
+  // out (Controller unconfigured) drops entirely. The untitled tail
+  // (Controller + Settings) comes back separately so it can be pinned in view
+  // rather than scrolled off the bottom (#549).
   const { scrolling, pinned } = splitNavGroups({ controller: hasController(cfg) });
   const host = (cfg.controllerHost || cfg.host || '').replace(/^https?:\/\//, '');
+  // Collapsed by default; open while the active screen lives inside it. The
+  // drawer remounts this body on every open, so an explicit choice lasts as
+  // long as the drawer (or, in the desktop sidebar, the window) does.
+  const [disclosure, setDisclosure] = React.useState(WORKSPACE_DEFAULT);
+  const expanded = isWorkspaceExpanded(disclosure, active);
+  // Collapsed over the screen you're on: tint the header, like the web rail,
+  // so you never lose your place.
+  const tint = !expanded && inWorkspace(active);
+  const chevron = (expanded ? 'chevron-down' : 'chevron-forward') as keyof typeof Ionicons.glyphMap;
 
   return (
     <>
@@ -154,38 +173,64 @@ function NavPanelBody({
         </View>
       </View>
 
-      {/* Scrollable: the destination list outgrew a short phone screen
-          once Triggers + Docs landed (#250), and a plain View silently
-          clipped the tail (Docs / Controller / Settings) off the bottom —
-          on iOS it did worse than clip, drawing rows outside the parent
-          frame where hitTest: never reaches them (#549). The scroll
-          indicator stays on: at 14 entries against a ~580pt viewport,
-          something is always below the fold and needs to say so. */}
-      <ScrollView style={styles.items} contentContainerStyle={styles.itemsInner}>
-        {scrolling.map((g, gi) => (
-          <View key={g.title ?? `group-${gi}`} style={[styles.group, gi > 0 && styles.groupGap]}>
-            {g.title ? (
-              <Text style={styles.groupTitle}>{g.title}</Text>
-            ) : (
-              <View style={styles.groupDivider} />
-            )}
-            {g.items.map((it) => (
-              <DrawerItem
-                key={it.name}
-                item={it}
-                active={active}
-                badge={it.name === 'Board' ? boardWaiting : 0}
-              />
-            ))}
-          </View>
-        ))}
-      </ScrollView>
+      {/* The two top-level entries. Both sit above the scroller so they are
+          always on screen, however long Workspace's list is. */}
+      <View style={styles.top}>
+        <DrawerItem item={CHAT_ITEM} active={active} />
+        <Pressable
+          onPress={() => setDisclosure((d) => toggleWorkspace(d, active))}
+          accessibilityRole="button"
+          // "Show/Hide" rather than "Go to": this row opens a list, it does
+          // not navigate — and the scripted drivers key off the difference.
+          accessibilityLabel={`${expanded ? 'Hide' : 'Show'} ${WORKSPACE_TITLE}`}
+          accessibilityState={{ expanded }}
+          style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}
+        >
+          <Ionicons
+            name={WORKSPACE_ICON as keyof typeof Ionicons.glyphMap}
+            size={20}
+            color={tint ? colors.accent : colors.textMuted}
+          />
+          <Text style={[styles.itemLabel, tint && styles.itemLabelTint]}>{WORKSPACE_TITLE}</Text>
+          <Ionicons name={chevron} size={16} color={tint ? colors.accent : colors.textFaint} style={styles.chevron} />
+        </Pressable>
+      </View>
 
-      {/* Pinned tail (#549) — Controller + Settings sit outside the
-          scroller so they are always on screen, whatever the list above
-          grows to. This is the reported bug: Settings was the last of 16
-          entries and never reachable on an iPhone. */}
-      {pinned ? (
+      {/* Scrollable: Workspace's list is taller than a short phone screen,
+          and a plain View silently clipped the tail off the bottom — on iOS
+          it did worse than clip, drawing rows outside the parent frame where
+          hitTest: never reaches them (#549). The scroll indicator stays on:
+          something is always below the fold and needs to say so. */}
+      {expanded ? (
+        <ScrollView style={styles.items} contentContainerStyle={styles.itemsInner}>
+          {scrolling.map((g, gi) => (
+            <View key={g.title ?? `group-${gi}`} style={[styles.group, gi > 0 && styles.groupGap]}>
+              {g.title ? (
+                <Text style={styles.groupTitle}>{g.title}</Text>
+              ) : (
+                <View style={styles.groupDivider} />
+              )}
+              {g.items.map((it) => (
+                <DrawerItem
+                  key={it.name}
+                  item={it}
+                  active={active}
+                  badge={it.name === 'Board' ? boardWaiting : 0}
+                />
+              ))}
+            </View>
+          ))}
+        </ScrollView>
+      ) : (
+        <View style={styles.items} />
+      )}
+
+      {/* Pinned tail (#549) — Controller + Settings close Workspace, and sit
+          outside the scroller so they are always on screen while it is open,
+          whatever the list above grows to. This was the reported bug:
+          Settings was the last of 16 entries and never reachable on an
+          iPhone. */}
+      {expanded && pinned ? (
         <View style={styles.pinned}>
           {pinned.items.map((it) => (
             <DrawerItem key={it.name} item={it} active={active} />
@@ -279,7 +324,14 @@ const styles = StyleSheet.create({
   brandName: { color: colors.text, fontSize: font.size.lg, fontWeight: '700', letterSpacing: -0.2 },
   brandHost: { color: colors.textFaint, fontSize: font.size.xs, marginTop: 1 },
 
-  items: { marginTop: space.md, flex: 1 },
+  top: {
+    gap: 2,
+    paddingTop: space.md,
+  },
+  chevron: { marginLeft: 'auto' },
+  itemLabelTint: { color: colors.accent },
+  // Workspace's sections sit one step in, so they read as belonging to it.
+  items: { marginTop: space.xs, flex: 1, marginLeft: space.md },
   itemsInner: { paddingBottom: space.md },
   // Auto-height (no flex) so the scroller above absorbs every leftover point
   // and this block keeps its natural size at the bottom of the panel. The

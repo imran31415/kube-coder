@@ -50,7 +50,8 @@ export type IconName =
   | 'cto'
   | 'board'
   | 'feed'
-  | 'chevron-up';
+  | 'chevron-up'
+  | 'workspace';
 
 const PATHS: Record<IconName, JSX.Element> = {
   tasks: (
@@ -314,6 +315,14 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
       <path d="M7.5 3.5v13M12.5 3.5v13" />
+    </>
+  ),
+  // Window with a sidebar — the rail's Workspace disclosure: "the rest of the
+  // app", distinct from desktop's monitor and apps' four squares.
+  workspace: (
+    <>
+      <rect x="3" y="4" width="14" height="12" rx="1.5" />
+      <path d="M8 4v12M10.5 8h4M10.5 11h4" />
     </>
   ),
   // Circled "i" — a lightweight help/info affordance.

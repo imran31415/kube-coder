@@ -24,6 +24,7 @@ import {
   launchBrowser,
   makeReport,
   openDrawerAndGo,
+  revealWorkspace,
   serveDist,
   sleep,
   visibleNth,
@@ -78,6 +79,8 @@ async function fontSizeOf(page, text) {
 
   await clickVisible(page.getByLabel('Open menu'), 'menu button');
   await sleep(500);
+  // Board sits inside Workspace, which rests collapsed on Chat (the home).
+  await revealWorkspace(page);
   // The badge is counted from the FEED (one waiting board item in the demo
   // data), never from the boards API — see NavDrawer's comment on why.
   const badged = page.getByLabel(/Go to Board, \d+ waiting/);
