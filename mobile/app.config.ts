@@ -1,4 +1,5 @@
 import type { ExpoConfig } from 'expo/config';
+import { withAndroidManifest, type ConfigPlugin } from 'expo/config-plugins';
 
 /**
  * Expo app config. Drives `eas build --profile <profile>` and store submission.
@@ -28,6 +29,42 @@ export function allowCleartext(): boolean {
   const v = (process.env.EXPO_PUBLIC_ALLOW_CLEARTEXT ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
 }
+
+/**
+ * Android features that `orientation: 'portrait'` makes Google Play treat as
+ * REQUIRED, and that we therefore re-declare as optional.
+ *
+ * Why: Expo writes `android:screenOrientation="portrait"` on MainActivity, and
+ * Play infers `<uses-feature android:name="android.hardware.screen.portrait"
+ * android:required="true">` from that. Play then filters the app out for
+ * devices without that feature (tablets, Chromebooks/desktop, Android XR) and
+ * blocks review with "Required hardware feature declarations are restricting
+ * your app's availability". Declaring the feature explicitly with
+ * required="false" overrides the inference; the activity still locks to
+ * portrait on every device that can honour it.
+ */
+export const OPTIONAL_ANDROID_FEATURES = ['android.hardware.screen.portrait'];
+
+type UsesFeature = { $: Record<string, string | undefined> };
+type ManifestRoot = { manifest: { 'uses-feature'?: UsesFeature[] } & Record<string, unknown> };
+
+/** Pure: mark each feature in OPTIONAL_ANDROID_FEATURES as required="false",
+ * adding the declaration if absent and fixing it if present. Idempotent. */
+export function markFeaturesOptional<T extends ManifestRoot>(root: T): T {
+  const features = (root.manifest['uses-feature'] ??= []);
+  for (const name of OPTIONAL_ANDROID_FEATURES) {
+    const existing = features.find((f) => f.$?.['android:name'] === name);
+    if (existing) existing.$['android:required'] = 'false';
+    else features.push({ $: { 'android:name': name, 'android:required': 'false' } });
+  }
+  return root;
+}
+
+export const withOptionalScreenFeatures: ConfigPlugin = (config) =>
+  withAndroidManifest(config, (cfg) => {
+    markFeaturesOptional(cfg.modResults as unknown as ManifestRoot);
+    return cfg;
+  });
 
 export function buildConfig(): ExpoConfig {
   const cleartext = allowCleartext();
@@ -166,4 +203,12 @@ export function buildConfig(): ExpoConfig {
   };
 }
 
-export default buildConfig;
+/**
+ * What Expo/EAS evaluates. The local plugin is applied here rather than listed
+ * in `plugins` (ExpoConfig's type only admits package names there): it keeps
+ * the portrait lock without Play treating a portrait screen as required
+ * hardware — see OPTIONAL_ANDROID_FEATURES.
+ */
+export default function appConfig(): ExpoConfig {
+  return withOptionalScreenFeatures(buildConfig());
+}

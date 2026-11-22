@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildConfig, allowCleartext } from './app.config';
+import appConfig, {
+  buildConfig,
+  allowCleartext,
+  markFeaturesOptional,
+  OPTIONAL_ANDROID_FEATURES,
+} from './app.config';
 
 // Evaluate the Expo config function directly under each build env and assert the
 // transport posture. buildConfig() reads process.env at call time, so we flip
@@ -107,5 +112,42 @@ describe('app.config transport posture — development/preview (env=1)', () => {
   it('enables Android cleartext traffic', () => {
     process.env.EXPO_PUBLIC_ALLOW_CLEARTEXT = '1';
     expect(androidCleartext(buildConfig())).toBe(true);
+  });
+});
+
+describe('app.config Android hardware features (Play availability)', () => {
+  it('keeps the portrait lock', () => {
+    expect(buildConfig().orientation).toBe('portrait');
+  });
+
+  it('the evaluated config registers an Android manifest mod', () => {
+    const cfg = appConfig() as { mods?: { android?: { manifest?: unknown } } };
+    expect(typeof cfg.mods?.android?.manifest).toBe('function');
+    expect(appConfig().orientation).toBe('portrait');
+  });
+
+  it('adds screen.portrait as required="false" when absent', () => {
+    const root = markFeaturesOptional({ manifest: {} } as { manifest: Record<string, never> });
+    expect(root.manifest['uses-feature']).toEqual([
+      { $: { 'android:name': 'android.hardware.screen.portrait', 'android:required': 'false' } },
+    ]);
+  });
+
+  it('flips an existing required declaration and is idempotent', () => {
+    const root = {
+      manifest: {
+        'uses-feature': [
+          { $: { 'android:name': 'android.hardware.screen.portrait', 'android:required': 'true' } },
+          { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } },
+        ],
+      },
+    };
+    markFeaturesOptional(root);
+    markFeaturesOptional(root);
+    expect(root.manifest['uses-feature']).toEqual([
+      { $: { 'android:name': 'android.hardware.screen.portrait', 'android:required': 'false' } },
+      { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } },
+    ]);
+    expect(OPTIONAL_ANDROID_FEATURES).toContain('android.hardware.screen.portrait');
   });
 });
