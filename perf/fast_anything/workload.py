@@ -14,7 +14,7 @@ Per-hour call counts come from the polling intervals in the code
   page_watch.fingerprint  every page-watch poll, full fetched body
   instruction_scan      page-change payloads (include_content) + scan_tree
   chunk_text            gateway (WhatsApp) replies
-  prometheus            /metrics/prometheus scrapes every 15 s
+  prometheus            /metrics/prometheus scrapes (PodMonitor default 60 s)
   scans                 findings views
   memory helpers        per-prompt memory injection hook
   hypervisor events     choice-fence expansion per assistant event
@@ -60,7 +60,7 @@ PER_HOUR = {
     'scan_text_instruction_file': 30,
     'decode_tag_block': 30,
     'chunk_text': 30,
-    'prometheus_render': 240,
+    'prometheus_render': 60,
     'scans_views': 20,
     'memory_query': 120,
     'expand_choices': 2000,

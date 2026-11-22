@@ -134,7 +134,7 @@ def build(rng):
         paras.append('\n'.join(_sentence(rng, rng.randint(8, 20)) for _ in range(3)))
     d['long_answer'] = '\n\n'.join(paras)  # ~12 KB assistant answer
     fams = []
-    for f in range(40):
+    for f in range(50):  # 50 x 12 = 600 labelled samples, as a live scrape has
         samples = []
         for s in range(12):
             samples.append(({'model': rng.choice(('opus', 'sonnet', 'haiku')) + f'-{s}',
