@@ -1,10 +1,13 @@
 /** Security scans (#726) — the list, and starting one from the phone. */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -28,6 +31,7 @@ import {
   Loading,
   ScreenHeader,
 } from '../components/ui';
+import { KeyboardDoneBar } from '../components/KeyboardDoneBar';
 import type {
   ScanConnection,
   ScanMode,
@@ -37,6 +41,7 @@ import type {
 import type { SecurityNav, SecurityStackParams } from '../navigation';
 import { colors, font, radius, space } from '../theme';
 import { usePolling } from '../util/usePolling';
+import { useKeyboardVisible } from '../util/useKeyboard';
 import {
   outcomeLabel,
   spendLabel,
@@ -97,6 +102,11 @@ export default function SecurityScreen() {
     if (startPort !== undefined) setComposing(true);
   }, [startPort]);
 
+  const notConfigured = connection !== null && !connection.configured;
+  // While the start form is open it gets the whole screen below the header,
+  // so it can scroll above the keyboard; the scan list comes back on Cancel.
+  const showForm = composing && !notConfigured;
+
   const onRefresh = async () => {
     setRefreshing(true);
     await load();
@@ -119,7 +129,7 @@ export default function SecurityScreen() {
             <ErrorBanner message={error} />
           ) : null}
 
-          {connection && !connection.configured ? (
+          {notConfigured ? (
             <Card style={styles.notice}>
               <Text style={styles.noticeTitle}>Connect a model first</Text>
               <Text style={styles.noticeBody}>
@@ -128,7 +138,7 @@ export default function SecurityScreen() {
                 terminal.
               </Text>
             </Card>
-          ) : composing ? (
+          ) : showForm ? (
             <StartScanForm
               targets={targets}
               startPort={startPort}
@@ -152,7 +162,7 @@ export default function SecurityScreen() {
             </View>
           )}
 
-          {scans === null && error ? (
+          {showForm ? null : scans === null && error ? (
             /* An empty list after a FAILED read used to render as "No scans
                yet — Scan an app you are running to see what an intruder
                would find.", with the error invisible. On this surface an
@@ -235,6 +245,9 @@ function StartScanForm({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const scrollRef = useRef<ScrollView>(null);
+  const keyboardUp = useKeyboardVisible();
+
   const chosen = targets.find((t) => t.port === port) ?? null;
   const parsedBudget = parseBudget(budget);
   const budgetInvalid = parsedBudget === 'invalid';
@@ -257,7 +270,26 @@ function StartScanForm({
     }
   }
 
+  // The budget field sits near the bottom of the form, under the keyboard once
+  // it opens. KeyboardAvoidingView shrinks the scroll area to the space above
+  // the keys; when that shrink lands (onLayout), scroll the field, its hint and
+  // the Start button into view. Android's ScrollView already keeps the focused
+  // field visible when the window resizes.
   return (
+    <KeyboardAvoidingView
+      style={styles.formAvoider}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+    <ScrollView
+      ref={scrollRef}
+      // "handled": a tap on the form's blank space dismisses the keyboard,
+      // while taps on the choices and buttons still land first time.
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+      onLayout={() => {
+        if (keyboardUp) scrollRef.current?.scrollToEnd({ animated: true });
+      }}
+    >
     <Card style={styles.form}>
       <Label>App</Label>
       <View style={styles.choices}>
@@ -298,9 +330,14 @@ function StartScanForm({
         value={budget}
         onChangeText={setBudget}
         keyboardType="decimal-pad"
+        // A decimal pad has no return key on iOS: the Done bar is the way to
+        // put it away (Android's pad shows this done key).
+        returnKeyType="done"
+        inputAccessoryViewID={BUDGET_DONE_BAR}
         placeholder="No limit"
         placeholderTextColor={colors.textMuted}
       />
+      <KeyboardDoneBar nativeID={BUDGET_DONE_BAR} />
       <Text style={budgetInvalid || budget.trim() === '' ? styles.warn : styles.hint}>
         {budgetInvalid
           ? 'Enter an amount like 5 or 2.50, or clear the field for no limit.'
@@ -324,8 +361,12 @@ function StartScanForm({
         something you own.
       </Text>
     </Card>
+    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
+
+const BUDGET_DONE_BAR = 'scan-budget-done';
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
@@ -358,6 +399,7 @@ const styles = StyleSheet.create({
   rowTitle: { color: colors.text, fontSize: font.size.md, fontWeight: '600', flexShrink: 1 },
   rowOutcome: { color: colors.text, fontSize: font.size.sm },
   rowMeta: { color: colors.textMuted, fontSize: font.size.xs },
+  formAvoider: { flex: 1 },
   form: { margin: space.md, gap: space.sm },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   choice: {
