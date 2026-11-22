@@ -84,3 +84,6 @@ artifacts/issue-710/
 # happily take.
 keeper/keeper
 keeper/keeper.exe
+
+# fast-anything working dir (perf/fast_anything keeps the durable copies)
+.fast/
