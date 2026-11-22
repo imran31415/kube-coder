@@ -1,0 +1,25 @@
+⚡ fast-anything v0.5.0
+▸ profiling python3 -m workload --minutes 240 --pw-fixed
+✓ python3 -m workload --minutes 240 --pw-fixed ran in 17.82s
+
+   #  function                        time                  calls  verdict
+   1  page_watch.fingerprint          ███▌       39.1%         96  ✓ port it
+                                    ! calls content_hash, extract_text, normalize, they get ported together with it
+                                    ! missing type hints, types are inferred from recorded calls
+   2  prometheus_exposition.render_…  █▌         16.0%    144,000  ✓ port it
+                                    ! calls escape_label_value, they get ported together with it
+   3  instruction_scan.scan_text      █▎         13.7%        128  ✓ port it
+                                    ! calls _describe, _severity, they get ported together with it
+   4  server.strip_ansi               ▊           8.2%      5,480  ✓ port it
+                                    ! missing type hints, types are inferred from recorded calls
+   5  server.parse_screen_prompt      ▋           6.5%      7,200  ✓ port it
+                                    ! calls _normalize_prompt_line, they get ported together with it
+                                    ! missing type hints, types are inferred from recorded calls
+   6  token_usage.add_usage           ▎           3.2%     12,000  ✓ port it
+                                    ! calls _int, empty_usage, zero_classes, they get ported together with it
+   7  instruction_scan.decode_tag_b…  ▏           2.1%        120  ✓ port it
+   8  prometheus_exposition.format_…  ▏           1.2%    144,000  · too small to matter
+   9  scans.diff_findings                         0.3%         80  · too small to matter
+  10  scans.severity_of                           0.3%     24,000  · too small to matter
+
+  → fast-anything port page_watch.fingerprint

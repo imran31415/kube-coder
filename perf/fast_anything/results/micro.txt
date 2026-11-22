@@ -1,0 +1,12 @@
+| input | Python | Rust | per call | saved per call |
+|---|---|---|---|---|
+| render_labels × 600 (one scrape) | 3.33 ms | 457.0 µs | 7.3× | 2.87 ms |
+| scan_text 2.3 KB instruction file (p50) | 1.03 ms | 17.0 µs | 60.4× | 1.01 ms |
+| scan_text 9.9 KB instruction file (p90) | 4.59 ms | 36.7 µs | 125.0× | 4.56 ms |
+| scan_text 36 KB instruction file (max) | 11.12 ms | 138.4 µs | 80.3× | 10.98 ms |
+| scan_text 36 KB, pure ASCII | 10.17 ms | 0.9 µs | 11,926.7× | 10.17 ms |
+| scan_text 200k-char page (cap) | 57.34 ms | 816.0 µs | 70.3× | 56.52 ms |
+| strip_ansi 6 KiB tail (mission control) | 59.4 µs | 8.1 µs | 7.3× | 51.3 µs |
+| strip_ansi 1.07 MB output.log (p50) | 11.25 ms | 1.47 ms | 7.7× | 9.78 ms |
+| strip_ansi 2.5 MB output.log (p90) | 22.00 ms | 3.27 ms | 6.7× | 18.73 ms |
+| strip_ansi 8.6 MB output.log (max) | 79.38 ms | 12.02 ms | 6.6× | 67.35 ms |
