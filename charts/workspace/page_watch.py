@@ -305,6 +305,11 @@ class _TextExtractor(HTMLParser):
         # started at, so the matching end tag can be recognised.
         self._capture_at = None
         self._chunks = []
+        # Running len(''.join(self._chunks)). Every append must bump it: the
+        # cap check in _emit runs once per text node, so re-summing the chunks
+        # there made extraction quadratic in page size (a 428 KB page took
+        # ~56 s per check, synchronously inside the HTTP handler).
+        self._nchars = 0
         self._matches = 0
         self._overflow = False
 
@@ -319,10 +324,11 @@ class _TextExtractor(HTMLParser):
             return
         if not self._capturing:
             return
-        if sum(len(c) for c in self._chunks) >= MAX_TEXT_CHARS:
+        if self._nchars >= MAX_TEXT_CHARS:
             self._overflow = True
             return
         self._chunks.append(text)
+        self._nchars += len(text)
 
     def _boundary(self):
         """Mark a word boundary at a tag transition.
@@ -367,6 +373,7 @@ class _TextExtractor(HTMLParser):
                     # Separate sibling matches so two adjacent subtrees don't
                     # fuse into one word.
                     self._chunks.append(' ')
+                    self._nchars += 1
 
     def handle_startendtag(self, tag, attrs):
         # `<br/>` — a start and end in one token. Route through the void path.

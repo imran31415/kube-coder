@@ -222,6 +222,59 @@ class TruncationTests(unittest.TestCase):
             page_watch.extract_text(b'<p>partial', truncated=True)
 
 
+class TextCeilingTests(unittest.TestCase):
+    """The MAX_TEXT_CHARS cap, and the cost of enforcing it.
+
+    The cap check runs once per text node. It used to re-sum every chunk
+    collected so far, which made extraction quadratic in page size: a 428 KB
+    page took ~56 s per check, inside the HTTP handler that serves both the
+    scheduled poll and "Check now".
+    """
+
+    def _cap(self, n):
+        old = page_watch.MAX_TEXT_CHARS
+        page_watch.MAX_TEXT_CHARS = n
+        self.addCleanup(setattr, page_watch, 'MAX_TEXT_CHARS', old)
+
+    def test_running_count_matches_collected_text(self):
+        # Covers both append sites: _emit and the sibling-match separator.
+        html = ('<div class="r"><b>row</b> <i>%d</i></div><p>skip</p>' * 50) % tuple(range(50))
+        for sel in (None, '.r', 'div i'):
+            p = page_watch._TextExtractor(page_watch.parse_selector(sel) if sel else None)
+            p.feed(html)
+            p.close()
+            self.assertEqual(p._nchars, len(''.join(p._chunks)), sel)
+
+    def test_text_up_to_the_ceiling_is_kept(self):
+        # The check runs before each append, so text reaching exactly the cap
+        # is kept. Tag boundaries emit spaces that count: 10 chars + 1 at </p>.
+        self._cap(11)
+        self.assertEqual(page_watch.extract_text(b'<p>0123456789</p>').strip(), '0123456789')
+
+    def test_text_past_the_ceiling_is_an_error(self):
+        self._cap(11)
+        with self.assertRaises(page_watch.ExtractError):
+            page_watch.extract_text(b'<p>0123456789</p><p>x</p>')
+
+    def test_sibling_separators_count_toward_the_ceiling(self):
+        # Ten one-char matches plus nine separators = 19 chars, over a cap of
+        # 15 once the separators are counted.
+        self._cap(15)
+        body = b''.join(b'<span class="m">%d</span>' % i for i in range(10))
+        with self.assertRaises(page_watch.ExtractError):
+            page_watch.extract_text(body, '.m')
+
+    def test_extraction_is_linear_in_page_size(self):
+        # ~64k chunks, ~150k chars (tag boundaries add a space each): under
+        # the cap. Linear extraction takes well under a second here; the
+        # quadratic version took tens of seconds.
+        import time
+        body = ''.join(f'<tr><td>row {i}</td><td>ok</td></tr>' for i in range(8_000))
+        start = time.perf_counter()
+        page_watch.extract_text(f'<table>{body}</table>'.encode())
+        self.assertLess(time.perf_counter() - start, 5.0)
+
+
 # ── normalization + hashing ──────────────────────────────────────────────
 
 class NormalizeTests(unittest.TestCase):
