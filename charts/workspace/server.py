@@ -8,6 +8,7 @@ import http.server
 import html
 import subprocess
 import os
+import posixpath
 import sys
 import json
 import time
@@ -15682,6 +15683,34 @@ def build_publisher():
     return _PUBLISHER
 
 
+def _relative_location(target, request_path):
+    """Express a server-side absolute path as a Location relative to the request.
+
+    The app proxy is reached through an external route prefix the server never
+    sees — oauth2 ingress strips `/oauth` before forwarding — so an absolute
+    `/api/app-proxy/<port>/x` Location drops that prefix. Externally, bare
+    `/api/*` is the Bearer-only ingress, so the browser follows the redirect
+    into a 401 and the app iframe goes blank. A relative reference resolves
+    against the browser's real URL, whose tail below the prefix is identical
+    to `request_path`, so it lands on the same path *with* the prefix intact.
+
+    `target` may carry a query/fragment; `request_path` must not.
+    """
+    path, sep, rest = target.partition('?')
+    if not sep:
+        path, sep, rest = target.partition('#')
+    base_dir = request_path[:request_path.rfind('/') + 1] or '/'
+    rel = posixpath.relpath(path, base_dir)
+    if rel == '.':
+        rel = './'
+    elif path.endswith('/'):
+        rel += '/'
+    if not rel.startswith('../') and not rel.startswith('./'):
+        # Guard "a:b"-shaped first segments from parsing as a URL scheme.
+        rel = './' + rel
+    return rel + sep + rest
+
+
 class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
                      board_handoff_routes.BoardHandoffRoutes,
                      board_routes.BoardRoutes,
@@ -16720,7 +16749,9 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
             normalized = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
             if normalized == prefix:
                 self.send_response(301)
-                self.send_header('Location', f'{prefix}/')
+                # Relative, so the browser keeps any external route prefix
+                # (/oauth) that never reaches this server.
+                self.send_header('Location', _relative_location(f'{prefix}/', normalized))
                 self.end_headers()
                 return
 
@@ -16838,7 +16869,8 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
                         parts.append("script-src 'self' 'unsafe-inline'")
                     v = '; '.join(parts)
             if kl == 'location' and not internal_route:
-                v = self._rewrite_location_header(v, port)
+                v = self._rewrite_location_header(
+                    v, port, self._strip_route_prefix(self.path.split('?', 1)[0]))
             self.send_header(k, v)
         if rewritten is not None:
             # Body length changed; the upstream's framing headers were already
@@ -17001,17 +17033,27 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
         return body
 
     @staticmethod
-    def _rewrite_location_header(value, port):
-        """Map upstream-absolute Locations back to the proxy-prefixed path."""
+    def _rewrite_location_header(value, port, request_path=None):
+        """Map upstream-absolute Locations back to the proxy-prefixed path.
+
+        With `request_path` (the server-visible path of the request being
+        proxied), a proxy-path result is made relative to it so the browser
+        keeps the external /oauth route prefix — see _relative_location.
+        """
         prefix = f'/api/app-proxy/{port}'
+        out = value
         for host_form in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
             if value.startswith(host_form):
-                return prefix + value[len(host_form):]
-        # Absolute-path Location (e.g. "/foo") — re-prefix so the iframe
-        # navigates through the proxy and not to the dashboard origin root.
-        if value.startswith('/') and not value.startswith(prefix + '/') and value != prefix:
-            return prefix + value
-        return value
+                out = prefix + value[len(host_form):]
+                break
+        else:
+            # Absolute-path Location (e.g. "/foo") — re-prefix so the iframe
+            # navigates through the proxy and not to the dashboard origin root.
+            if value.startswith('/') and not value.startswith(prefix + '/') and value != prefix:
+                out = prefix + value
+        if request_path and out.startswith(prefix + '/'):
+            return _relative_location(out, request_path)
+        return out
 
     def do_POST(self):
         self._consume_bearer_marker()

@@ -27,6 +27,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from unittest import mock
 
@@ -660,6 +661,13 @@ class _StubUpstreamHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'TTF!')
             return
+        # Root-absolute Location from a nested path (an app's auth redirect).
+        if self.path == '/nested/deep/redirect':
+            self.send_response(302)
+            self.send_header('Location', '/login?next=%2Fnested')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
         # Special path: emit a Location header so we can verify rewriting.
         if self.path == '/redirect':
             self.send_response(302)
@@ -696,6 +704,30 @@ class _StubUpstreamHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # silence stderr
         return
+
+
+class RelativeLocationTests(unittest.TestCase):
+    """server._relative_location: proxy-path Locations made request-relative."""
+
+    def check(self, target, request_path, want):
+        got = server._relative_location(target, request_path)
+        self.assertEqual(got, want)
+        # Resolving it under an unseen external prefix lands on prefix+target.
+        resolved = urllib.parse.urljoin('https://h/oauth' + request_path, got)
+        self.assertEqual(resolved, 'https://h/oauth' + target)
+
+    def test_cases(self):
+        p = '/api/app-proxy/8080'
+        self.check(p + '/login', p + '/', './login')
+        self.check(p + '/login', p + '/x', './login')
+        self.check(p + '/login', p + '/a/b/c', '../../login')
+        self.check(p + '/', p + '/a/b', '../')
+        self.check(p + '/', p + '/', './')
+        self.check(p + '/', p, './8080/')
+        self.check(p + '/a/', p + '/', './a/')
+        self.check(p + '/login?next=%2Fa#f', p + '/a/b', '../login?next=%2Fa#f')
+        self.check(p + '/x#frag', p + '/', './x#frag')
+        self.check(p + '/a:b', p + '/', './a:b')
 
 
 class AppsProxyTests(unittest.TestCase):
@@ -799,7 +831,7 @@ class AppsProxyTests(unittest.TestCase):
             opener.open(self._proxy_url(''), timeout=5)
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 301)
-            self.assertEqual(e.headers.get('Location'),
+            self.assertEqual(self._resolved(self._proxy_url(''), e),
                              f'/api/app-proxy/{self.upstream_port}/')
         else:
             self.fail('Expected 301 redirect for /api/app-proxy/<port>')
@@ -813,10 +845,53 @@ class AppsProxyTests(unittest.TestCase):
             opener.open(self._proxy_url('/redirect'), timeout=5)
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 302)
-            loc = e.headers.get('Location')
-            self.assertEqual(loc, f'/api/app-proxy/{self.upstream_port}/elsewhere')
+            self.assertEqual(self._resolved(self._proxy_url('/redirect'), e),
+                             f'/api/app-proxy/{self.upstream_port}/elsewhere')
         else:
             self.fail('Expected 302 from stub upstream')
+
+    def _no_redirect_open(self, url):
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        try:
+            urllib.request.build_opener(NoRedirect).open(url, timeout=5)
+        except urllib.error.HTTPError as e:
+            return e
+        self.fail(f'Expected a redirect from {url}')
+
+    @staticmethod
+    def _resolved(request_url, err):
+        # Resolve the Location the way the browser does, against the URL it
+        # actually requested.
+        u = urllib.parse.urlsplit(urllib.parse.urljoin(request_url, err.headers.get('Location')))
+        return u.path + ('?' + u.query if u.query else '')
+
+    def _oauth_url(self, suffix=''):
+        return f'http://127.0.0.1:{self.port}/oauth/api/app-proxy/{self.upstream_port}{suffix}'
+
+    def test_location_keeps_external_oauth_prefix(self):
+        # oauth2 ingress strips /oauth before the request reaches the server,
+        # and externally a bare /api/* path is the Bearer-only ingress. An
+        # absolute /api/app-proxy/... Location therefore 401s in the browser
+        # (blank iframe); the relative Location must keep /oauth.
+        e = self._no_redirect_open(self._oauth_url('/redirect'))
+        self.assertEqual(e.code, 302)
+        self.assertEqual(self._resolved(self._oauth_url('/redirect'), e),
+                         f'/oauth/api/app-proxy/{self.upstream_port}/elsewhere')
+
+    def test_root_absolute_location_from_nested_path_keeps_prefix(self):
+        url = self._oauth_url('/nested/deep/redirect')
+        e = self._no_redirect_open(url)
+        self.assertEqual(e.code, 302)
+        self.assertEqual(self._resolved(url, e),
+                         f'/oauth/api/app-proxy/{self.upstream_port}/login?next=%2Fnested')
+
+    def test_trailing_slash_redirect_keeps_oauth_prefix(self):
+        e = self._no_redirect_open(self._oauth_url(''))
+        self.assertEqual(e.code, 301)
+        self.assertEqual(self._resolved(self._oauth_url(''), e),
+                         f'/oauth/api/app-proxy/{self.upstream_port}/')
 
     def test_html_absolute_asset_urls_are_made_relative(self):
         # A stock build serving <script src="/assets/x"> must come back with
