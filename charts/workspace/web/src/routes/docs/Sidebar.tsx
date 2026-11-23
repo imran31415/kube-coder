@@ -1,6 +1,5 @@
 import { navigate, routeHref } from '../../store/router';
-import { manifest } from '../../store/docs';
-import type { DocsManifest, DocsPageMeta } from '../../api/docs';
+import { flatPages, manifest } from '../../store/docs';
 import { Icon } from '../../components/Icon';
 
 interface SidebarProps {
@@ -85,14 +84,9 @@ export function DocsIndex() {
   );
 }
 
-/** Reading order across sections, as the manifest lists it. */
-export function flatPages(m: DocsManifest | null): DocsPageMeta[] {
-  return m ? m.sections.flatMap((s) => s.pages) : [];
-}
-
 /** Previous / next page links shown under the article on phones. */
 export function DocsPager({ currentId }: { currentId: string }) {
-  const pages = flatPages(manifest.value);
+  const pages = flatPages.value;
   const i = pages.findIndex((p) => p.id === currentId);
   if (i < 0) return null;
   const prev = pages[i - 1];

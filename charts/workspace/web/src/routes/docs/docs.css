@@ -543,7 +543,7 @@
   /* 16px body: no pinch-zoom needed, and ~40 characters a line at 360px. */
   .docs-article-body {
     font-size: var(--text-2xl);
-    line-height: 1.65;
+    line-height: 1.6;
   }
   .docs-article-body h1 {
     font-size: 22px;
@@ -578,8 +578,13 @@
      the edge like a native list. */
   .docs-article-body pre {
     margin: 14px calc(-1 * var(--size-4));
+    max-width: none;
     padding: 12px var(--size-4);
     border-radius: 0;
+    /* Edge rules keep a full-bleed block readable as a block in the light
+       theme, where --surface-2 is only a shade off the page. */
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
     font-size: var(--text-md);
   }
   .docs-article-body .docs-table-wrap {

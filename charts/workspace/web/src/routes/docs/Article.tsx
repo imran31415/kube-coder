@@ -34,6 +34,18 @@ export function DocsArticle({ page }: ArticleProps) {
     const target = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
     if (!target) return;
     const href = target.getAttribute('href') || '';
+    // In-page anchors: scroll the heading into view inside the app scroller
+    // (scroll-margin-top keeps it clear of the phone's sticky back bar).
+    if (href.startsWith('#') && href.length > 1) {
+      let id = href.slice(1);
+      try { id = decodeURIComponent(id); } catch { /* keep raw */ }
+      const el = ref.current?.querySelector(`[id="${CSS.escape(id)}"]`);
+      if (el) {
+        e.preventDefault();
+        el.scrollIntoView({ block: 'start' });
+      }
+      return;
+    }
     // Internal docs/SPA links: intercept and route in-app.
     if (href.startsWith('/docs') || href.startsWith('/tasks') || href.startsWith('/memory') ||
         href.startsWith('/triggers') || href.startsWith('/files') || href.startsWith('/settings')) {
@@ -145,6 +157,41 @@ export function resolveDocAsset(src: string, file: string): string {
   return withOauthPrefix(`/api/docs/assets/${parts.map(encodeURIComponent).join('/')}`);
 }
 
+/**
+ * GitHub's heading-anchor algorithm (github-slugger): lowercase, drop
+ * punctuation, each space becomes a hyphen. Matching it means the docs'
+ * existing `[below](#connecting-a-board)` links work in-app as they do on
+ * GitHub. Repeats get `-1`, `-2`… suffixes, also as GitHub does.
+ */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-');
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function addHeadingIds(html: string): string {
+  const seen = new Map<string, number>();
+  return html.replace(/<h([1-4])>([\s\S]*?)<\/h\1>/g, (_m, level: string, inner: string) => {
+    const base = slugify(decodeEntities(inner.replace(/<[^>]*>/g, '')));
+    if (!base) return `<h${level}>${inner}</h${level}>`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    const id = n ? `${base}-${n}` : base;
+    return `<h${level} id="${id}">${inner}</h${level}>`;
+  });
+}
+
 export function renderMarkdown(src: string, file = ''): string {
   marked.setOptions({ gfm: true, breaks: false });
   const { md, callouts } = preprocess(src);
@@ -167,8 +214,12 @@ export function renderMarkdown(src: string, file = ''): string {
   // defer the ones far below the fold.
   html = html.replace(/<img src="([^"]*)"/g, (_m, s: string) =>
     `<img loading="lazy" src="${resolveDocAsset(s.replace(/&amp;/g, '&'), file).replace(/&/g, '&amp;')}"`);
-  return DOMPurify.sanitize(html, {
+  const clean = DOMPurify.sanitize(html, {
     ADD_ATTR: ['target', 'rel'],
     USE_PROFILES: { html: true },
   });
+  // Ids go on after sanitizing: DOMPurify's anti-clobbering strips ids such
+  // as `title` or `images` that shadow document properties, and a slug is
+  // only letters, digits, `_` and `-`, so it cannot smuggle markup back in.
+  return addHeadingIds(clean);
 }
