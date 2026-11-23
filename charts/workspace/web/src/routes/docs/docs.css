@@ -157,7 +157,8 @@
 .docs-article-body h3,
 .docs-article-body h4 {
   line-height: 1.3;
-  scroll-margin-top: 16px;
+  /* The window scrolls (not .app-main) and the topbar is sticky over it. */
+  scroll-margin-top: calc(var(--topbar-total) + 16px);
 }
 /* A body `# Heading` that differs from the page title (e.g. tasks-api's
    "Claude Task API") used to fall through to the UA's 2em h1. Sit it just
@@ -419,13 +420,13 @@
 /* Article: sticky back bar instead of the route masthead. */
 .docs-mobile-bar {
   position: sticky;
-  top: 0;
+  top: var(--topbar-total);
   z-index: 5;
   display: flex;
   align-items: center;
   gap: 8px;
   /* Bleed over .route's 16px padding so the bar spans the screen and pins
-     flush to the top of the scroller. */
+     flush under the topbar. */
   margin: calc(-1 * var(--size-4)) calc(-1 * var(--size-4)) 0;
   padding: 2px var(--size-4) 2px 6px;
   min-height: 48px;
@@ -510,6 +511,16 @@
 }
 
 @media (max-width: 720px) {
+  /* The window is the scroller (the shell is min-height, so .app-main grows
+     with its content), but .app-main's overflow-y:auto still makes it the
+     sticky containing scroller — so the back bar would never pin (same trap
+     security.css notes). `clip` clips without creating a scroll container;
+     `visible` first for engines without `clip`. Scoped to this route. */
+  .app-shell[data-active-route='/docs'] .app-main {
+    overflow: visible;
+    overflow-x: clip;
+    overflow-y: visible;
+  }
   .route-docs {
     gap: 12px;
   }
@@ -531,7 +542,7 @@
     display: none; /* the back bar already names the section */
   }
   .docs-article-title {
-    font-size: 26px;
+    font-size: var(--text-5xl);
     line-height: 1.2;
     margin-bottom: 8px;
   }
@@ -546,31 +557,31 @@
     line-height: 1.6;
   }
   .docs-article-body h1 {
-    font-size: 22px;
+    font-size: var(--text-4xl);
     margin-top: 24px;
   }
   .docs-article-body h2 {
-    font-size: var(--text-4xl);
+    font-size: var(--text-3xl);
     margin-top: 28px;
     margin-bottom: 8px;
   }
   .docs-article-body h3 {
-    font-size: var(--text-3xl);
+    font-size: var(--text-2xl);
     margin-top: 22px;
   }
   .docs-article-body h4 {
-    font-size: var(--text-2xl);
+    font-size: var(--text-xl);
   }
-  /* Keep headings clear of the 48px sticky back bar on anchor jumps. */
+  /* Keep headings clear of the topbar + 48px back bar on anchor jumps. */
   .docs-article-body :is(h1, h2, h3, h4) {
-    scroll-margin-top: 60px;
+    scroll-margin-top: calc(var(--topbar-total) + 60px);
   }
   .docs-article-body ul,
   .docs-article-body ol {
     padding-left: 20px;
   }
   .docs-article-body code {
-    font-size: 0.875em;
+    font-size: var(--text-lg);
   }
 
   /* Code blocks and tables bleed to the screen edges: the 32px they win back

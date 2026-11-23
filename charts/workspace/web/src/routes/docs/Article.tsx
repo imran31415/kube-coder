@@ -25,9 +25,12 @@ export function DocsArticle({ page }: ArticleProps) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    // Reset scroll to top when switching pages.
+    // Reset scroll to top when switching pages. The window is what actually
+    // scrolls (the shell grows with its content); .app-main is kept for any
+    // layout where it is height-constrained.
     const main = document.querySelector('.app-main');
     if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
   }, [page.id]);
 
   function onClick(e: MouseEvent) {

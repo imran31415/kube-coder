@@ -41,6 +41,7 @@ export function DocsRoute() {
     if (!showIndex) return;
     const main = document.querySelector('.app-main');
     if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
   }, [showIndex]);
 
   const m = manifest.value;

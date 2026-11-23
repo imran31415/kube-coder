@@ -798,6 +798,17 @@ class AppsProxyTests(unittest.TestCase):
         self.assertEqual(p, '/hello/world?x=1')
         self.assertEqual(hdrs.get('X-Forwarded-Prefix'), f'/api/app-proxy/{self.upstream_port}')
 
+    def test_get_keeps_oauth_and_browser_segments_in_the_app_path(self):
+        # do_GET used to delete /oauth and /browser anywhere in the URL, so a
+        # previewed app's OAuth callback reached it as /callback on GET (POST
+        # was already prefix-only). Only the dashboard's own leading route
+        # prefixes may be stripped.
+        with urllib.request.urlopen(self._proxy_url('/oauth/callback?code=1'), timeout=5) as r:
+            self.assertEqual(json.loads(r.read())['path'], '/oauth/callback?code=1')
+        url = f'http://127.0.0.1:{self.port}/oauth/api/app-proxy/{self.upstream_port}/browser/x'
+        with urllib.request.urlopen(url, timeout=5) as r:
+            self.assertEqual(json.loads(r.read())['path'], '/browser/x')
+
     def test_post_body_round_trips(self):
         req = urllib.request.Request(
             self._proxy_url('/echo'), data=b'{"hi":"there"}',
