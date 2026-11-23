@@ -47,7 +47,7 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # PATH). Same digest-pinned-official-image supply chain as node-dist above.
 FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS node22-dist
 
-FROM ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8 AS runtime
+FROM ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Ride out Ubuntu mirror blips: "Unable to connect to archive.ubuntu.com" failed
