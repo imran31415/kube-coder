@@ -221,5 +221,31 @@ export function renderMarkdown(src: string, file = ''): string {
   // Ids go on after sanitizing: DOMPurify's anti-clobbering strips ids such
   // as `title` or `images` that shadow document properties, and a slug is
   // only letters, digits, `_` and `-`, so it cannot smuggle markup back in.
-  return addHeadingIds(clean);
+  return labelTableCells(addHeadingIds(clean));
+}
+
+/**
+ * Tables with 3+ columns (mostly `Field | Type | Required | Description`
+ * references) stack into one card per row on phones — squeezed into 360px
+ * as a grid, the last column became a 6em strip off-screen. Each cell is
+ * tagged with its column header so the card can label it (`td::before`);
+ * the wrap gets `docs-table-stack`, which only the phone CSS acts on, so
+ * desktop keeps the plain table. Runs on already-sanitized HTML inside an
+ * inert <template>, and only sets attributes from header *text*.
+ */
+function labelTableCells(html: string): string {
+  if (!html.includes('<table') || typeof document === 'undefined') return html;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  tpl.content.querySelectorAll('.docs-table-wrap').forEach((wrap) => {
+    const heads = Array.from(wrap.querySelectorAll('thead th')).map((th) => (th.textContent || '').trim());
+    if (heads.length < 3) return;
+    wrap.classList.add('docs-table-stack');
+    wrap.querySelectorAll('tbody tr').forEach((tr) => {
+      Array.from(tr.children).forEach((td, i) => {
+        if (heads[i]) td.setAttribute('data-label', heads[i]);
+      });
+    });
+  });
+  return tpl.innerHTML;
 }

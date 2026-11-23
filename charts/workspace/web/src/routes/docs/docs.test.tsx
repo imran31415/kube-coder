@@ -83,6 +83,17 @@ describe('renderMarkdown', () => {
   it('wraps tables in a scroll container', () => {
     const html = renderMarkdown(LEAD + '| a | b |\n|---|---|\n| 1 | 2 |');
     expect(html).toMatch(/<div class="docs-table-wrap"><table>/);
+    // Two columns stay a plain (scrollable) table on phones.
+    expect(html).not.toContain('docs-table-stack');
+    expect(html).not.toContain('data-label');
+  });
+
+  it('labels cells of 3+ column tables so phones can stack them as cards', () => {
+    const html = renderMarkdown(LEAD + '| Field | Type | Description |\n|---|---|---|\n| `id` | string | The <b>id</b> |');
+    expect(html).toContain('class="docs-table-wrap docs-table-stack"');
+    expect(html).toContain('<td data-label="Field"><code>id</code></td>');
+    expect(html).toContain('<td data-label="Type">string</td>');
+    expect(html).toContain('data-label="Description"');
   });
 });
 

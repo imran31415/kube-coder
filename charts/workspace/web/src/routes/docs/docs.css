@@ -605,6 +605,79 @@
   .docs-article-body td {
     min-width: 6em;
   }
+  /* The prose rule lets inline code break anywhere so a paragraph never
+     overflows. In a table that collapsed the column to a few characters and
+     shredded `allowPrivilegeEscalation` across four lines; the table already
+     scrolls inside .docs-table-wrap, so keep tokens whole there. */
+  .docs-article-body td code {
+    overflow-wrap: break-word;
+    word-break: normal;
+  }
+
+  /* 3+ column tables: one card per row (see labelTableCells). The first
+     cell is the row's name, so it heads the card unlabelled; the rest show
+     their column header above the value. */
+  .docs-article-body .docs-table-stack {
+    margin: 14px 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .docs-table-stack table,
+  .docs-table-stack tbody,
+  .docs-table-stack tr,
+  .docs-table-stack td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  /* Visually hidden, not display:none, so the header row is still read. */
+  .docs-table-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .docs-table-stack tr {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 10px 14px;
+  }
+  .docs-table-stack tr + tr {
+    margin-top: 10px;
+  }
+  .docs-article-body .docs-table-stack td {
+    border: none;
+    padding: 4px 0;
+    min-width: 0;
+    font-size: var(--text-lg);
+  }
+  .docs-article-body .docs-table-stack td code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .docs-table-stack td:first-child {
+    font-size: var(--text-xl);
+    font-weight: var(--weight-semibold);
+    padding-bottom: 6px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .docs-table-stack td:empty {
+    display: none;
+  }
+  .docs-table-stack td:not(:first-child)[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-subtle);
+    margin-bottom: 1px;
+  }
 
   .docs-article-body blockquote,
   .docs-callout {
