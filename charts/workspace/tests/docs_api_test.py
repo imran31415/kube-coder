@@ -49,10 +49,15 @@ MANIFEST = {
             'title': 'Memory',
             'pages': [
                 {'id': 'memory-concepts', 'title': 'Concepts', 'file': 'in-app/memory-concepts.md', 'summary': 'namespaces'},
+                {'id': 'browser', 'title': 'Browser', 'file': 'in-app/browser.md', 'summary': 'virtual display'},
             ],
         },
     ],
 }
+
+
+# Smallest valid PNG header + IHDR is enough: the route never decodes it.
+PNG_BYTES = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
 
 
 class DocsApiTests(unittest.TestCase):
@@ -66,6 +71,13 @@ class DocsApiTests(unittest.TestCase):
             f.write('# Tasks\n\nLifecycle of a task. The word **needle** appears here.\n')
         with open(os.path.join(cls.tmpdir, 'in-app', 'memory-concepts.md'), 'w') as f:
             f.write('# Memory\n\nNamespaces, importance, tags.\n')
+        os.makedirs(os.path.join(cls.tmpdir, 'screenshots', 'demo'))
+        with open(os.path.join(cls.tmpdir, 'screenshots', 'demo', 'shot.png'), 'wb') as f:
+            f.write(PNG_BYTES)
+        with open(os.path.join(cls.tmpdir, 'screenshots', 'demo', 'evil.svg'), 'w') as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')
+        with open(os.path.join(cls.tmpdir, 'in-app', 'browser.md'), 'w') as f:
+            f.write('# Browser\n\nFirefox on the virtual display.\n')
         with open(os.path.join(cls.tmpdir, 'claude-task-api.md'), 'w') as f:
             f.write('# HTTP API\n\nFull reference for the Claude Task API.\n')
 
@@ -116,6 +128,42 @@ class DocsApiTests(unittest.TestCase):
         self.assertEqual(body['section_id'], 'tasks')
         self.assertIn('Lifecycle of a task', body['markdown'])
         self.assertGreater(body['edited_at'], 0)
+
+    def test_page_id_containing_a_route_prefix_word_resolves(self):
+        # do_GET used to strip '/browser' and '/oauth' anywhere in the path,
+        # so /api/docs/browser collapsed to /api/docs and got the manifest.
+        for path in ('/api/docs/browser', '/oauth/api/docs/browser',
+                     '/oauth/browser/api/docs/browser'):
+            status, body = self._get(path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(body.get('id'), 'browser', path)
+            self.assertIn('virtual display', body['markdown'], path)
+
+    def _status(self, path):
+        try:
+            with urllib.request.urlopen(f'http://127.0.0.1:{self.port}{path}', timeout=5) as r:
+                return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def test_asset_serves_a_relative_doc_image(self):
+        status, headers, body = self._status('/api/docs/assets/screenshots/demo/shot.png')
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(body, PNG_BYTES)
+        # Behind the /oauth prefix the SPA uses in production.
+        self.assertEqual(self._status('/oauth/api/docs/assets/screenshots/demo/shot.png')[0], 200)
+
+    def test_asset_refuses_non_raster_types(self):
+        # SVG would be same-origin script; markdown/json are not images.
+        for path in ('screenshots/demo/evil.svg', '_manifest.json', 'in-app/browser.md'):
+            self.assertEqual(self._status(f'/api/docs/assets/{path}')[0], 415, path)
+
+    def test_asset_refuses_traversal_and_missing_files(self):
+        self.assertEqual(self._status('/api/docs/assets/screenshots/demo/nope.png')[0], 404)
+        for path in ('..%2F..%2Fetc%2Fx.png', 'screenshots/..%2F..%2F..%2Fx.png'):
+            self.assertIn(self._status(f'/api/docs/assets/{path}')[0], (400, 404), path)
 
     def test_unknown_page_404s(self):
         try:

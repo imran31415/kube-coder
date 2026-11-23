@@ -32,13 +32,21 @@
 
 .docs-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  /* minmax(0, …), not a bare 1fr: a bare `1fr` track is `minmax(auto, 1fr)`,
+     whose floor is the min-content width of the widest <pre> or table inside
+     the article. One long ASCII diagram then widened the whole column past
+     the viewport (by ~390px on a phone, a few px on desktop) instead of
+     scrolling inside its own block. */
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
   min-height: 320px;
 }
 .docs-layout-mobile {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+}
+.docs-article-wrap {
+  min-width: 0;
 }
 
 .docs-sidebar-wrap {
@@ -101,20 +109,6 @@
   line-height: 1.35;
 }
 
-.docs-mobile-toc {
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-}
-.docs-mobile-toc > summary {
-  cursor: pointer;
-  font-weight: var(--weight-medium);
-}
-.docs-mobile-toc[open] > summary {
-  margin-bottom: 12px;
-}
-
 .docs-article {
   max-width: 760px;
   min-width: 0;
@@ -151,10 +145,31 @@
 }
 .docs-article-body p,
 .docs-article-body li,
+.docs-article-body a,
 .docs-article-body h1,
 .docs-article-body h2,
-.docs-article-body h3 {
+.docs-article-body h3,
+.docs-article-body h4 {
   overflow-wrap: anywhere;
+}
+.docs-article-body h1,
+.docs-article-body h2,
+.docs-article-body h3,
+.docs-article-body h4 {
+  line-height: 1.3;
+  scroll-margin-top: 16px;
+}
+/* A body `# Heading` that differs from the page title (e.g. tasks-api's
+   "Claude Task API") used to fall through to the UA's 2em h1. Sit it just
+   above h2 so it reads as the top of the article body, not a second title. */
+.docs-article-body h1 {
+  font-size: var(--text-5xl);
+  margin-top: 28px;
+  margin-bottom: 10px;
+  letter-spacing: -0.015em;
+}
+.docs-article-body > h1:first-child {
+  margin-top: 8px;
 }
 .docs-article-body h2 {
   font-size: var(--text-4xl);
@@ -176,6 +191,33 @@
 .docs-article-body ol {
   padding-left: 22px;
   margin: 10px 0;
+}
+/* reset.css strips list markers app-wide; docs prose needs them back —
+   numbered setup steps were rendering as unnumbered indented paragraphs. */
+.docs-article-body ul {
+  list-style: disc;
+}
+.docs-article-body ol {
+  list-style: decimal;
+}
+.docs-article-body ul ul {
+  list-style: circle;
+}
+.docs-article-body li::marker {
+  color: var(--text-subtle);
+}
+.docs-article-body h4 {
+  font-size: var(--text-xl);
+  margin-top: 20px;
+  margin-bottom: 6px;
+}
+.docs-article-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 .docs-article-body li {
   margin: 4px 0;
@@ -298,44 +340,272 @@
   border-left-color: var(--accent);
 }
 
-/* Mobile tightening — give pages the full width and trim chrome that
-   competes with the article body for vertical space. */
-@media (max-width: 760px) {
-  .docs-layout-mobile {
+/* ---------------------------------------------------------------------
+   Phones. The breakpoint matches useIsMobile() (720px) so the CSS and the
+   JS layout switch (index ↔ article, no sidebar) always flip together.
+   ------------------------------------------------------------------- */
+
+/* Index: /docs on a phone — the table of contents as its own page. */
+.docs-index {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.docs-index-section-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  margin: 0 4px 8px;
+}
+.docs-index-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.docs-index-list > li + li {
+  border-top: 1px solid var(--border);
+}
+.docs-index-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px 12px 12px 16px;
+  color: var(--text);
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.docs-index-row:hover,
+.docs-index-row:active {
+  background: var(--surface-2);
+}
+.docs-index-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.docs-index-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.docs-index-row-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+}
+.docs-index-row-summary {
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.docs-index-row-chevron {
+  flex-shrink: 0;
+  color: var(--text-subtle);
+  display: inline-flex;
+}
+
+/* Article: sticky back bar instead of the route masthead. */
+.docs-mobile-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Bleed over .route's 16px padding so the bar spans the screen and pins
+     flush to the top of the scroller. */
+  margin: calc(-1 * var(--size-4)) calc(-1 * var(--size-4)) 0;
+  padding: 2px var(--size-4) 2px 6px;
+  min-height: 48px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.docs-mobile-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 10px 0 4px;
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.docs-mobile-back:active {
+  background: var(--surface-2);
+}
+.docs-mobile-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.docs-mobile-bar-section {
+  margin-left: auto;
+  min-width: 0;
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Previous / next under the article. */
+.docs-pager {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.docs-pager-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.docs-pager-link:active {
+  background: var(--surface-2);
+}
+.docs-pager-next {
+  text-align: right;
+  align-items: flex-end;
+}
+.docs-pager-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-subtle);
+}
+.docs-pager-title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  color: var(--accent);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .route-docs {
     gap: 12px;
   }
   .route-docs .route-header {
     margin-bottom: 4px;
   }
-  .route-docs .route-subtitle {
-    display: none;
+  .route-docs-mobile-article {
+    gap: 0;
+  }
+  .docs-layout-mobile {
+    gap: 0;
+    min-height: 0;
+  }
+
+  .docs-article-header {
+    margin: 18px 0 14px;
+  }
+  .docs-article-breadcrumbs {
+    display: none; /* the back bar already names the section */
   }
   .docs-article-title {
-    font-size: var(--text-4xl);
+    font-size: 26px;
+    line-height: 1.2;
+    margin-bottom: 8px;
   }
   .docs-article-summary {
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
+    line-height: 1.5;
   }
+
+  /* 16px body: no pinch-zoom needed, and ~40 characters a line at 360px. */
   .docs-article-body {
-    font-size: var(--text-lg);
-  }
-  .docs-article-body h2 {
     font-size: var(--text-2xl);
+    line-height: 1.65;
+  }
+  .docs-article-body h1 {
+    font-size: 22px;
     margin-top: 24px;
   }
-  .docs-article-body h3 {
-    font-size: var(--text-xl);
-    margin-top: 18px;
+  .docs-article-body h2 {
+    font-size: var(--text-4xl);
+    margin-top: 28px;
+    margin-bottom: 8px;
   }
+  .docs-article-body h3 {
+    font-size: var(--text-3xl);
+    margin-top: 22px;
+  }
+  .docs-article-body h4 {
+    font-size: var(--text-2xl);
+  }
+  /* Keep headings clear of the 48px sticky back bar on anchor jumps. */
+  .docs-article-body :is(h1, h2, h3, h4) {
+    scroll-margin-top: 60px;
+  }
+  .docs-article-body ul,
+  .docs-article-body ol {
+    padding-left: 20px;
+  }
+  .docs-article-body code {
+    font-size: 0.875em;
+  }
+
+  /* Code blocks and tables bleed to the screen edges: the 32px they win back
+     is a lot on a 360px phone, and their own horizontal scroll then reaches
+     the edge like a native list. */
   .docs-article-body pre {
-    padding: 10px 12px;
-    font-size: var(--text-sm);
+    margin: 14px calc(-1 * var(--size-4));
+    padding: 12px var(--size-4);
+    border-radius: 0;
+    font-size: var(--text-md);
+  }
+  .docs-article-body .docs-table-wrap {
+    margin: 14px calc(-1 * var(--size-4));
+    padding: 0 var(--size-4);
+    max-width: none;
   }
   .docs-article-body table {
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
+    width: auto;
+    min-width: 100%;
   }
   .docs-article-body th,
   .docs-article-body td {
-    padding: 5px 8px;
+    padding: 7px 10px;
+  }
+  /* Narrow cells read better at a sane width than shredded at 40px. */
+  .docs-article-body td {
+    min-width: 6em;
+  }
+
+  .docs-article-body blockquote,
+  .docs-callout {
+    padding: 10px 12px;
+  }
+  .docs-article-body img {
+    margin: 14px 0;
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'preact/hooks';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { navigate } from '../../store/router';
+import { withOauthPrefix } from '../../api/client';
 import type { DocsPage } from '../../api/docs';
 
 interface ArticleProps {
@@ -18,8 +19,8 @@ export function DocsArticle({ page }: ArticleProps) {
   // bodies open with their own duplicate `# Title`, which would render a second
   // identical heading — strip a leading H1 that matches the page title.
   const html = useMemo(
-    () => renderMarkdown(stripDuplicateTitle(page.markdown, page.title)),
-    [page.markdown, page.title],
+    () => renderMarkdown(stripDuplicateTitle(page.markdown, page.title), page.file),
+    [page.markdown, page.title, page.file],
   );
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -120,7 +121,31 @@ function preprocess(src: string): { md: string; callouts: string[] } {
   return { md: out.join('\n'), callouts };
 }
 
-function renderMarkdown(src: string): string {
+/**
+ * Map an image `src` from a docs page to something the browser can load.
+ * Markdown embeds screenshots relative to its own file (boards.md →
+ * `screenshots/board-processor/x.png`), but the SPA serves the page at
+ * `/docs/<id>`, so the browser would resolve them to `/docs/screenshots/…`
+ * and get the app shell. Relative paths are resolved against the page's
+ * `file` and served from `/api/docs/assets/`; absolute URLs, root paths,
+ * data: URIs and anything climbing out of the docs tree are left as-is.
+ */
+export function resolveDocAsset(src: string, file: string): string {
+  if (!src || /^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('/') || src.startsWith('#')) return src;
+  const parts = file.split('/').slice(0, -1);
+  for (const seg of src.split(/[?#]/, 1)[0].split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (!parts.length) return src;
+      parts.pop();
+    } else {
+      parts.push(seg);
+    }
+  }
+  return withOauthPrefix(`/api/docs/assets/${parts.map(encodeURIComponent).join('/')}`);
+}
+
+export function renderMarkdown(src: string, file = ''): string {
   marked.setOptions({ gfm: true, breaks: false });
   const { md, callouts } = preprocess(src);
   let html = marked.parse(md, { async: false }) as string;
@@ -138,6 +163,10 @@ function renderMarkdown(src: string): string {
   // article wider than the mobile viewport.
   html = html.replace(/<table>/g, '<div class="docs-table-wrap"><table>')
              .replace(/<\/table>/g, '</table></div>');
+  // Point relative screenshots at the docs asset route and let the phone
+  // defer the ones far below the fold.
+  html = html.replace(/<img src="([^"]*)"/g, (_m, s: string) =>
+    `<img loading="lazy" src="${resolveDocAsset(s.replace(/&amp;/g, '&'), file).replace(/&/g, '&amp;')}"`);
   return DOMPurify.sanitize(html, {
     ADD_ATTR: ['target', 'rel'],
     USE_PROFILES: { html: true },

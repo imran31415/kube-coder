@@ -15757,7 +15757,11 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
         # /oauth/?task=<id>&chat=open never match the "/" dashboard route
         # and fall through to the static-file 404.
         path_no_query = self.path.split('?', 1)[0]
-        normalized_path = path_no_query.replace('/oauth', '').replace('/browser', '')
+        # Prefix-only strip (same helper the other verbs use). The old
+        # `.replace('/oauth', '').replace('/browser', '')` also ate the
+        # substring mid-path, so `/api/docs/browser` became `/api/docs` and
+        # the Browser docs page answered with the manifest instead.
+        normalized_path = self._strip_route_prefix(path_no_query)
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
