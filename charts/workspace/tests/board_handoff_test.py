@@ -380,7 +380,19 @@ class ApprovalGateRoutes(_Base):
         self.assertGated('GET', '/bearer-api/api/boards/acme-jira/items?x=/run-requests')
 
     def test_a_path_the_dispatcher_normalizes_to_items_is_gated(self):
-        self.assertGated('GET', '/api/boards/acme-jira/ite/oauthms')
+        # Both route prefixes, stacked, still land on /items — and are gated.
+        self.assertGated('GET', '/oauth/browser/api/boards/acme-jira/items')
+
+    def test_route_prefixes_are_not_stripped_mid_path(self):
+        # do_GET (and this gate, in step with it) used to delete /oauth
+        # anywhere, so this path was *served* as /items. Prefix-only
+        # normalization means it is not the items route at all.
+        self.human.reset_mock()
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{self.port}/api/boards/acme-jira/ite/oauthms', method='GET')
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request, timeout=20)
+        self.assertEqual(ctx.exception.code, 404)
 
     def test_a_board_id_starting_with_run_requests_is_gated(self):
         self.assertGated('GET', '/api/boards/run-requests-2/items')

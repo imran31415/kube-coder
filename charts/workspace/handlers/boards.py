@@ -57,11 +57,12 @@ class BoardRoutes:
 
     def _board_route_path(self):
         """The path this request was dispatched on. do_GET drops the query and
-        removes /oauth and /browser anywhere in the path; the other verbs strip
-        only those leading prefixes. Gating on anything else lets a request be
-        judged as one route and served as another."""
+        then strips the leading /oauth and /browser prefixes; the other verbs
+        strip the prefixes first. Gating on anything else lets a request be
+        judged as one route and served as another — keep this in step with
+        do_GET's normalization."""
         if getattr(self, 'command', 'GET') == 'GET':
-            return self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+            return self._strip_route_prefix(self.path.split('?', 1)[0])
         return self._strip_route_prefix(self.path).split('?', 1)[0]
 
     def _board_guard(self):

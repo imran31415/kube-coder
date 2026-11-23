@@ -61,6 +61,12 @@ class DocsRouteOrderTests(DomainRouteTests, unittest.TestCase):
         self.assertEqual(self.resolve('GET', '/api/docs/tasks-concepts'),
                          'handle_docs_page')
 
+    def test_asset_route_does_not_shadow_or_get_shadowed_by_pages(self):
+        self.assertEqual(self.resolve('GET', '/api/docs/assets/screenshots/a.png'),
+                         'handle_docs_asset')
+        # A page literally named `assets` still resolves as a page.
+        self.assertEqual(self.resolve('GET', '/api/docs/assets'), 'handle_docs_page')
+
     def test_page_id_is_passed_as_a_capture_group(self):
         self.assertEqual(args_for(docs.ROUTES, 'GET', '/api/docs/tasks-concepts'),
                          ('tasks-concepts',))

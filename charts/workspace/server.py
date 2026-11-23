@@ -15757,7 +15757,11 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
         # /oauth/?task=<id>&chat=open never match the "/" dashboard route
         # and fall through to the static-file 404.
         path_no_query = self.path.split('?', 1)[0]
-        normalized_path = path_no_query.replace('/oauth', '').replace('/browser', '')
+        # Prefix-only strip (same helper the other verbs use). The old
+        # `.replace('/oauth', '').replace('/browser', '')` also ate the
+        # substring mid-path, so `/api/docs/browser` became `/api/docs` and
+        # the Browser docs page answered with the manifest instead.
+        normalized_path = self._strip_route_prefix(path_no_query)
         if normalized_path == '' or normalized_path == '/':
             normalized_path = '/'
 
@@ -16479,7 +16483,7 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
                 except Exception:
                     pass
             return False
-        norm = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+        norm = self._strip_route_prefix(self.path.split('?', 1)[0])
         if norm.startswith('/api/app-proxy/'):
             return False  # already a proxy path — _dispatch_app_proxy handles it
         ok, _reason = AppsManager.is_proxyable(int(m.group(2)))
@@ -16746,7 +16750,7 @@ class BrowserHandler(ObservedHTTP, app_routes.AppRoutes,
 
         # Trailing-slash 301 so relative URLs resolve against the prefix root.
         if upstream_path in ('', '/'):
-            normalized = self.path.split('?', 1)[0].replace('/oauth', '').replace('/browser', '')
+            normalized = self._strip_route_prefix(self.path.split('?', 1)[0])
             if normalized == prefix:
                 self.send_response(301)
                 # Relative, so the browser keeps any external route prefix
