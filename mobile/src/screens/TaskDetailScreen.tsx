@@ -26,6 +26,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { getTask, getTaskOutput, killTask, sendKey, sendMessage, uploadTaskImage } from '../api/client';
 import { AppEmbed } from '../components/AppEmbed';
 import { AppPickerSheet } from '../components/AppPickerSheet';
+import { KeyboardDoneBar } from '../components/KeyboardDoneBar';
 import { WorktreeSheet } from '../components/WorktreeSheet';
 import { Loading, StatusPill } from '../components/ui';
 import { TerminalView } from '../components/TerminalView';
@@ -535,7 +536,9 @@ export default function TaskDetailScreen() {
                   placeholderTextColor={colors.textFaint}
                   style={styles.composerInput}
                   multiline
+                  inputAccessoryViewID="task-composer-done"
                 />
+                <KeyboardDoneBar nativeID="task-composer-done" />
                 <Pressable
                   onPress={() => void send()}
                   disabled={!canSend}

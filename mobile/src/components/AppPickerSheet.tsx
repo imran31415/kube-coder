@@ -4,6 +4,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -14,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { listApps } from '../api/client';
+import { KeyboardDoneBar } from './KeyboardDoneBar';
 import type { AppEntry } from '../api/types';
 import { colors, font, radius, space } from '../theme';
 
@@ -48,8 +50,11 @@ export function AppPickerSheet({
             native view hierarchy — the screen's KeyboardAvoidingView never
             reaches in here, so the sheet carries its own (#662). */}
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {/* Stop backdrop-press from closing when tapping the sheet itself. */}
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+        {/* Stop backdrop-press from closing when tapping the sheet itself.
+            A tap on the sheet's blank space puts the keyboard away instead —
+            the backdrop is mostly hidden behind the keys by then, and tapping
+            it closes the whole sheet. */}
+        <Pressable style={styles.sheet} onPress={() => Keyboard.dismiss()}>
           <View style={styles.grabber} />
           <Text style={styles.title}>Show an app alongside</Text>
           <Text style={styles.subtitle}>Pick a running app, or enter a port.</Text>
@@ -83,8 +88,13 @@ export function AppPickerSheet({
               placeholder="Custom port (e.g. 3000)"
               placeholderTextColor={colors.textFaint}
               keyboardType="number-pad"
+              // A number pad has no return key on iOS, so the Done bar is the
+              // way to put it away; Android's pad shows this done key.
+              returnKeyType="done"
+              inputAccessoryViewID={PORT_DONE_BAR}
               style={styles.customInput}
             />
+            <KeyboardDoneBar nativeID={PORT_DONE_BAR} />
             <Pressable
               disabled={!customValid}
               onPress={() => customValid && onPick(custom, `Port ${custom}`)}
@@ -99,6 +109,8 @@ export function AppPickerSheet({
     </Modal>
   );
 }
+
+const PORT_DONE_BAR = 'app-picker-port-done';
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
