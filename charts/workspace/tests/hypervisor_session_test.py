@@ -1510,7 +1510,9 @@ class StopWatcherScopeTest(unittest.TestCase):
         old = hs.WATCHERS.arm(s.id, kind='command', target='true', note='old')
         s.send('turn two')
         self.assertTrue(self._wait_idle(s), 'second turn never finished')
-        recent = hs.WATCHERS.arm(s.id, kind='command', target='true',
+        # A different command: the same (kind, target) collapses onto the
+        # still-armed one (#929).
+        recent = hs.WATCHERS.arm(s.id, kind='command', target='true # 2',
                                  note='recent')
         self.assertEqual((old['turn_seq'], recent['turn_seq']), (1, 2))
         self.assertFalse(s.stop())  # nothing live to kill
@@ -1538,7 +1540,9 @@ class CancelThreadScopeTest(unittest.TestCase):
     def _arm_at(self, seq, note=''):
         with hs._RUNLOCK:
             hs._TURN_SEQ[self.s.id] = seq
-        return hs.WATCHERS.arm(self.s.id, kind='command', target='true',
+        # One target per turn: arming the same (kind, target) again while it
+        # is live returns the first watcher (#929).
+        return hs.WATCHERS.arm(self.s.id, kind='command', target=f'true # {seq}',
                                note=note)
 
     def _states(self):
@@ -1978,7 +1982,7 @@ class WatcherArmTest(WatcherTestBase):
         self.assertEqual(w['interval'], hs.WATCH_MIN_INTERVAL)
         self.assertEqual(w['timeout'], hs.WATCH_MAX_TIMEOUT)
         # Garbage falls back to the defaults rather than erroring.
-        w2 = self._arm(interval='soon', timeout=None)
+        w2 = self._arm(target='task-def', interval='soon', timeout=None)
         self.assertEqual(w2['interval'], hs.WATCH_DEFAULT_INTERVAL)
         self.assertEqual(w2['timeout'], hs.WATCH_DEFAULT_TIMEOUT)
 
@@ -1996,14 +2000,35 @@ class WatcherArmTest(WatcherTestBase):
             self._arm()
 
     def test_arm_enforces_per_thread_cap(self):
-        for _ in range(hs.WATCH_MAX_PER_THREAD):
-            self._arm()
+        for i in range(hs.WATCH_MAX_PER_THREAD):
+            self._arm(target=f'task-{i}')
         with self.assertRaises(ValueError):
-            self._arm()
+            self._arm(target='task-one-too-many')
         # Cancelling frees a slot.
         first = self.mgr.list(self.session.id)[0]
         self.assertTrue(self.mgr.cancel(self.session.id, first['id']))
-        self._arm()
+        self._arm(target='task-one-too-many')
+
+    def test_rearming_the_same_kind_and_target_is_a_no_op(self):
+        # create_task auto-arms a `task` watcher (#929); the agent arming its
+        # own on the same build must not get a second delivery.
+        first = self._arm(note='')
+        again = self._arm(note='the docs build')
+        self.assertEqual(again['id'], first['id'])
+        self.assertEqual(len(self.mgr.list(self.session.id)), 1)
+        # The caller's note is the better description, so it is kept.
+        self.assertEqual(self.mgr.list(self.session.id)[0]['note'], 'the docs build')
+        # Other kinds on the same target are separate watchers.
+        self._arm(kind='port')
+        self.assertEqual(len(self.mgr.list(self.session.id)), 2)
+
+    def test_rearming_after_delivery_arms_a_new_watcher(self):
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        first = self._arm()
+        self.mgr.tick(now=self.now)
+        again = self._arm()
+        self.assertNotEqual(again['id'], first['id'])
+        self.assertEqual(self._states(), ['delivered', 'armed'])
 
 
 class WatcherFireTest(WatcherTestBase):
