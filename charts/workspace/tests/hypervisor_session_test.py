@@ -2335,7 +2335,11 @@ class ChatOwnedBuildTest(WatcherTestBase):
             hs._STOPPED_TURNS.pop(self.session.id, None)
 
     def _start_turn(self, thread_id, text):
-        """send() minus the CLI: the user event, a new turn number, running."""
+        """send() minus the CLI: the user event, a new turn number, running.
+        Defers on a busy thread, as _default_deliver does."""
+        with hs._RUNLOCK:
+            if hs._RUNNING.get(thread_id):
+                return False
         hs.HypervisorSession.get(thread_id)._append(
             [{'role': 'user', 'type': 'message', 'text': text}])
         with hs._RUNLOCK:
@@ -2422,6 +2426,21 @@ class ChatOwnedBuildTest(WatcherTestBase):
         self.mgr.tick(now=self.now + 3)
         self.assertEqual(len(self.replies), 1)
         self.assertEqual(self.mgr.list(self.session.id)[0]['reply']['state'], 'notified')
+
+    def test_two_builds_parking_together_report_one_turn_each(self):
+        self._arm()
+        self._arm(target='task-def')
+        self.statuses.update({'task-abc': 'completed', 'task-def': 'completed'})
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered', 'fired'])  # one turn at a time
+        self._end_turn(self._say('abc done'))
+        self.mgr._tick_thread_safe(self.session.id)
+        self.assertEqual(self._states(), ['delivered', 'delivered'])
+        self._end_turn(self._say('def done'))
+        self.mgr._tick_thread_safe(self.session.id)
+        self.assertEqual([(t, x) for _, t, x in self.replies],
+                         [('task-abc', 'abc done'), ('task-def', 'def done')])
+        self.assertEqual(self.releases, [])
 
     def test_the_reply_is_capped_and_stops_at_the_next_user_turn(self):
         self._arm()

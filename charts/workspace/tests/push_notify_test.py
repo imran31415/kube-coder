@@ -261,6 +261,23 @@ class BuildMessagesTests(unittest.TestCase):
         self.assertTrue(msgs[0]['title'].startswith('Task waiting'))
         self.assertEqual(msgs[0]['priority'], 'high')
 
+    def test_a_chat_reply_row_opens_the_chat(self):
+        # #929: the chat-level row pushes like any waiting row, and its first
+        # link — the thread — is the tap target; the Build is the second.
+        item = {'title': 'CTO: shop: add checkout', 'body_md': 'Done, PR #4',
+                'source': 'system:hypervisor', 'kind': 'activity', 'waiting': True,
+                'id': 'fd_9', 'links': [{'ref': 'thread:th-1'}, {'ref': 'task:t1'}]}
+        self.assertTrue(pn.should_push(item))
+        [msg] = pn._build_messages(item, ['ExponentPushToken[a]'])
+        self.assertEqual(msg['data']['ref'], 'thread:th-1')
+        self.assertEqual(msg['body'], 'Done, PR #4')
+
+    def test_a_chat_owned_build_s_history_row_never_pushes(self):
+        self.assertFalse(pn.should_push({
+            'title': 'Task finished: add checkout', 'source': 'system:task',
+            'kind': 'activity', 'waiting': False,
+            'links': [{'ref': 'thread:th-1'}, {'ref': 'task:t1'}]}))
+
     def test_build_messages_defaults_body_for_waiting(self):
         msgs = pn._build_messages({'title': 't', 'waiting': True, 'kind': 'activity'},
                                   ['ExponentPushToken[a]'])
