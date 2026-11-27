@@ -2427,6 +2427,20 @@ class ChatOwnedBuildTest(WatcherTestBase):
         self.assertEqual(len(self.replies), 1)
         self.assertEqual(self.mgr.list(self.session.id)[0]['reply']['state'], 'notified')
 
+    def test_a_parked_build_fires_the_watcher_and_is_reported(self):
+        # #928's `parked` is quiescent: the chat still owns the Build until the
+        # watcher delivers, and the reply turn reports it like any other.
+        self._arm()
+        self.statuses['task-abc'] = 'parked'
+        self.assertTrue(self.mgr.owns_task(self.session.id, 'task-abc'))
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertIn('"parked"', self.delivered[0][1])
+        self._end_turn(self._say('It is parked on a question: which DB?'))
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual([x for _, _, x in self.replies],
+                         ['It is parked on a question: which DB?'])
+
     def test_two_builds_parking_together_report_one_turn_each(self):
         self._arm()
         self._arm(target='task-def')

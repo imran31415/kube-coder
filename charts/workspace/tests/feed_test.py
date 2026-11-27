@@ -232,6 +232,27 @@ class ChatOwnedBuildFeedTests(FeedManagerBase):
         self.assertEqual(row['title'], 'Task waiting on you: fix the login page')
         self.assertEqual([lk['ref'] for lk in row['links']], ['task:t1'])
 
+    def test_a_chat_owned_build_parked_on_a_question_does_not_alert(self):
+        # #928 parks an idle Build and keeps the row `waiting` when it sat on a
+        # question; while the chat owns the Build the chat reports that.
+        self._owner({('th-1', 't1')})
+        meta = self._task('t1', 'waiting-for-input', origin_thread_id='th-1',
+                          parked_reason='question', parked_at=1000, parked_idle_s=900)
+        self._transition(meta, 'parked')
+        [row] = FM.list()
+        self.assertFalse(row['waiting'])
+        self.assertTrue(row['title'].startswith('Idle session closed'))
+        self.assertEqual([lk['ref'] for lk in row['links']], ['thread:th-1', 'task:t1'])
+
+    def test_an_unowned_build_parked_on_a_question_still_alerts(self):
+        self._owner(set())
+        meta = self._task('t1', 'waiting-for-input', origin_thread_id='th-1',
+                          parked_reason='question', parked_at=1000)
+        self._transition(meta, 'parked')
+        [row] = FM.list()
+        self.assertTrue(row['waiting'])
+        self.assertEqual([lk['ref'] for lk in row['links']], ['task:t1'])
+
     def test_a_build_with_no_origin_never_asks_the_watchers(self):
         watchers = self._owner({('th-1', 't1')})
         self._transition(self._task('t1', 'running'), 'waiting-for-input')
@@ -286,6 +307,14 @@ class ChatOwnedBuildFeedTests(FeedManagerBase):
         server.hv_watch_release('th-1', 't2')
         failed = [r for r in FM.list() if r['title'].startswith('Task failed')]
         self.assertEqual([lk['ref'] for lk in failed[0]['links']], ['task:t2'])
+
+    def test_release_of_a_build_parked_on_a_question_alerts_again(self):
+        self._task('t1', 'parked', origin_thread_id='th-1',
+                   parked_reason='question', parked_at=1000)
+        server.hv_watch_release('th-1', 't1')
+        [row] = FM.list()
+        self.assertTrue(row['waiting'])
+        self.assertEqual([lk['ref'] for lk in row['links']], ['task:t1'])
 
     def test_release_is_a_no_op_for_a_running_or_foreign_build(self):
         self._task('t1', 'running', origin_thread_id='th-1')

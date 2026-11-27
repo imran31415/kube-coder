@@ -506,6 +506,30 @@ class ChatOwnedBuildPushE2E(PushDedupeE2E):
         [msg] = self.pushes(1)
         self.assertEqual(msg['data']['ref'], 'task:t-24')
 
+    def park_on_question(self, tid):
+        """What #928's idle reaper does to a Build waiting on a question."""
+        moved = CTM._transition(os.path.join(self.tasks, tid), 'parked',
+                                fields={'parked_at': time.time(),
+                                        'parked_reason': 'question',
+                                        'parked_idle_s': 1800})[1]
+        self.assertTrue(moved)
+
+    def test_26_a_chat_owned_build_parked_on_a_question_pages_once(self):
+        self.dispatch('t-26', 'Pick a DB')
+        self.task_waits('t-26')
+        self.park_on_question('t-26')
+        self.pushes(0)  # neither the waiting row nor #928's parked row alerts
+        self.chat_reports('The build is parked asking which DB to use.')
+        [msg] = self.pushes(1)
+        self.assertEqual(msg['data']['ref'], 'thread:%s' % self.chat.id)
+
+    def test_27_an_unowned_build_parked_on_a_question_still_pages(self):
+        self.make_task('t-27', 'Pick a DB')
+        self.task_waits('t-27')
+        self.park_on_question('t-27')
+        first, second = self.pushes(2)  # #928's own behaviour, unchanged
+        self.assertEqual(second['data']['ref'], 'task:t-27')
+
     def test_25_a_deleted_chat_owns_nothing(self):
         self.dispatch('t-25', 'x')
         self.chat.delete()

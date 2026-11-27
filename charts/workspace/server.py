@@ -4839,13 +4839,14 @@ class ClaudeTaskManager:
         effects.append(lambda: EventBroker.publish('task.status', event))
         # A Build its chat is watching notifies through that chat (#929):
         # no waiting row of its own, and its history row links the chat first.
-        owner = chat_owner_of_task(meta) if terminal or to == 'waiting-for-input' else ''
+        owner = (chat_owner_of_task(meta)
+                 if terminal or to in ('waiting-for-input', task_status.PARKED) else '')
         if terminal:
             effects.append(lambda: FeedManager.emit_task_terminal(meta, to, thread_id=owner))
         elif to == 'waiting-for-input' and not owner:
             effects.append(lambda: FeedManager.emit_task_waiting(meta))
         elif to == task_status.PARKED:
-            effects.append(lambda: FeedManager.emit_task_parked(meta))
+            effects.append(lambda: FeedManager.emit_task_parked(meta, thread_id=owner))
         # What the Build changed, recorded when it stops or parks (#701), so a
         # list or a review card can show it without running git.
         if (terminal or to in ('waiting-for-input', task_status.PARKED)) \
@@ -8257,16 +8258,23 @@ class FeedManager:
         )
 
     @staticmethod
-    def emit_task_parked(meta):
+    def emit_task_parked(meta, thread_id=''):
         """The idle-session reaper closed a waiting Build's session (#928).
         Still `waiting` when it was parked on a question: the question is
-        unanswered whether or not its session is open."""
+        unanswered whether or not its session is open.
+
+        Unless a chat owns the Build (#929, `thread_id`): then the chat
+        reports the question, so this is a history row that opens the chat,
+        like `emit_task_terminal`'s, and never an alert of its own."""
         tid = meta.get('task_id')
         if not tid:
             return None
         prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
         question = meta.get('parked_reason') == 'question'
         idle_min = max(1, round((meta.get('parked_idle_s') or 0) / 60))
+        links = [{'label': 'Open task', 'ref': f'task:{tid}'}]
+        if thread_id:
+            links.insert(0, {'label': 'Open chat', 'ref': f'thread:{thread_id}'})
         return FeedManager.emit(
             'activity',
             f'Idle session closed: {prompt[:80] or tid}',
@@ -8276,8 +8284,8 @@ class FeedManager:
                      'is kept: send the Build a message to resume it.'),
             source='system:task',
             project_id=FeedManager._project_for_meta(meta),
-            links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
-            waiting=question,
+            links=links,
+            waiting=question and not thread_id,
             dedupe_key=f'task:{tid}:parked:{int(meta.get("parked_at") or 0)}',
         )
 
@@ -8537,6 +8545,10 @@ def hv_watch_release(thread_id, task_id):
     status = meta.get('status')
     if status == 'waiting-for-input':
         FeedManager.emit_task_waiting(meta)
+    elif status == task_status.PARKED:
+        # Its idle session was closed while the chat owned it (#928): the
+        # parked row, waiting again if it was parked on a question.
+        FeedManager.emit_task_parked(meta)
     elif status in task_status.TERMINAL_STATUSES:
         FeedManager.emit_task_terminal(meta, status)
 

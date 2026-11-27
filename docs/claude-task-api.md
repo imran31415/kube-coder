@@ -578,13 +578,15 @@ returns that watcher instead of adding one. While the watcher is live
 | When | What the Feed gets |
 |---|---|
 | The task parks (`waiting-for-input`) | Nothing. No waiting row, so no push and no desktop alert. |
+| Its idle session is closed (`parked`, #928) | The "Idle session closed" row, never `waiting` (even when it was parked on a question) and with the chat as its first link. The chat's watcher fires on `parked` and reports the question. |
 | The task ends | The usual history row, with the chat as its first link. |
 | The chat's reply to the watcher's message is complete | One row from `system:hypervisor`: `waiting`, titled `<chat title>: <first line of the task prompt>`, body = the first 300 characters of the reply, links chat then task. It is one row per chat (`thread:<id>:watch-reply`), so tasks finishing close together share one row and one push, under the usual repeat rules (#685). |
 | You send the next message in that chat | That row is marked read. |
 
 The decision uses `task.json` and the thread's `watchers.json` only. When
 ownership can't be shown, the task gets today's rows back, for the state it is
-in at that moment. That happens when the watcher timed out or was cancelled
+in at that moment (for `parked`, the parked row, `waiting` again if it was
+parked on a question). That happens when the watcher timed out or was cancelled
 (including by stopping the turn that armed it), when the thread was deleted,
 when the reply turn errored, was stopped, said nothing or was lost to a
 restart, or when there was never a watcher. Tasks from the Build tab,
