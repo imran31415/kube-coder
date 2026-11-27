@@ -45,6 +45,14 @@ describe('FeedItemView', () => {
     expect(container.querySelector('.feed-item-waiting')).toBeTruthy();
   });
 
+  it('labels a chat reporting a Build as "chat" (#929)', () => {
+    const { container } = render(
+      <FeedItemView item={item({ source: 'system:hypervisor', waiting: true })} />,
+    );
+    expect(container.textContent).toContain('activity · chat · kc');
+    expect(container.textContent).not.toContain('hypervisor');
+  });
+
   it('resolves a task: ref to /tasks/<id> and marks read', () => {
     render(<FeedItemView item={item({ links: [{ label: 'Open task', ref: 'task:t9' }] })} />);
     fireEvent.click(screen.getByText('Open task'));

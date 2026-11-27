@@ -38,6 +38,8 @@ describe('feedSourceLabel', () => {
   it('humanizes sources', () => {
     expect(feedSourceLabel('agent:th1')).toBe('CTO');
     expect(feedSourceLabel('system:task')).toBe('task');
+    // #929: a chat reporting a Build it dispatched. "Hypervisor" is internal.
+    expect(feedSourceLabel('system:hypervisor')).toBe('chat');
     expect(feedSourceLabel('cron:dep-scout')).toBe('cron · dep-scout');
     // The server sources a board review item as "board:<board_id>", which used
     // to render as the shouty raw ref in the Feed meta line.
