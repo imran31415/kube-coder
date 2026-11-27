@@ -159,7 +159,8 @@ class _Base(unittest.TestCase):
         p = mock.patch.object(CTM, 'count_live_tasks', lambda: 0)
         p.start()
         self.addCleanup(p.stop)
-        # MAX_TASKS is read from KC_MAX_TASKS at import. The clamp assertions
+        # MAX_TASKS is fixed at import, from KC_MAX_TASKS or the pod's memory
+        # limit (#928), so it differs by machine. The clamp assertions
         # below quote the number, so pin it: otherwise a developer who exports
         # KC_MAX_TASKS (or a dev harness that loads it from .env.local) fails
         # these tests for a reason that has nothing to do with the code.

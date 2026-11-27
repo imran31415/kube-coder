@@ -40,13 +40,18 @@ RUNNING = 'running'
 WAITING = 'waiting-for-input'
 TERMINAL = ('completed', 'error', 'killed', 'terminated')
 LIVE = (RUNNING, WAITING)
-ALL = LIVE + TERMINAL
+#: Idle session closed by the reaper, Build kept and resumable (#928).
+PARKED = 'parked'
+ALL = LIVE + TERMINAL + (PARKED,)
 
 #: Exactly the moves the lifecycle allows. Everything else in ALL x ALL refuses.
 ALLOWED = {
     (RUNNING, WAITING), (WAITING, RUNNING),
     *((RUNNING, t) for t in TERMINAL),
     *((WAITING, t) for t in TERMINAL),
+    # Only a waiting Build parks; a parked one is resumed or deleted, and
+    # nothing that ran while parked can have completed or failed.
+    (WAITING, PARKED), (PARKED, RUNNING), (PARKED, 'killed'),
 }
 
 
@@ -82,6 +87,7 @@ class Base(unittest.TestCase):
                 ('event', server.EventBroker, 'publish'),
                 ('feed_terminal', server.FeedManager, 'emit_task_terminal'),
                 ('feed_waiting', server.FeedManager, 'emit_task_waiting'),
+                ('feed_parked', server.FeedManager, 'emit_task_parked'),
                 ('snapshot', server.WorktreeManager, 'snapshot_async'),
                 ('hook', CTM, '_fire_completion_hook'),
                 ('ingest', CTM, 'ingest_usage')):
@@ -172,7 +178,8 @@ class TransitionTableTests(Base):
     def test_wire_values_are_exactly_these_strings(self):
         self.assertEqual(set(task_status.TERMINAL_STATUSES),
                          {'completed', 'error', 'killed', 'terminated'})
-        self.assertEqual(set(task_status.TRANSITIONS), {'running', 'waiting-for-input'})
+        self.assertEqual(set(task_status.TRANSITIONS),
+                         {'running', 'waiting-for-input', 'parked'})
 
 
 class TransitionEffectsTests(Base):

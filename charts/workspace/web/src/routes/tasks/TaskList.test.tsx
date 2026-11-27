@@ -195,6 +195,21 @@ describe('TaskList', () => {
     });
   });
 
+  it('shows a parked Build as parked, not as done or failed (#928)', () => {
+    tasks.value = [{
+      ...sample[0], task_id: 'parked-1', name: 'parked one', status: 'parked',
+      parked_at: Math.floor(Date.now() / 1000) - 60, parked_reason: 'idle',
+    }];
+    render(<TaskList />);
+    expect(screen.getByText('parked')).toBeInTheDocument();
+    expect(screen.queryByText('done')).toBeNull();
+    expect(screen.queryByText('error')).toBeNull();
+    // Neither a success nor a failure in the filter counts.
+    expect(taskCounts.value.completed).toBe(0);
+    expect(taskCounts.value.error).toBe(0);
+    expect(taskCounts.value.running).toBe(0);
+  });
+
   it('renders one row per task with status pills', () => {
     render(<TaskList />);
     expect(screen.getByText('aa')).toBeInTheDocument();

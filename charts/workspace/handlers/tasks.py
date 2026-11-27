@@ -479,7 +479,7 @@ class TaskRoutes:
             pass
         task = handlers.server.ClaudeTaskManager.create_terminal_task(workdir=workdir)
         if task.get('status') == 'rejected':
-            self.send_json({'error': task.get('error')}, 429)
+            self.send_json(handlers.server.ClaudeTaskManager.rejection_body(task), 429)
             return
         # Pre-arm the ttyd entry script so the next /oauth/terminal/ load
         # attaches to this session instead of dropping to a fresh bash.
@@ -509,7 +509,40 @@ class TaskRoutes:
         submit = data.get('submit', True) is not False
         task, err = handlers.server.ClaudeTaskManager.send_followup(self._claude_task_id, prompt, submit=submit)
         if task is None:
-            self.send_json({'error': err or 'Task not found'}, 404)
+            # A message to a parked Build resumes it (#928), and resuming is a
+            # new busy session, so it can meet the task ceiling.
+            at_cap = (err or '').startswith('concurrent task limit')
+            self.send_json({'error': err or 'Task not found'}, 429 if at_cap else 404)
+            return
+        self.send_json(task)
+
+    def handle_claude_resume_task(self):
+        """POST /api/claude/tasks/{id}/resume — reopen a parked Build (#928).
+
+        Body optional: `{"prompt": "..."}` is delivered once it is back up.
+        """
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        if self._readonly_block():
+            return
+        prompt = None
+        try:
+            data = self.read_json_body()
+            if isinstance(data, dict) and isinstance(data.get('prompt'), str):
+                prompt = data['prompt'].strip() or None
+        except (json.JSONDecodeError, ValueError):
+            pass
+        mgr = handlers.server.ClaudeTaskManager
+        task, err = mgr.resume_task(self._claude_task_id, prompt=prompt)
+        if err == 'at_capacity':
+            self.send_json(mgr.rejection_body(task), 429)
+            return
+        if err:
+            code = {'Task not found': 404, 'not_parked': 409,
+                    'busy': 409, 'not_resumable': 422}.get(err, 500)
+            self.send_json({'error': mgr.resume_error_text(err), 'code': err
+                            if code != 500 else 'launch_failed'}, code)
             return
         self.send_json(task)
 
@@ -817,6 +850,8 @@ ROUTES.add('POST', '/api/claude/auth/token/regenerate',
 # --- per-task actions ----------------------------------------------------
 ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/message$'),
            'handle_claude_followup', sets='_claude_task_id')
+ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/resume$'),
+           'handle_claude_resume_task', sets='_claude_task_id')
 ROUTES.add('POST', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/rename$'),
            'handle_claude_rename_task', sets='_claude_task_id')
 ROUTES.add('POST',

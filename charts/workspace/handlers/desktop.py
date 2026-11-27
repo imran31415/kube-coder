@@ -134,7 +134,7 @@ class DesktopRoutes:
                 assistant=action.get('assistant'),
             )
             if task.get('status') == 'rejected':
-                self.send_json({'error': task.get('error')}, 429)
+                self.send_json(handlers.server.ClaudeTaskManager.rejection_body(task), 429)
                 return
             if task.get('status') == 'error':
                 self.send_json({'error': task.get('error') or 'task spawn failed'}, 500)

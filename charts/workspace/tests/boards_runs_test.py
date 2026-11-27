@@ -112,7 +112,7 @@ class ClampTests(unittest.TestCase):
         n, reason = runs.clamp_concurrency(20, live_tasks=8, max_tasks=12)
         self.assertEqual(n, 4)
         self.assertIn('KC_MAX_TASKS=12', reason)
-        self.assertIn('8 already live', reason)
+        self.assertIn('8 already busy', reason)
 
     def test_the_board_ceiling_clamps_independently_of_the_pod(self):
         n, reason = runs.clamp_concurrency(50, live_tasks=0, max_tasks=999,

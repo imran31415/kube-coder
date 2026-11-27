@@ -17,6 +17,12 @@ export const ACTIVE_STATUSES = ['running', 'waiting'] as const;
 /** Over for good: these never change again. */
 export const FINISHED_STATUSES = ['done', 'error', 'killed', 'terminated'] as const;
 
+/**
+ * Session closed after sitting idle, Build kept (#928). Sending it a message
+ * resumes it, so it is neither active nor finished.
+ */
+export const PARKED_STATUSES = ['parked'] as const;
+
 /** Older spellings of `waiting-for-input` the server may still emit. */
 const LEGACY_WAITING = ['waiting_for_input', 'waiting_input'];
 

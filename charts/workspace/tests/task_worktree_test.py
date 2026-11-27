@@ -40,6 +40,9 @@ BASE_META_KEYS = {
     # The pod boot that launched the Build (#792) — how a `terminated` task is
     # told apart from a `completed` one after a restart.
     'boot_id',
+    # Whether it launched with skip-permissions, so a resume of a parked
+    # Build relaunches it the same way (#928).
+    'auto_approve',
 }
 WT_ENV = ('KC_WT', 'KC_WT_BRANCH', 'PORT', 'KC_PORT')
 

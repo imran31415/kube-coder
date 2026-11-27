@@ -10,6 +10,7 @@ import {
   createTask as apiCreateTask,
   killTask as apiKillTask,
   renameTask as apiRenameTask,
+  resumeTask as apiResumeTask,
   sendMessage as apiSendMessage,
   needsUser,
   type TaskSummary,
@@ -162,6 +163,20 @@ export async function killTask(id: string): Promise<void> {
     if (selectedTaskId.value === id) await loadSelectedTask(id);
   } catch (err) {
     pushToast(err instanceof Error ? err.message : 'Kill failed', { kind: 'danger' });
+  }
+}
+
+/** Reopen a parked Build's session (#928). True when it is running again. */
+export async function resumeTask(id: string): Promise<boolean> {
+  try {
+    await apiResumeTask(id);
+    pushToast('Session resumed', { kind: 'success' });
+    await refreshTasks();
+    if (selectedTaskId.value === id) await loadSelectedTask(id);
+    return true;
+  } catch (err) {
+    pushToast(err instanceof Error ? err.message : 'Resume failed', { kind: 'danger' });
+    return false;
   }
 }
 

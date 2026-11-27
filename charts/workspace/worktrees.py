@@ -1294,6 +1294,38 @@ def head_unpushed(root, head_sha):
     return _count_unpushed(root, head_sha, unknown=1) if head_sha else 1
 
 
+
+def unsaved_work(path):
+    """Why stopping the agent that works in `path` could strand its work, or
+    '' when there is nothing git could lose (#928).
+
+    'dirty' — uncommitted or untracked changes; 'unpushed' — the checked-out
+    commit, or one behind it, is on no remote (a repository with no remotes
+    counts, as in the sweep); 'unknown' — git could not say. A folder outside
+    any repository, or one that no longer exists, has nothing to lose. Fails
+    closed: every answer git could not give is a reason to keep the agent.
+    """
+    if not path or not os.path.isdir(path):
+        return ''
+    try:
+        top = _git(['rev-parse', '--show-toplevel'], path, check=False)
+        if top.returncode != 0:
+            return '' if 'not a git repository' in (top.stderr or '') else 'unknown'
+        root = (top.stdout or '').strip() or path
+        st = _git(['status', '--porcelain', '--untracked-files=normal'], path,
+                  check=False)
+        if st.returncode != 0:
+            return 'unknown'
+        if (st.stdout or '').strip():
+            return 'dirty'
+        head = _git(['rev-parse', '--verify', '-q', 'HEAD'], path, check=False)
+        sha = (head.stdout or '').strip() if head.returncode == 0 else ''
+        if sha and head_unpushed(root, sha) > 0:
+            return 'unpushed'
+    except WorktreeError:
+        return 'unknown'
+    return ''
+
 # Ignored files that exist nowhere else and cannot be regenerated. Matched on
 # the file's own name; the `.example`-style variants hold no secrets.
 _ENV_STYLE_NAME = re.compile(
