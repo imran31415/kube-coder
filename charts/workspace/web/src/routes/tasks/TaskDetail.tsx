@@ -17,6 +17,7 @@ import {
   selectedTaskLoading,
   killTask,
   renameTask,
+  resumeTask,
   pasteToSession,
 } from '../../store/tasks';
 import { pushToast } from '../../store/ui';
@@ -31,7 +32,8 @@ import { EmptyState } from '../../components/primitives/EmptyState';
 import { ConfirmDialog, PromptDialog } from '../../components/ConfirmDialog';
 import { MutatorOnly } from '../../components/MutatorOnly';
 import type { TaskStatus } from '../../api/tasks';
-import { isAliveStatus } from '../../util/taskStatus';
+import { isAliveStatus, isParkedStatus } from '../../util/taskStatus';
+import { Button } from '../../components/primitives/Button';
 
 // STATUS_TONE / STATUS_PILL_LABEL / STATUS_HELP previously drove the
 // task header's status pill. The header was retired when the bars were
@@ -173,6 +175,13 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
     if (t) await killTask(t.task_id);
     setBusy(false);
   }
+  async function onResume() {
+    if (!t) return;
+    setBusy(true);
+    const ok = await resumeTask(t.task_id);
+    setBusy(false);
+    if (ok) setTab('terminal');
+  }
   function onRename() {
     setRenameOpen(true);
   }
@@ -274,6 +283,13 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
       title: 'Wiped by a pod restart',
       body: 'The workspace pod restarted while this task was running, which killed its tmux session before it finished — so this is NOT a result. Anything it committed and pushed survives on its branch; uncommitted work in its worktree may still be there under Changes. Re-run it, or start a short follow-up task to finish the work off.',
     },
+    parked: {
+      tone: 'neutral',
+      title: 'Parked — session closed while idle',
+      body: t.parked_reason === 'question'
+        ? 'It sat waiting on your answer for a long time, so its session was closed to free memory. Nothing is lost: the transcript, worktree and history are kept. Resume reopens the same Claude session here, with the question still in it.'
+        : 'It finished its turn and sat idle, so its session was closed to free memory. Nothing is lost: the transcript, worktree and history are kept. Resume reopens the same Claude session here.',
+    },
     unknown: {
       tone: 'neutral',
       title: 'Status unknown',
@@ -307,6 +323,15 @@ export function TaskDetail({ onClose }: { onClose?: () => void }) {
           <div class={`td-banner td-banner-${banner.tone}`} role="status">
             <strong>{banner.title}</strong>
             <span>{banner.body}</span>
+            {isParkedStatus(t.status) && (
+              <MutatorOnly>
+                <div class="td-banner-actions">
+                  <Button variant="primary" size="sm" disabled={busy} onClick={() => void onResume()}>
+                    Resume session
+                  </Button>
+                </div>
+              </MutatorOnly>
+            )}
           </div>
         )}
         {tab === 'terminal' && <TerminalPane taskId={t.task_id} />}

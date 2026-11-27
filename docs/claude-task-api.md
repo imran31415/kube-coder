@@ -247,7 +247,7 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 |---|---|
 | `task_id` | Unique identifier for the task (`{unix_timestamp}-{random_hex}`). |
 | `session_id` | UUID for the session. |
-| `status` | Task status: `running`, `waiting-for-input`, `completed`, `error`, `killed`, or `terminated`. See [Statuses](#statuses). |
+| `status` | Task status: `running`, `waiting-for-input`, `parked`, `completed`, `error`, `killed`, or `terminated`. See [Statuses](#statuses). |
 | `tmux_session` | Name of the tmux session running the task. Attach to this to interact with Claude. |
 
 ---
@@ -435,6 +435,7 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID/message \
 **Behavior:**
 
 - The follow-up text is typed into the running interactive Claude session via tmux.
+- A `parked` task (its idle session was closed, see [Idle sessions](#idle-sessions-idle-session-reaper)) is **resumed** first, and the text is delivered once the session is back up. This counts as a new busy task, so it can answer `429` when the cap is full. `"submit": false` (paste only) is refused for a parked task.
 - If the tmux session has ended, an error is returned.
 
 **Response (200 OK):**
@@ -484,6 +485,35 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID/prepare-term
   "session": "claude-1707000000-a1b2c3d4"
 }
 ```
+
+---
+
+### Resume a Parked Task
+
+**`POST /api/claude/tasks/{task_id}/resume`**
+
+Reopens the session of a `parked` task (#928). The task keeps its id, folder,
+worktree, `tmux_session` name and environment; Claude Code is relaunched with
+`--resume` on the session it was parked with, so its whole conversation is
+still there. The body is optional: `{"prompt": "..."}` is delivered once the
+session is up and recorded in `followups`.
+
+```bash
+curl -X POST https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID/resume \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns the task, now `running`, with a `resumes` entry recording when it was
+parked and why. The session is started before the status changes, so a failed
+launch leaves the task `parked` and still resumable.
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `404` | | No such task. |
+| `409` | `not_parked`, `busy` | The task is not parked, or a resume of it is already in flight. |
+| `422` | `not_resumable` | Not a Claude Code task with a recorded session. |
+| `429` | `at_capacity` | The busy-task cap is full (see [Concurrency](#concurrency)). |
+| `500` | `launch_failed` | tmux refused the session. |
 
 ---
 
@@ -568,7 +598,7 @@ All endpoints return errors as JSON with an appropriate HTTP status code:
 | `401` | Unauthorized (missing or invalid bearer token, missing OAuth2 headers). |
 | `404` | Task not found. |
 | `409` | Conflict (an isolated worktree that is busy, running, or has uncommitted changes). |
-| `429` | At a limit (`KC_MAX_TASKS`, `KC_MAX_WORKTREES`). |
+| `429` | At a limit (`KC_MAX_TASKS`, `KC_MAX_WORKTREES`). A `KC_MAX_TASKS` refusal has `code: "at_capacity"` and reports `busy`, `idle` and `max_tasks` separately. |
 | `500` | Internal server error. |
 
 ## Dashboard
@@ -787,6 +817,11 @@ POST /tasks  -->  status: "running"
   DELETE /tasks/{id}  -+---> explicitly killed -->  status: "killed"
                        |
   pod restarts        -+---> session wiped mid-run -> status: "terminated"
+
+  waiting-for-input past its idle TTL
+                       +---> session closed, task kept -> status: "parked"
+                                  |
+  POST /message or /resume  <-----+  (same session, relaunched with --resume)
 ```
 
 Status reconciliation happens automatically: when any API call queries a task whose tmux session has ended, the server settles its status.
@@ -800,6 +835,7 @@ Status reconciliation happens automatically: when any API call queries a task wh
 | `completed` | The CLI exited. This is the only "the work is done" status. |
 | `error` | The CLI exited non-zero (sub-agent tasks, which record an exit code), **or** the prompt never reached the agent and the [undelivered-prompt reaper](#undelivered-prompts-prompt-reaper) gave up on it (`error` carries the reason, `prompt_undelivered_reaped_at` is set). |
 | `killed` | `DELETE /tasks/{id}` — somebody stopped it on purpose. |
+| `parked` | The [idle-session reaper](#idle-sessions-idle-session-reaper) closed its session after it sat `waiting-for-input` past its TTL. **Neither a result nor a failure**: `task.json` and the transcript are kept, and a message or `POST /resume` reopens it. Also sets `parked_at`, `parked_reason` (the `waiting_reason` it was parked on) and `parked_idle_s`. Not live (it holds no slot and has no session to attach to) and not terminal (it fires no completion hook, and its worktree is kept). |
 | `terminated` | **The pod restarted and wiped the tmux session before the task finished** (#792). Also sets `terminated_at` and `termination_reason: "pod_restart"`, and the completion hook carries both. |
 
 `terminated` exists because a dead tmux session is ambiguous: the CLI may have
@@ -877,6 +913,49 @@ follow-up (someone is driving it).
 | `KC_PROMPT_REAP_RETRIES` | `3` | Re-delivery attempts before failing the task. |
 | `KC_PROMPT_REAP_RETRY_GAP_S` | `60` | Minimum seconds between attempts. |
 
+### Idle sessions (idle-session reaper)
+
+A task that finished its turn parks on `waiting-for-input` with its REPL — about
+450 MB — still open, often for hours (#928). It no longer counts against
+`KC_MAX_TASKS`, but it still holds memory. A background reaper closes such a
+session once it has been idle past its TTL and marks the task `parked`:
+
+| `waiting_reason` | TTL | Variable |
+|---|---|---|
+| `idle` | 30 min | `KC_IDLE_SESSION_TTL_S` (default `1800`) |
+| `question` | 6 h | `KC_IDLE_QUESTION_TTL_S` (default `21600`) |
+| `trust_dialog`, `undelivered` | never | Settled by the [prompt reaper](#undelivered-prompts-prompt-reaper). |
+
+`0` turns that half off; both `0` turns the reaper off. A question is closed too,
+only later: it survives in the transcript and is still there on resume. A
+parked question stays in the Feed as waiting on you.
+
+"Idle since" is the latest of `last_activity_at` (when the screen last changed),
+the last follow-up's `sent_at` and `resumed_at`. The decision comes from
+`task.json` only, never from the screen. Two further checks can only keep a
+session open, never close one:
+
+- **Unsaved work.** If the task's folder is in a git repository with
+  uncommitted or untracked changes, or a checked-out commit that no remote has
+  (a repository with no remote counts), it is kept. So is any folder git cannot
+  answer for.
+- **Someone attached.** A session with a tmux client attached (the dashboard's
+  Session tab, an SSH `tmux attach`) is kept.
+
+Never parked: non-Claude assistants and Claude tasks without a recorded
+session id (closing them would lose their context for good), terminal tasks,
+and board-bound Builds (a board run's worker context cannot be re-issued).
+
+Parking writes the status before it kills the session, publishes a
+`task.status` event, posts a Feed item and snapshots the worktree. Resuming
+relaunches the same session in place; see [Resume a Parked Task](#resume-a-parked-task).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KC_IDLE_SESSION_TTL_S` | `1800` | Idle seconds before a `waiting_reason: idle` session is closed. `0` = never. |
+| `KC_IDLE_QUESTION_TTL_S` | `21600` | The same for `waiting_reason: question`. `0` = never. |
+| `KC_IDLE_REAPER_INTERVAL_S` | `60` | Seconds between passes (min 10). |
+
 ### Surviving pod restarts
 
 Pods restart — resource pressure, node recycling, maintenance. A task is one
@@ -915,7 +994,27 @@ success.
 
 ### Concurrency
 
-Multiple tasks can run simultaneously -- each runs in its own tmux session. There is no built-in concurrency limit at the API level. However, all tasks within a workspace share the same Claude authentication and pod resources (CPU, memory), so running too many concurrent tasks may lead to rate limiting or resource exhaustion.
+Multiple tasks can run simultaneously; each runs in its own tmux session. They
+share the pod's CPU, memory and Claude authentication, so `POST /tasks` (and a
+resume) is refused with `429` once `KC_MAX_TASKS` tasks are **busy** (#98).
+
+Only busy tasks count (#928): a session whose `task.json` status is
+`waiting-for-input` (or already terminal) holds no slot, so finished work left
+open never blocks a new task. A session with no readable `task.json` counts as
+busy. Idle sessions are bounded by the [idle-session
+reaper](#idle-sessions-idle-session-reaper) instead.
+
+```json
+{"error": "concurrent task limit reached (12/12 busy, 5 idle not counted); wait for a task to finish or raise KC_MAX_TASKS",
+ "code": "at_capacity", "busy": 12, "idle": 5, "max_tasks": 12}
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KC_MAX_TASKS` | `12` | Busy tasks allowed at once. |
+
+Sub-agents spawned through the orchestrator MCP have their own cap,
+`KC_MAX_SUBAGENTS`.
 
 ## Troubleshooting
 

@@ -21,9 +21,14 @@ COMPLETED = 'completed'
 ERROR = 'error'
 KILLED = 'killed'
 TERMINATED = 'terminated'
+#: The idle-session reaper closed the Build's session after it sat waiting
+#: for input past its TTL (#928). The transcript and task.json are kept and
+#: the Build can be resumed, so this is neither a result nor a failure.
+PARKED = 'parked'
 
-#: Every status a Build can hold. Ordered: this is the metrics label order.
-ALL_STATUSES = (RUNNING, WAITING, COMPLETED, ERROR, KILLED, TERMINATED)
+#: Every status a Build can hold. Ordered: this is the metrics label order
+#: (new statuses go on the end, so existing series keep their position).
+ALL_STATUSES = (RUNNING, WAITING, COMPLETED, ERROR, KILLED, TERMINATED, PARKED)
 
 #: The Build's session still exists and it may yet do more work.
 LIVE_STATUSES = frozenset((RUNNING, WAITING))
@@ -35,17 +40,25 @@ TERMINAL_STATUSES = frozenset((COMPLETED, ERROR, KILLED, TERMINATED))
 #: pod restart wiped never reached the end of its work.
 FAILED_STATUSES = frozenset((ERROR, KILLED, TERMINATED))
 
+#: No session, but not over: resuming starts the session again (#928). Not
+#: live (nothing to attach to or count against the cap) and not terminal (its
+#: worktree is kept, and it can still move).
+RESUMABLE_STATUSES = frozenset((PARKED,))
+
 #: The Build has stopped working and nothing more happens without someone
 #: acting on it. Wider than TERMINAL_STATUSES on purpose: an interactive Build
 #: keeps its REPL alive after finishing, so parking on `waiting-for-input` IS
 #: its done signal, and whoever is waiting on it would otherwise wait forever.
-QUIESCENT_STATUSES = TERMINAL_STATUSES | {WAITING}
+QUIESCENT_STATUSES = TERMINAL_STATUSES | {WAITING, PARKED}
 
 #: status -> statuses it may become. A terminal status has no entry, and
 #: neither does a same-status "move", so neither can ever transition.
 TRANSITIONS = {
     RUNNING: TERMINAL_STATUSES | {WAITING},
-    WAITING: TERMINAL_STATUSES | {RUNNING},
+    WAITING: TERMINAL_STATUSES | {RUNNING, PARKED},
+    # Resumed, or deleted. Never `completed`/`error`: nothing ran while
+    # parked, so nothing can have finished or failed.
+    PARKED: frozenset((RUNNING, KILLED)),
 }
 
 #: status -> the state a Mission Control card shows.
@@ -53,6 +66,8 @@ MISSION_STATE = {
     RUNNING: 'running',
     WAITING: 'waiting',
     **{status: 'done' for status in TERMINAL_STATUSES},
+    # Nothing is running and nothing will until someone resumes it.
+    PARKED: 'done',
 }
 
 

@@ -97,6 +97,9 @@ export function coerceTaskSummary(raw: unknown): TaskSummary {
     // Absent unless waiting; an unknown value is dropped, so it reads as
     // "needs you" rather than as idle.
     ...(isWaitingReason(r.waiting_reason) ? { waiting_reason: r.waiting_reason } : {}),
+    // Only parked Builds carry these (#928).
+    ...(typeof r.parked_at === 'number' ? { parked_at: r.parked_at } : {}),
+    ...(isWaitingReason(r.parked_reason) ? { parked_reason: r.parked_reason } : {}),
     // Only isolated Builds carry one (#701); absent means "not isolated".
     ...(r.worktree && typeof r.worktree === 'object'
       ? { worktree: coerceWorktreeBrief(r.worktree) }

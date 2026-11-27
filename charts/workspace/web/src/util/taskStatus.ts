@@ -14,6 +14,17 @@ export const FINISHED_STATUSES = ['completed', 'error', 'killed', 'terminated'] 
 /** Finished without a result to trust, including a Build a pod restart wiped. */
 export const FAILED_STATUSES = ['error', 'killed', 'terminated'] as const satisfies readonly TaskStatus[];
 
+/**
+ * Its session was closed after sitting idle (#928), but the Build is kept and
+ * can be resumed: sending it a message reopens the session. Neither alive nor
+ * finished.
+ */
+export const PARKED_STATUSES = ['parked'] as const satisfies readonly TaskStatus[];
+
+export function isParkedStatus(s: string | undefined): boolean {
+  return (PARKED_STATUSES as readonly (string | undefined)[]).includes(s);
+}
+
 export function isAliveStatus(s: string | undefined): boolean {
   return (ALIVE_STATUSES as readonly (string | undefined)[]).includes(s);
 }

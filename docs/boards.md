@@ -427,15 +427,19 @@ not live and marks that run `interrupted` rather than leaving it at `running`.
 At startup no worker of a previous process can still be alive, so there is
 nothing to guess.
 
-Concurrency is clamped to `min(requested, KC_MAX_TASKS − live, board ceiling)`
-and the reason is **persisted and shown**. `create_task` returns `rejected`
+Concurrency is clamped to `min(requested, KC_MAX_TASKS − busy, board ceiling)`
+and the reason is **persisted and shown**. `busy` counts only Builds that are
+working: one parked on `waiting-for-input` holds no slot (#928), so finished
+sessions left open do not shrink a run's headroom. `create_task` returns `rejected`
 without creating anything at capacity, so an unclamped run does not fail loudly
 — it quietly produces rows that look like items nobody worked.
 
 Each item is a Build stamped `board:<board>:run:<run>:item:<item>`, and the run
 polls that source rather than arming a watcher per item (`WatcherManager` caps
 at 8 per thread). `waiting-for-input` counts as terminal, because an interactive
-Build keeps its REPL alive after finishing the work.
+Build keeps its REPL alive after finishing the work. Board-bound Builds are
+never closed by the idle-session reaper: their worker context is issued at
+launch and could not be re-issued on resume.
 
 The run's item table on `/board` goes from each row to what happens next
 (#704):

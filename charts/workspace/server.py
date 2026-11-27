@@ -3282,6 +3282,62 @@ class ClaudeTaskManager:
         return meta
 
     @staticmethod
+    def _session_env_args(assistant, effort, source_workdir, worktree=None,
+                          board_id='', board_item_id='', board_run_context=None):
+        """The `tmux new-session -e K=V` arguments a Build's session starts
+        with, apart from KC_TASK_ID. Shared by a launch and by resuming a
+        parked Build (#928), so a resumed session gets the same environment
+        its first launch did.
+        """
+        # Overlay any user-set provider keys onto the new session's env, so a key
+        # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
+        # over the pod env; when unset the pod/helm default carries through.
+        provider_env = []
+        # containerEnv/remoteEnv from an APPLIED devcontainer.json (#594), so a
+        # repo's NODE_ENV reaches the agent that works in it. Precedence is
+        # pod < devcontainer < provider keys < effort, enforced here by
+        # DROPPING any devcontainer key that a later layer also sets rather
+        # than by relying on tmux `-e` ordering. devcontainer.py already refuses
+        # ANTHROPIC_*/GH_*/PATH/LD_* outright; this is the second line, so that
+        # even a denylist gap cannot let a repo win over a real provider key.
+        _dc_env = {}
+        if _DEVCONTAINER_AVAILABLE:
+            _dc_env = DevcontainerManager.env_for_workdir(source_workdir)
+        _later_keys = set(ProviderKeysManager.env_overlay().keys()) | \
+            set(ClaudeTaskManager.effort_env(assistant, effort).keys())
+        # A repo's devcontainer `PORT` must not override the leased one — two
+        # isolated Builds of the same repo would both bind it again.
+        _wt_env = WorktreeManager.session_env(worktree) if worktree else {}
+        _later_keys |= set(_wt_env)
+        for k, v in _dc_env.items():
+            if k in _later_keys:
+                continue
+            provider_env += ['-e', f'{k}={v}']
+        for k, v in ProviderKeysManager.env_overlay().items():
+            provider_env += ['-e', f'{k}={v}']
+        # Reasoning effort for the CLIs that read it from the environment (#362) —
+        # Claude Code's CLAUDE_CODE_EFFORT_LEVEL and kc-harness's KC_EFFORT.
+        # Empty for assistants that take a flag (codex, via assistant_command)
+        # or have no knob at all, so nothing changes for them.
+        for k, v in ClaudeTaskManager.effort_env(assistant, effort).items():
+            provider_env += ['-e', f'{k}={v}']
+        # Board binding (#588 Phase 4) — explicit plumbing, exactly as
+        # KC_TASK_ID below. Only ever the ID: the credential is resolved
+        # server-side at request time and never travels on an agent's env.
+        if board_id:
+            provider_env += ['-e', f'KC_BOARD_ID={board_id}']
+            if board_run_context:
+                context = approval_auth.issue_worker_context(board_run_context, board_id, str(board_item_id))
+                provider_env += ['-e', f'KC_BOARD_WORKER_CONTEXT={context}']
+            if board_item_id:
+                provider_env += ['-e', f'KC_BOARD_ITEM_ID={board_item_id}']
+        # Isolation (#701): where the worktree is, its branch, and the port
+        # this Build's dev server should bind.
+        for k, v in _wt_env.items():
+            provider_env += ['-e', f'{k}={v}']
+        return provider_env
+
+    @staticmethod
     def _spawn_task(task_id, *args, **kwargs):
         """Launch a Build with the reconciler held off until tmux has answered.
 
@@ -3410,6 +3466,10 @@ class ClaudeTaskManager:
             'boot_id': ClaudeTaskManager.boot_id(),
             'tmux_session': session_name,
             'assistant': assistant,
+            # Whether the CLI was launched with its skip-permissions flag.
+            # Recorded so resuming a parked Build (#928) relaunches it the
+            # same way: a Hypervisor-driven session cannot answer a menu.
+            'auto_approve': bool(auto_approve),
             # Effective model / reasoning effort for this build (#483, #362).
             # '' when the assistant offers no such choice.
             'model': model or '',
@@ -3519,52 +3579,10 @@ class ClaudeTaskManager:
             assistant, auto_approve=auto_approve, model=model, effort=effort,
             session_id=session_id, resume_session_id=resume_session_id)
         shell_cmd = f'cd {_shell_quote(workdir)} && {cli_cmd}'
-        # Overlay any user-set provider keys onto the new session's env, so a key
-        # set in Settings (no redeploy) reaches the CLI subprocess. Store wins
-        # over the pod env; when unset the pod/helm default carries through.
-        provider_env = []
-        # containerEnv/remoteEnv from an APPLIED devcontainer.json (#594), so a
-        # repo's NODE_ENV reaches the agent that works in it. Precedence is
-        # pod < devcontainer < provider keys < effort, enforced here by
-        # DROPPING any devcontainer key that a later layer also sets rather
-        # than by relying on tmux `-e` ordering. devcontainer.py already refuses
-        # ANTHROPIC_*/GH_*/PATH/LD_* outright; this is the second line, so that
-        # even a denylist gap cannot let a repo win over a real provider key.
-        _dc_env = {}
-        if _DEVCONTAINER_AVAILABLE:
-            _dc_env = DevcontainerManager.env_for_workdir(source_workdir)
-        _later_keys = set(ProviderKeysManager.env_overlay().keys()) | \
-            set(ClaudeTaskManager.effort_env(assistant, effort).keys())
-        # A repo's devcontainer `PORT` must not override the leased one — two
-        # isolated Builds of the same repo would both bind it again.
-        _wt_env = WorktreeManager.session_env(worktree) if worktree else {}
-        _later_keys |= set(_wt_env)
-        for k, v in _dc_env.items():
-            if k in _later_keys:
-                continue
-            provider_env += ['-e', f'{k}={v}']
-        for k, v in ProviderKeysManager.env_overlay().items():
-            provider_env += ['-e', f'{k}={v}']
-        # Reasoning effort for the CLIs that read it from the environment (#362) —
-        # Claude Code's CLAUDE_CODE_EFFORT_LEVEL and kc-harness's KC_EFFORT.
-        # Empty for assistants that take a flag (codex, via assistant_command)
-        # or have no knob at all, so nothing changes for them.
-        for k, v in ClaudeTaskManager.effort_env(assistant, effort).items():
-            provider_env += ['-e', f'{k}={v}']
-        # Board binding (#588 Phase 4) — explicit plumbing, exactly as
-        # KC_TASK_ID below. Only ever the ID: the credential is resolved
-        # server-side at request time and never travels on an agent's env.
-        if board_id:
-            provider_env += ['-e', f'KC_BOARD_ID={board_id}']
-            if board_run_context:
-                context = approval_auth.issue_worker_context(board_run_context, board_id, str(board_item_id))
-                provider_env += ['-e', f'KC_BOARD_WORKER_CONTEXT={context}']
-            if board_item_id:
-                provider_env += ['-e', f'KC_BOARD_ITEM_ID={board_item_id}']
-        # Isolation (#701): where the worktree is, its branch, and the port
-        # this Build's dev server should bind.
-        for k, v in _wt_env.items():
-            provider_env += ['-e', f'{k}={v}']
+        provider_env = ClaudeTaskManager._session_env_args(
+            assistant, effort, source_workdir, worktree,
+            board_id=board_id, board_item_id=board_item_id,
+            board_run_context=board_run_context)
         tmux_cmd = [
             'tmux', 'new-session', '-d',
             '-s', session_name,
@@ -3801,6 +3819,10 @@ class ClaudeTaskManager:
                 # Waiting Builds only, so every other row is unchanged.
                 if meta.get('waiting_reason'):
                     row['waiting_reason'] = meta['waiting_reason']
+                # Parked Builds only (#928): when, and on which reason.
+                if meta.get('status') == task_status.PARKED:
+                    row['parked_at'] = meta.get('parked_at')
+                    row['parked_reason'] = meta.get('parked_reason')
                 # Isolated Builds only (#701), so every other row is unchanged.
                 # Read from the stored snapshot — a list never runs git.
                 if meta.get('worktree'):
@@ -4036,6 +4058,320 @@ class ClaudeTaskManager:
             out['retried'] += 1
         return out
 
+    # ── Idle-session reaper (#928) ───────────────────────────────────────
+    # A Build that finished its turn parks on `waiting-for-input` with its
+    # REPL (about 450 MB) still open, for hours. The reaper closes such a
+    # session after a TTL and marks the Build `parked`: the tmux session goes,
+    # the transcript and task.json stay, and sending it a message (or POST
+    # /resume) reopens it with `claude --resume` in the same folder.
+    #
+    # As with #813, every decision rests on what task.json records -- status,
+    # waiting_reason and the activity timestamps -- never on screen text. The
+    # two checks that are not task.json are safety gates only: git (never
+    # close an agent whose folder holds uncommitted or unpushed work) and
+    # tmux's own attached-client count (never close a session someone is
+    # watching).
+
+    #: Seconds a Build may sit `waiting-for-input` with reason `idle` before
+    #: its session is closed. 0 turns this half of the reaper off.
+    IDLE_SESSION_TTL = _env_number.__func__('KC_IDLE_SESSION_TTL_S', 1800)
+
+    #: The same for reason `question` -- a Build blocked on the user. Longer,
+    #: because someone is expected to answer; still closed eventually, since
+    #: the question survives in the transcript. 0 turns this half off.
+    IDLE_QUESTION_TTL = _env_number.__func__('KC_IDLE_QUESTION_TTL_S', 21600)
+
+    _resuming = set()
+    _resuming_lock = threading.Lock()
+
+    @staticmethod
+    def resume_session_id(meta):
+        """The Claude session a parked Build would reopen, or '' when it
+        cannot be resumed. Only Claude Code Builds launched with a pinned
+        session id (or themselves resumed from one) qualify: every other CLI
+        loses its context when its process goes, so closing it would be
+        closing it for good."""
+        if meta.get('assistant') != 'claude' or meta.get('kind') == 'terminal':
+            return ''
+        for key in ('claude_session_id', 'resumed_session_id'):
+            sid = meta.get(key) or ''
+            if _valid_uuid(sid):
+                return sid
+        return ''
+
+    @staticmethod
+    def _park_ttl(meta):
+        """The idle TTL for this Build's waiting reason; 0 = never park.
+        `trust_dialog` and `undelivered` are the #813 reaper's to settle."""
+        reason = meta.get('waiting_reason')
+        if reason == 'idle':
+            return ClaudeTaskManager.IDLE_SESSION_TTL
+        if reason == 'question':
+            return ClaudeTaskManager.IDLE_QUESTION_TTL
+        return 0
+
+    @staticmethod
+    def _idle_since(meta):
+        """The last moment task.json saw this Build do or receive anything."""
+        moments = [meta.get('last_activity_at'), meta.get('created_at'),
+                   meta.get('resumed_at')]
+        moments += [f.get('sent_at') for f in (meta.get('followups') or [])
+                    if isinstance(f, dict)]
+        return max([float(t) for t in moments
+                    if isinstance(t, (int, float))] or [0.0])
+
+    @staticmethod
+    def _park_candidate(meta, now):
+        """True when task.json says this Build has idled past its TTL and could
+        be resumed if closed. Board-bound Builds are left alone: a board run's
+        worker context is issued at launch and cannot be re-issued on resume."""
+        cls = ClaudeTaskManager
+        if meta.get('status') != task_status.WAITING:
+            return False
+        if meta.get('board_id'):
+            return False
+        ttl = cls._park_ttl(meta)
+        if ttl <= 0:
+            return False
+        if not cls.resume_session_id(meta):
+            return False
+        return now - cls._idle_since(meta) >= ttl
+
+    @staticmethod
+    def _session_attached(session_name):
+        """Whether a client is attached to the session. True when tmux cannot
+        say: an answer we could not get must not read as "nobody watching"."""
+        try:
+            r = subprocess.run(
+                ['tmux', 'display-message', '-p', '-t', session_name,
+                 '#{session_attached}'],
+                capture_output=True, text=True)
+        except OSError:
+            return True
+        if r.returncode != 0:
+            return True
+        try:
+            return int((r.stdout or '').strip() or '0') > 0
+        except ValueError:
+            return True
+
+    @staticmethod
+    def _park(task_id, task_dir, meta, now):
+        """Close one idle Build's session and mark it `parked`. False when the
+        Build moved on while the reaper was deciding."""
+        cls = ClaudeTaskManager
+        reason = meta.get('waiting_reason')
+        seen = (meta.get('last_activity_at'), len(meta.get('followups') or []))
+
+        def unchanged(m):
+            return (m.get('status') == task_status.WAITING
+                    and m.get('waiting_reason') == reason
+                    and (m.get('last_activity_at'),
+                         len(m.get('followups') or [])) == seen)
+
+        _, moved = cls._transition(
+            task_dir, task_status.PARKED, guard=unchanged, at=now,
+            fields={'parked_at': now, 'parked_reason': reason,
+                    'parked_idle_s': round(now - cls._idle_since(meta))},
+            end_session=True)
+        if moved:
+            legacy_log('workspace', f'[idle-reaper] {task_id}: closed the session after '
+                  f'{round(now - cls._idle_since(meta))}s waiting ({reason}); '
+                  'parked, resumable (#928)', file=sys.stderr)
+        return moved
+
+    @staticmethod
+    def park_idle(now=None):
+        """One idle-reaper pass. Returns `{'parked': n, 'kept': {reason: n}}`.
+
+        `kept` counts candidates that were past their TTL but held back --
+        attached, unsaved work in their folder -- so a status endpoint can
+        say why a long-idle session is still open.
+        """
+        cls = ClaudeTaskManager
+        cls.ensure_tasks_dir()
+        now = time.time() if now is None else now
+        out = {'parked': 0, 'kept': {}}
+
+        def keep(why):
+            out['kept'][why] = out['kept'].get(why, 0) + 1
+
+        if cls.IDLE_SESSION_TTL <= 0 and cls.IDLE_QUESTION_TTL <= 0:
+            return out
+        try:
+            entries = sorted(os.listdir(cls.TASKS_DIR), reverse=True)
+        except OSError:
+            return out
+        for entry in entries:
+            task_dir = os.path.join(cls.TASKS_DIR, entry)
+            try:
+                with open(os.path.join(task_dir, 'task.json')) as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or not cls._park_candidate(meta, now):
+                continue
+            task_id = meta.get('task_id') or entry
+            if task_id in cls._launching:
+                continue
+            with cls._resuming_lock:
+                if task_id in cls._resuming:
+                    continue
+            if not cls._claude_supports_resume():
+                keep('resume_unsupported')
+                continue
+            session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+            alive = subprocess.run(['tmux', 'has-session', '-t', session_name],
+                                   capture_output=True, text=True)
+            if alive.returncode != 0:
+                continue  # the reconciler settles a gone session
+            if cls._session_attached(session_name):
+                keep('attached')
+                continue
+            unsaved = worktrees.unsaved_work(meta.get('workdir') or '')
+            if unsaved:
+                keep(unsaved)
+                continue
+            if cls._park(task_id, task_dir, meta, now):
+                out['parked'] += 1
+        return out
+
+    @staticmethod
+    def resume_task(task_id, prompt=None):
+        """Reopen a parked Build's session in place. Returns `(meta, error)`.
+
+        The Build keeps its id, folder, worktree and transcript: the CLI is
+        relaunched with `--resume` on the session it was parked with, under
+        the same tmux name and environment. `prompt`, when given, is
+        delivered once the composer is up and recorded as a follow-up.
+
+        The session is started BEFORE the status moves, so a failed launch
+        leaves the Build parked and resumable rather than `running` with
+        nothing behind it. `error` is 'Task not found', 'not_parked',
+        'not_resumable', 'busy' (a resume already in flight), 'at_capacity'
+        (meta is then the 429 refusal) or a launch failure.
+        """
+        cls = ClaudeTaskManager
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', task_id or ''):
+            return None, 'Task not found'
+        task_dir = os.path.join(cls.TASKS_DIR, task_id)
+        meta = cls.read_meta(task_id)
+        if meta is None:
+            return None, 'Task not found'
+        if meta.get('status') not in task_status.RESUMABLE_STATUSES:
+            return None, 'not_parked'
+        sid = cls.resume_session_id(meta)
+        if not sid or not cls._claude_supports_resume():
+            return None, 'not_resumable'
+        wt = meta.get('worktree') if isinstance(meta.get('worktree'), dict) else None
+        if wt and wt.get('removed_at'):
+            return None, 'its worktree has been removed'
+        workdir = meta.get('workdir') or '/home/dev'
+        if not os.path.isdir(workdir):
+            return None, f'{workdir} no longer exists'
+        if cls.at_capacity()[0]:
+            return cls._capacity_rejection(), 'at_capacity'
+        with cls._resuming_lock:
+            if task_id in cls._resuming:
+                return None, 'busy'
+            cls._resuming.add(task_id)
+        cls._launching.add(task_id)
+        try:
+            return cls._relaunch_parked(task_id, task_dir, meta, sid, wt,
+                                        workdir, prompt)
+        finally:
+            cls._launching.discard(task_id)
+            with cls._resuming_lock:
+                cls._resuming.discard(task_id)
+
+    @staticmethod
+    def _relaunch_parked(task_id, task_dir, meta, sid, wt, workdir, prompt):
+        cls = ClaudeTaskManager
+        session_name = meta.get('tmux_session') or f'kube-coder-{task_id}'
+        effort = meta.get('effort') or ''
+        source_workdir = (wt or {}).get('source_workdir') or workdir
+        cls._ensure_claude_trust(workdir,
+                                 reject_api_key=cls._api_key_to_reject())
+        cli_cmd = cls.assistant_command(
+            'claude', auto_approve=bool(meta.get('auto_approve')),
+            model=meta.get('model') or '', effort=effort,
+            resume_session_id=sid)
+        env = cls._session_env_args(
+            'claude', effort, source_workdir, wt,
+            board_id=meta.get('board_id') or '',
+            board_item_id=meta.get('board_item_id') or '')
+        tmux_cmd = [
+            'tmux', 'new-session', '-d', '-s', session_name,
+            '-x', '220', '-y', '50',
+            '-e', f'KC_TASK_ID={task_id}', *env,
+            'bash', '-lc', f'cd {_shell_quote(workdir)} && {cli_cmd}',
+        ]
+        result = worktrees.launch_writer(
+            workdir, tmux_cmd, runner=subprocess.run,
+            wt_root=WorktreeManager.root(), capture_output=True, text=True)
+        if result.returncode != 0:
+            return None, (result.stderr or '').strip() or 'tmux refused the session'
+        subprocess.run(
+            ['tmux', 'pipe-pane', '-o', '-t', session_name,
+             f'cat >> {_shell_quote(os.path.join(task_dir, "output.log"))}'],
+            capture_output=True, text=True)
+
+        now = time.time()
+        boot = cls.boot_id()
+
+        def claim(m):
+            if m.get('status') not in task_status.RESUMABLE_STATUSES:
+                return False
+            m.setdefault('resumes', []).append({
+                'at': now, 'parked_at': m.get('parked_at'),
+                'parked_reason': m.get('parked_reason')})
+            for key in ('parked_at', 'parked_reason', 'parked_idle_s'):
+                m.pop(key, None)
+            m['resumed_at'] = now
+            m['last_activity_at'] = now
+            m.pop('pane_hash', None)
+            if boot:
+                m['boot_id'] = boot   # a restart after this is detectable (#792)
+            if prompt:
+                m.setdefault('followups', []).append(
+                    {'prompt': prompt, 'sent_at': now, 'resumed': True})
+
+        updated, moved = cls._transition(task_dir, task_status.RUNNING,
+                                         record=claim)
+        if not moved:
+            # Deleted (or resumed by someone else) while we launched.
+            cls._end_session({'tmux_session': session_name}, task_id)
+            return None, 'not_parked'
+        legacy_log('workspace', f'[idle-reaper] {task_id}: resumed session {sid} (#928)',
+              file=sys.stderr)
+        if prompt:
+            prompt_file = os.path.join(task_dir, 'resume-prompt.txt')
+            with open(prompt_file, 'w') as f:
+                f.write(prompt)
+            threading.Thread(
+                target=cls._deliver_resume_prompt,
+                args=(task_id, task_dir, session_name, prompt_file),
+                daemon=True).start()
+        return updated, None
+
+    @staticmethod
+    def _deliver_resume_prompt(task_id, task_dir, session_name, prompt_file):
+        try:
+            delivered, _ = ClaudeTaskManager._deliver_launch_prompt(
+                session_name, prompt_file, f'resume-{task_id}',
+                expect_composer=True)
+        except Exception as e:
+            legacy_log('workspace', f'[idle-reaper] {task_id}: resume prompt raised: {e}',
+                  file=sys.stderr)
+            delivered = False
+        try:
+            ClaudeTaskManager._atomic_update_meta(
+                task_dir,
+                lambda m: m.__setitem__('resume_prompt_delivered', delivered))
+        except Exception as e:
+            legacy_log('workspace', f'[idle-reaper] {task_id}: could not record delivery: {e}',
+                  file=sys.stderr)
+
     @staticmethod
     def task_status(task_id):
         """Just the reconciled status string, or None if the task is gone.
@@ -4173,6 +4509,17 @@ class ClaudeTaskManager:
         if meta.get('status') in task_status.TERMINAL_STATUSES:
             return None, 'Session is no longer running'
 
+        # A parked Build (#928) had its idle session closed; a message is how
+        # it is picked up again, so sending one resumes it. A paste-only
+        # request has nothing to resume FOR.
+        if meta.get('status') in task_status.RESUMABLE_STATUSES:
+            if not submit:
+                return None, 'Session is parked; send a message to resume it'
+            resumed, err = ClaudeTaskManager.resume_task(task_id, prompt=prompt)
+            if resumed is None or err:
+                return None, ClaudeTaskManager.resume_error_text(err, resumed)
+            return resumed, None
+
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
 
         # Check if tmux session is still alive
@@ -4214,7 +4561,10 @@ class ClaudeTaskManager:
             # The Build ended while the text was being pasted, so nothing is
             # left to read it. Refused rather than recorded: the caller must
             # hear what a session already dead at the top of this call gets.
-            if m.get('status') in task_status.TERMINAL_STATUSES:
+            # Parked counts too: the idle reaper closed the session while
+            # the text was being pasted, so nothing read it (#928).
+            if m.get('status') in task_status.TERMINAL_STATUSES or \
+                    m.get('status') in task_status.RESUMABLE_STATUSES:
                 return False
             m.setdefault('followups', []).append(
                 {'prompt': prompt, 'sent_at': sent_at})
@@ -4224,7 +4574,23 @@ class ClaudeTaskManager:
         if updated is not None and \
                 updated.get('status') in task_status.TERMINAL_STATUSES:
             return None, 'Session is no longer running'
+        if updated is not None and \
+                updated.get('status') in task_status.RESUMABLE_STATUSES:
+            return None, ('The session was closed while idle as this message '
+                          'was sent; send it again to resume the Build')
         return updated, None
+
+    @staticmethod
+    def resume_error_text(err, meta=None):
+        """A resume_task error code as a sentence for an API caller."""
+        if err == 'at_capacity' and meta:
+            return meta.get('error')
+        return {
+            'not_parked': 'Task is not parked',
+            'not_resumable': ('This Build cannot be resumed: only Claude Code '
+                              'Builds with a recorded session can'),
+            'busy': 'A resume of this Build is already in progress',
+        }.get(err, err or 'Resume failed')
 
     @staticmethod
     def _end_session(meta, task_id):
@@ -4403,9 +4769,12 @@ class ClaudeTaskManager:
             effects.append(lambda: FeedManager.emit_task_terminal(meta, to))
         elif to == 'waiting-for-input':
             effects.append(lambda: FeedManager.emit_task_waiting(meta))
+        elif to == task_status.PARKED:
+            effects.append(lambda: FeedManager.emit_task_parked(meta))
         # What the Build changed, recorded when it stops or parks (#701), so a
         # list or a review card can show it without running git.
-        if (terminal or to == 'waiting-for-input') and meta.get('worktree'):
+        if (terminal or to in ('waiting-for-input', task_status.PARKED)) \
+                and meta.get('worktree'):
             effects.append(lambda: WorktreeManager.snapshot_async(task_id))
         for effect in effects:
             try:
@@ -5873,6 +6242,10 @@ class ClaudeTaskManager:
             # Screen changed → activity. Record it, reset the idle clock, and
             # if we had flagged waiting, return to running.
             def note_activity(m):
+                # Parked under us (#928): this screen is the session the
+                # reaper just closed, and `running` would have nothing behind it.
+                if m.get('status') not in task_status.LIVE_STATUSES:
+                    return False
                 m['pane_hash'] = digest
                 m['last_activity_at'] = now
 
@@ -7801,6 +8174,31 @@ class FeedManager:
             links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
             waiting=True,
             dedupe_key=f'task:{tid}:waiting',
+        )
+
+    @staticmethod
+    def emit_task_parked(meta):
+        """The idle-session reaper closed a waiting Build's session (#928).
+        Still `waiting` when it was parked on a question: the question is
+        unanswered whether or not its session is open."""
+        tid = meta.get('task_id')
+        if not tid:
+            return None
+        prompt = (meta.get('prompt') or '').strip().splitlines()[0] if meta.get('prompt') else ''
+        question = meta.get('parked_reason') == 'question'
+        idle_min = max(1, round((meta.get('parked_idle_s') or 0) / 60))
+        return FeedManager.emit(
+            'activity',
+            f'Idle session closed: {prompt[:80] or tid}',
+            body_md=(f'No activity for {idle_min} min'
+                     f'{" while waiting on your answer" if question else ""}, '
+                     'so its session was closed to free memory. The transcript '
+                     'is kept: send the Build a message to resume it.'),
+            source='system:task',
+            project_id=FeedManager._project_for_meta(meta),
+            links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
+            waiting=question,
+            dedupe_key=f'task:{tid}:parked:{int(meta.get("parked_at") or 0)}',
         )
 
     @staticmethod
@@ -15354,6 +15752,10 @@ def _mc_task_card(meta, task_dir, now):
             card['outcome'] = {'ok': False, 'detail': 'killed'}
         elif status == 'terminated':
             card['outcome'] = {'ok': False, 'detail': 'terminated by restart'}
+        elif status == task_status.PARKED:
+            # Its idle session was closed and it can be resumed (#928):
+            # neither a result nor a failure, so no outcome line at all.
+            card['outcome'] = None
         else:
             exit_code = meta.get('exit_code')
             detail = ('error' if exit_code in (None, '')
@@ -17385,6 +17787,50 @@ class PromptReaper:
         }
 
 
+
+class IdleSessionReaper:
+    """Background loop over `ClaudeTaskManager.park_idle` (#928), on
+    PromptReaper's pattern: the judgement lives in the manager, this only runs
+    it. Started unless both KC_IDLE_SESSION_TTL_S and KC_IDLE_QUESTION_TTL_S
+    are 0."""
+
+    _started = False
+    _thread = None
+    _stop_event = threading.Event()
+    _start_lock = threading.Lock()
+    _last_run_at = 0.0
+    _last_result = None
+
+    @classmethod
+    def start(cls, *, interval_seconds=60):
+        with cls._start_lock:
+            if cls._started:
+                return
+            cls._started = True
+
+        def _loop():
+            while not cls._stop_event.is_set():
+                try:
+                    cls._last_result = ClaudeTaskManager.park_idle()
+                    cls._last_run_at = time.time()
+                except Exception as e:
+                    legacy_log('workspace', f'[idle-reaper] pass failed: {e}', file=sys.stderr)
+                cls._stop_event.wait(interval_seconds)
+
+        t = threading.Thread(target=_loop, name='idle-session-reaper', daemon=True)
+        cls._thread = t
+        t.start()
+
+    @classmethod
+    def status(cls):
+        return {
+            'running': cls._started and (cls._thread is not None and cls._thread.is_alive()),
+            'last_run_at': cls._last_run_at or None,
+            'last_result': cls._last_result,
+            'idle_ttl_s': ClaudeTaskManager.IDLE_SESSION_TTL,
+            'question_ttl_s': ClaudeTaskManager.IDLE_QUESTION_TTL,
+        }
+
 class WorktreeSweeper:
     """Background cleanup of isolated worktrees (#701), on TaskReconciler's
     pattern. Every pass is `WorktreeManager.sweep()` — which never removes a
@@ -17700,6 +18146,20 @@ if __name__ == "__main__":
         except Exception as e:
             legacy_log('workspace', f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
 
+    # Idle-session reaper (#928): closes the session of a Build that has sat
+    # waiting-for-input past KC_IDLE_SESSION_TTL_S (idle) or
+    # KC_IDLE_QUESTION_TTL_S (question), keeping it resumable. Both 0 = off.
+    if ClaudeTaskManager.IDLE_SESSION_TTL > 0 or ClaudeTaskManager.IDLE_QUESTION_TTL > 0:
+        _idle_interval = ClaudeTaskManager._env_number(
+            'KC_IDLE_REAPER_INTERVAL_S', 60, minimum=10)
+        try:
+            IdleSessionReaper.start(interval_seconds=_idle_interval)
+            legacy_log('workspace', f'[tasks] idle-session reaper started ({_idle_interval}s; '
+                  f'idle TTL {ClaudeTaskManager.IDLE_SESSION_TTL:g}s, question TTL '
+                  f'{ClaudeTaskManager.IDLE_QUESTION_TTL:g}s)')
+        except Exception as e:
+            legacy_log('workspace', f'[tasks] idle-session reaper start failed: {e}', file=sys.stderr)
+
     # Isolated-worktree cleanup (#701). Removes only what holds nothing: a
     # worktree whose Build finished without changing anything, or one whose
     # every commit is already on a remote and is older than
@@ -17790,6 +18250,7 @@ if __name__ == "__main__":
     legacy_log('workspace', "  GET  /api/worktrees                 - All isolated worktrees")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/rename  - Rename a task")
+    legacy_log('workspace', "  POST /api/claude/tasks/{id}/resume  - Resume a parked task")
     legacy_log('workspace', "  DELETE /api/claude/tasks/{id}       - Kill a running task")
     legacy_log('workspace', "  GET  /api/claude/auth/token         - Get bearer token (OAuth2 only)")
     legacy_log('workspace', "  POST /api/claude/auth/token/regenerate - Regenerate token (OAuth2 only)")

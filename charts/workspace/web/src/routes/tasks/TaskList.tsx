@@ -36,6 +36,7 @@ const STATUS_TONE: Record<TaskStatus, 'success' | 'warn' | 'danger' | 'neutral' 
   terminated: 'danger',
   unknown: 'neutral',
   'waiting-for-input': 'warn',
+  parked: 'neutral',
 };
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
@@ -46,6 +47,7 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   terminated: 'wiped',
   unknown: 'unknown',
   'waiting-for-input': 'waiting',
+  parked: 'parked',
 };
 
 const WAITING_HEADING: Record<WaitingReason, string> = {

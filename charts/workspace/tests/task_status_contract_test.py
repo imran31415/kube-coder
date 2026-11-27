@@ -29,6 +29,7 @@ MOBILE_HELPER = os.path.join(REPO, 'mobile', 'src', 'util', 'taskStatus.ts')
 
 RUNNING = 'running'
 WAITING = 'waiting-for-input'
+PARKED = 'parked'
 TERMINAL = {'completed', 'error', 'killed', 'terminated'}
 
 
@@ -54,7 +55,8 @@ class BackendVocabularyTests(unittest.TestCase):
     def test_wire_strings_and_their_order(self):
         self.assertEqual(
             task_status.ALL_STATUSES,
-            (RUNNING, WAITING, 'completed', 'error', 'killed', 'terminated'))
+            (RUNNING, WAITING, 'completed', 'error', 'killed', 'terminated',
+             PARKED))
 
     def test_groups_mean_what_they_say(self):
         self.assertEqual(task_status.LIVE_STATUSES, {RUNNING, WAITING})
@@ -65,8 +67,27 @@ class BackendVocabularyTests(unittest.TestCase):
         # The two sets differ on purpose. A watcher or a board run treats a
         # parked Build as done; the transition table and the worktree sweep
         # must not, or parking would end the Build and lose its worktree.
-        self.assertEqual(task_status.QUIESCENT_STATUSES, TERMINAL | {WAITING})
+        self.assertEqual(task_status.QUIESCENT_STATUSES,
+                         TERMINAL | {WAITING, PARKED})
         self.assertNotIn(WAITING, task_status.TERMINAL_STATUSES)
+
+    def test_parked_is_neither_live_nor_over(self):
+        # #928: the idle-session reaper closed the session but kept the
+        # Build. Not live, so it holds no slot and nothing polls its screen;
+        # not terminal, so the worktree sweep keeps its worktree and it can
+        # be resumed. And not a failure: nothing went wrong.
+        self.assertEqual(task_status.RESUMABLE_STATUSES, {PARKED})
+        self.assertNotIn(PARKED, task_status.LIVE_STATUSES)
+        self.assertNotIn(PARKED, task_status.TERMINAL_STATUSES)
+        self.assertNotIn(PARKED, task_status.FAILED_STATUSES)
+
+    def test_only_a_waiting_build_parks_and_a_parked_one_resumes_or_dies(self):
+        movers = {s for s in task_status.ALL_STATUSES
+                  if task_status.can_transition(s, PARKED)}
+        self.assertEqual(movers, {WAITING})
+        targets = {t for t in task_status.ALL_STATUSES
+                   if task_status.can_transition(PARKED, t)}
+        self.assertEqual(targets, {RUNNING, 'killed'})
 
     def test_a_terminal_status_can_never_move(self):
         for status in TERMINAL:
@@ -89,6 +110,8 @@ class ClientVocabularyTests(unittest.TestCase):
                          set(task_status.TERMINAL_STATUSES))
         self.assertEqual(ts_list(WEB_HELPER, 'FAILED_STATUSES'),
                          set(task_status.FAILED_STATUSES))
+        self.assertEqual(ts_list(WEB_HELPER, 'PARKED_STATUSES'),
+                         set(task_status.RESUMABLE_STATUSES))
 
     def test_web_task_status_type_is_the_backend_vocabulary(self):
         union = _match(r'export type TaskStatus =(.*?);', WEB_API)
@@ -109,6 +132,8 @@ class ClientVocabularyTests(unittest.TestCase):
                          mobile(task_status.LIVE_STATUSES))
         self.assertEqual(ts_list(MOBILE_HELPER, 'FINISHED_STATUSES'),
                          mobile(task_status.TERMINAL_STATUSES))
+        self.assertEqual(ts_list(MOBILE_HELPER, 'PARKED_STATUSES'),
+                         mobile(task_status.RESUMABLE_STATUSES))
 
 
 if __name__ == '__main__':

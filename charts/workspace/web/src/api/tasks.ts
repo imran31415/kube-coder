@@ -7,7 +7,7 @@ import { coerceTaskSummary, coerceTaskDetail, safeArray } from './shape';
  * reported. The server only ever writes it when the boot that launched the
  * task is not the boot that found it dead.
  */
-export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'terminated' | 'unknown' | 'waiting-for-input';
+export type TaskStatus = 'running' | 'completed' | 'killed' | 'error' | 'terminated' | 'unknown' | 'waiting-for-input' | 'parked';
 
 /**
  * Why a `waiting-for-input` task is parked. `idle` means no question was
@@ -62,6 +62,10 @@ export interface TaskSummary {
   waiting_reason?: WaitingReason;
   /** Present only for a Build launched in an isolated worktree (#701). */
   worktree?: WorktreeBrief;
+  /** Present only while `status` is `parked` (#928): when the idle-session
+   *  reaper closed it, and the waiting reason it was parked on. */
+  parked_at?: number;
+  parked_reason?: WaitingReason;
 }
 
 /**
@@ -336,6 +340,13 @@ export const sendTaskKey = (id: string, key: string) =>
 
 export const renameTask = (id: string, name: string) =>
   apiPost<TaskDetail>(`/api/claude/tasks/${id}/rename`, { name });
+
+/**
+ * Reopen a parked Build's session (#928): the same Claude session, folder and
+ * worktree, relaunched with `--resume`. A 429 means the busy-task cap is full.
+ */
+export const resumeTask = (id: string) =>
+  apiPost<TaskDetail>(`/api/claude/tasks/${id}/resume`, {});
 
 export const killTask = (id: string) => apiDelete<{ ok: true }>(`/api/claude/tasks/${id}`);
 

@@ -311,7 +311,9 @@ class ClientCompatibilityTests(WaitingBase):
     def test_status_vocabulary_is_unchanged(self):
         self.assertEqual(
             server.PrometheusMetricsCollector.TASK_STATUSES,
-            ('running', WAITING, 'completed', 'error', 'killed', 'terminated'))
+            ('running', WAITING, 'completed', 'error', 'killed', 'terminated',
+             # Appended by #928, so every existing series keeps its place.
+             'parked'))
         self.assertIn(WAITING, hypervisor_session.WATCH_TASK_FIRE_STATUSES)
         self.assertIn(WAITING, task_status.QUIESCENT_STATUSES)
 

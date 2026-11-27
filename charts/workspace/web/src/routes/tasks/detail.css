@@ -184,6 +184,7 @@
 }
 .td-banner-danger strong { color: var(--danger); }
 .td-banner-neutral { color: var(--text-muted); }
+.td-banner-actions { margin-top: var(--size-2); }
 
 .td-info {
   display: grid;
