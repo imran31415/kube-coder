@@ -158,6 +158,148 @@ class SystemEmitterTests(FeedManagerBase):
         self.assertEqual(item['links'][0]['ref'], 'memory:project.kc.decisions/sse')
 
 
+class _OwnsTask:
+    """Stands in for hypervisor_session.WATCHERS: owns exactly `owned`."""
+
+    def __init__(self, owned=()):
+        self.owned = set(owned)
+        self.asked = []
+
+    def owns_task(self, thread_id, task_id):
+        self.asked.append((thread_id, task_id))
+        return (thread_id, task_id) in self.owned
+
+
+class ChatOwnedBuildFeedTests(FeedManagerBase):
+    """A Build its chat is watching notifies through the chat (#929): no
+    waiting row of its own, a history row that opens the chat, one waiting
+    row per thread once the chat has answered, and today's rows whenever the
+    chat cannot be shown to own it."""
+
+    def setUp(self):
+        super().setUp()
+        self.tasks = tempfile.mkdtemp(prefix='kctest-feed-tasks-')
+        self.addCleanup(shutil.rmtree, self.tasks, True)
+        p = mock.patch.object(server.ClaudeTaskManager, 'TASKS_DIR', self.tasks)
+        p.start()
+        self.addCleanup(p.stop)
+        for target, attr in ((server.EventBroker, 'publish'),
+                             (FM, '_project_for_workdir')):
+            p = mock.patch.object(target, attr, return_value='')
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _owner(self, owned):
+        p = mock.patch.object(server, 'hv_watchers', _OwnsTask(owned))
+        watchers = p.start()
+        self.addCleanup(p.stop)
+        return watchers
+
+    def _task(self, tid, status, **extra):
+        meta = {'task_id': tid, 'prompt': 'fix the login page\ndetails',
+                'status': status, **extra}
+        os.makedirs(os.path.join(self.tasks, tid), exist_ok=True)
+        with open(os.path.join(self.tasks, tid, 'task.json'), 'w') as f:
+            json.dump(meta, f)
+        return meta
+
+    def _transition(self, meta, to):
+        meta['status'] = to
+        server.ClaudeTaskManager._after_transition(
+            meta, os.path.join(self.tasks, meta['task_id']), meta['task_id'],
+            to, False, False)
+
+    def test_a_chat_owned_build_parks_without_a_waiting_row(self):
+        self._owner({('th-1', 't1')})
+        self._transition(self._task('t1', 'running', origin_thread_id='th-1'),
+                         'waiting-for-input')
+        self.assertEqual(FM.list(), [])
+
+    def test_a_chat_owned_build_still_records_its_end_linking_the_chat(self):
+        self._owner({('th-1', 't1')})
+        self._transition(self._task('t1', 'running', origin_thread_id='th-1'),
+                         'completed')
+        [row] = FM.list()
+        self.assertFalse(row['waiting'])
+        self.assertEqual([lk['ref'] for lk in row['links']], ['thread:th-1', 'task:t1'])
+
+    def test_without_a_watcher_today_s_rows_are_unchanged(self):
+        self._owner(set())  # the watcher expired, was cancelled, or never was
+        self._transition(self._task('t1', 'running', origin_thread_id='th-1'),
+                         'waiting-for-input')
+        [row] = FM.list()
+        self.assertTrue(row['waiting'])
+        self.assertEqual(row['title'], 'Task waiting on you: fix the login page')
+        self.assertEqual([lk['ref'] for lk in row['links']], ['task:t1'])
+
+    def test_a_build_with_no_origin_never_asks_the_watchers(self):
+        watchers = self._owner({('th-1', 't1')})
+        self._transition(self._task('t1', 'running'), 'waiting-for-input')
+        self.assertEqual(watchers.asked, [])
+        self.assertTrue(FM.list()[0]['waiting'])
+
+    def test_a_raising_ownership_check_keeps_the_build_s_rows(self):
+        watchers = self._owner(set())
+        watchers.owns_task = mock.Mock(side_effect=RuntimeError('disk'))
+        self.assertEqual(server.chat_owner_of_task(
+            {'task_id': 't1', 'origin_thread_id': 'th-1'}), '')
+
+    def test_the_chat_level_row(self):
+        self._task('t1', 'waiting-for-input', origin_thread_id='th-1')
+        with mock.patch.object(server, '_hv_thread_meta',
+                               return_value={'title': 'CTO: kube-coder',
+                                             'project_id': 'kc'}):
+            server.hv_watch_reply_notify('th-1', 't1', 'Done: login fixed.\nPR #12')
+        [row] = FM.list()
+        self.assertEqual((row['kind'], row['source'], row['waiting']),
+                         ('activity', 'system:hypervisor', True))
+        self.assertEqual(row['title'], 'CTO: kube-coder: fix the login page')
+        self.assertEqual(row['body_md'], 'Done: login fixed.\nPR #12')
+        self.assertEqual(row['project_id'], 'kc')
+        # Thread first: push and the desktop app open the first ref.
+        self.assertEqual([lk['ref'] for lk in row['links']], ['thread:th-1', 'task:t1'])
+
+    def test_two_builds_reporting_on_one_thread_share_a_row(self):
+        self._task('t1', 'completed', origin_thread_id='th-1')
+        self._task('t2', 'completed', origin_thread_id='th-1')
+        server.hv_watch_reply_notify('th-1', 't1', 'first')
+        server.hv_watch_reply_notify('th-1', 't2', 'second')
+        [row] = FM.list()
+        self.assertEqual(row['body_md'], 'second')
+        self.assertEqual(row['links'][1]['ref'], 'task:t2')
+
+    def test_answering_the_chat_marks_its_row_read(self):
+        server.hv_watch_reply_notify('th-1', 't1', 'done')
+        self.assertTrue(FM.mark_read_by_dedupe_key(FM.watch_reply_key('th-1')))
+        self.assertTrue(FM.list()[0]['read'])
+        # Already read, or no such row: a quiet no-op.
+        self.assertFalse(FM.mark_read_by_dedupe_key(FM.watch_reply_key('th-1')))
+        self.assertFalse(FM.mark_read_by_dedupe_key(FM.watch_reply_key('th-2')))
+
+    def test_release_emits_what_the_build_would_have(self):
+        self._task('t1', 'waiting-for-input', origin_thread_id='th-1')
+        server.hv_watch_release('th-1', 't1')
+        [row] = FM.list()
+        self.assertEqual((row['title'], row['waiting']),
+                         ('Task waiting on you: fix the login page', True))
+        self._task('t2', 'error', origin_thread_id='th-1')
+        server.hv_watch_release('th-1', 't2')
+        failed = [r for r in FM.list() if r['title'].startswith('Task failed')]
+        self.assertEqual([lk['ref'] for lk in failed[0]['links']], ['task:t2'])
+
+    def test_release_is_a_no_op_for_a_running_or_foreign_build(self):
+        self._task('t1', 'running', origin_thread_id='th-1')
+        server.hv_watch_release('th-1', 't1')
+        # Another chat's watcher on a Build it did not dispatch never
+        # suppressed anything, so it has nothing to hand back.
+        self._task('t2', 'waiting-for-input', origin_thread_id='th-other')
+        server.hv_watch_release('th-1', 't2')
+        self._task('t3', 'waiting-for-input')
+        server.hv_watch_release('th-1', 't3')
+        server.hv_watch_release('th-1', 'no-such-task')
+        self.assertEqual(FM.list(), [])
+
+
 class WhatsAppReviewHookTests(FeedManagerBase):
     """#709 Part 4: emit hands a Board review to the WhatsApp notifier beside
     the push. Whatever that side does, the row and the push already happened."""
