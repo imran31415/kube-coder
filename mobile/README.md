@@ -110,6 +110,13 @@ again until you have read or dismissed it, and then at most every 30 minutes.
 A repeat replaces the earlier notification instead of stacking beside it.
 Tapping a notification marks it read (#685).
 
+A Build a chat dispatched is reported by that chat, not by the Build (#929).
+You get one notification once the chat has replied, titled with the chat's
+name, and tapping it opens the chat. You don't also get "Task waiting on you"
+for the Build. If the chat can't report it (its watch expired or was
+cancelled, the chat was deleted, or its reply failed), the Build's own alert
+comes back.
+
 ## Screenshots (store assets)
 
 Generating the App Store / Play Store screenshots is a **single, reusable,
