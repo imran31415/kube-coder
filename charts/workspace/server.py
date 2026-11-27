@@ -4837,9 +4837,12 @@ class ClaudeTaskManager:
         if fire_hook:
             effects.append(lambda: cls._fire_completion_hook(meta))
         effects.append(lambda: EventBroker.publish('task.status', event))
+        # A Build its chat is watching notifies through that chat (#929):
+        # no waiting row of its own, and its history row links the chat first.
+        owner = chat_owner_of_task(meta) if terminal or to == 'waiting-for-input' else ''
         if terminal:
-            effects.append(lambda: FeedManager.emit_task_terminal(meta, to))
-        elif to == 'waiting-for-input':
+            effects.append(lambda: FeedManager.emit_task_terminal(meta, to, thread_id=owner))
+        elif to == 'waiting-for-input' and not owner:
             effects.append(lambda: FeedManager.emit_task_waiting(meta))
         elif to == task_status.PARKED:
             effects.append(lambda: FeedManager.emit_task_parked(meta))
@@ -8193,8 +8196,11 @@ class FeedManager:
         return {'label': f'Review {key}', 'ref': f'board:{board_id}:{item_id}'}
 
     @staticmethod
-    def emit_task_terminal(meta, status):
-        """A task reached a terminal state. One coalesced item per task."""
+    def emit_task_terminal(meta, status, thread_id=''):
+        """A task reached a terminal state. One coalesced item per task.
+
+        `thread_id` names the chat that owns the Build (#929). Its link goes
+        first, so tapping the row opens the chat that reports the result."""
         tid = meta.get('task_id')
         if not tid:
             return None
@@ -8216,6 +8222,8 @@ class FeedManager:
         links = [{'label': 'Open task', 'ref': f'task:{tid}'}]
         if review:
             links.insert(0, review)
+        if thread_id:
+            links.insert(0, {'label': 'Open chat', 'ref': f'thread:{thread_id}'})
         return FeedManager.emit(
             'activity',
             f'Task {verb}: {prompt[:80] or tid}',
@@ -8271,6 +8279,35 @@ class FeedManager:
             links=[{'label': 'Open task', 'ref': f'task:{tid}'}],
             waiting=question,
             dedupe_key=f'task:{tid}:parked:{int(meta.get("parked_at") or 0)}',
+        )
+
+    @staticmethod
+    def watch_reply_key(thread_id):
+        return f'thread:{thread_id}:watch-reply'
+
+    @staticmethod
+    def emit_watch_reply(thread_id, thread_meta, task_id, task_meta, reply):
+        """A chat reported on a Build its `task` watcher owned (#929).
+
+        Waiting: the chat has answered and it is the user's turn. One row per
+        thread, so Builds that finish close together coalesce into one alert
+        under the #685 repeat rules. The thread link is first because push and
+        the desktop app open the first ref."""
+        thread_meta, task_meta = thread_meta or {}, task_meta or {}
+        title = (thread_meta.get('title') or '').strip() or 'Chat'
+        prompt = (task_meta.get('prompt') or '').strip()
+        prompt = prompt.splitlines()[0] if prompt else ''
+        return FeedManager.emit(
+            'activity',
+            f'{title[:80]}: {prompt[:80] or task_id}',
+            body_md=(reply or '').strip(),
+            source='system:hypervisor',
+            project_id=((thread_meta.get('project_id') or '').strip()
+                        or FeedManager._project_for_meta(task_meta)),
+            links=[{'label': 'Open chat', 'ref': f'thread:{thread_id}'},
+                   {'label': 'Open task', 'ref': f'task:{task_id}'}],
+            waiting=True,
+            dedupe_key=FeedManager.watch_reply_key(thread_id),
         )
 
     @staticmethod
@@ -8421,6 +8458,18 @@ class FeedManager:
         return FeedManager._clear_flag(item_id, 'read')
 
     @staticmethod
+    def mark_read_by_dedupe_key(key):
+        """Mark the live row carrying `key` read. False when there is none
+        or it was read already. Never raises."""
+        try:
+            hit = FeedManager.by_dedupe_key([key]).get(key)
+            if not hit or hit['read']:
+                return False
+            return FeedManager.mark_read(hit['id'])
+        except Exception:
+            return False
+
+    @staticmethod
     def by_dedupe_key(keys):
         """`{dedupe_key: {id, title, waiting, read}}` for the live
         (undismissed) items carrying one of `keys` — one pass over the log, for
@@ -8443,6 +8492,53 @@ class FeedManager:
     @staticmethod
     def dismiss(item_id):
         return FeedManager._set_flag(item_id, 'dismissed')
+
+
+# ── chat-owned Builds (#929) ─────────────────────────────────────────────
+# A Build a chat dispatched (`origin_thread_id`) and is still watching tells
+# the user through that chat's reply, not through a row of its own. These are
+# the three seams: who owns a Build now, the chat-level row once the chat has
+# answered, and the fallback that hands the Build its own rows back.
+
+def chat_owner_of_task(meta):
+    """The chat thread that owns this Build's alerts, or ''. Recorded state
+    only: task.json's `origin_thread_id` and that thread's watchers.json.
+    Never raises; any doubt is '', which keeps today's Build-level rows."""
+    try:
+        thread_id = ((meta or {}).get('origin_thread_id') or '').strip()
+        if not thread_id or hv_watchers is None:
+            return ''
+        return thread_id if hv_watchers.owns_task(thread_id, meta.get('task_id')) else ''
+    except Exception:
+        return ''
+
+
+def _hv_thread_meta(thread_id):
+    session = HypervisorSession.get(thread_id) if HypervisorSession else None
+    return (session.read_meta() if session else None) or {}
+
+
+def hv_watch_reply_notify(thread_id, task_id, reply):
+    """The turn a `task` watcher started has answered: one waiting row for
+    the chat (#929)."""
+    FeedManager.emit_watch_reply(thread_id, _hv_thread_meta(thread_id), task_id,
+                                 ClaudeTaskManager.read_meta(task_id), reply)
+
+
+def hv_watch_release(thread_id, task_id):
+    """The chat will not report this Build after all — its watcher expired
+    or was cancelled, the thread went, or the reply turn failed (#929). Emit
+    the rows the Build would have emitted itself for the state it is in now,
+    read from task.json as stored. Only for a Build this chat dispatched: any
+    other was never suppressed, so it has nothing to give back."""
+    meta = ClaudeTaskManager.read_meta(task_id)
+    if not meta or (meta.get('origin_thread_id') or '') != thread_id:
+        return
+    status = meta.get('status')
+    if status == 'waiting-for-input':
+        FeedManager.emit_task_waiting(meta)
+    elif status in task_status.TERMINAL_STATUSES:
+        FeedManager.emit_task_terminal(meta, status)
 
 
 class _ReplayCache:
@@ -18186,6 +18282,8 @@ if __name__ == "__main__":
             hv_watchers.set_task_status_provider(_hv_watch_task_status)
             hv_watchers.set_board_run_provider(BoardRunsManager.get)
             hv_watchers.set_ports_provider(_hv_watch_listening_ports)
+            hv_watchers.set_task_notifier(on_reply=hv_watch_reply_notify,
+                                          on_release=hv_watch_release)
             hv_watchers.start()
             legacy_log('workspace', '[hypervisor] cross-turn watcher loop started')
         except Exception as e:

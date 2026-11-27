@@ -371,6 +371,10 @@ class HypervisorRoutes:
             self.send_json({'error': 'assistant is still responding'}, 409)
             return
         session.send(message)
+        # Answering the chat acts on its "reported back" Feed row (#929), so
+        # the Needs-you badge does not stay lit for a reply already read.
+        feed = handlers.server.FeedManager
+        feed.mark_read_by_dedupe_key(feed.watch_reply_key(thread_id))
         self.send_json({'ok': True})
 
     def handle_hypervisor_transcribe(self):
