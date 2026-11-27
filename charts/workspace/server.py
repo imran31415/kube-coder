@@ -2256,6 +2256,66 @@ def _resolve_claude_config_path(env=None):
             or os.path.expanduser('~/.claude.json'))
 
 
+#: The busy-task ceiling's memory-derived default (#928). Memory kept back for
+#: everything that is not a Build -- the dashboard, VS Code, the browser, the
+#: MCP servers -- then one busy Build per KC_TASK_MEMORY_MB (about what an agent
+#: session holds), clamped to a floor and a ceiling.
+TASK_MEMORY_RESERVE_MB = 2048
+MAX_TASKS_FLOOR, MAX_TASKS_CEILING = 4, 20
+#: The default when the memory limit cannot be read, or there is none.
+MAX_TASKS_FALLBACK = 15
+_CGROUP_LIMIT_FILES = ('/sys/fs/cgroup/memory.max',                    # v2
+                       '/sys/fs/cgroup/memory/memory.limit_in_bytes')  # v1
+
+
+def memory_limit_bytes(paths=_CGROUP_LIMIT_FILES):
+    """This container's memory limit, or None when there is none to read.
+    cgroup v2 writes `max` for unlimited; v1 a number near 2**63."""
+    for path in paths:
+        try:
+            with open(path) as f:
+                raw = f.read().strip()
+        except OSError:
+            continue
+        if raw == 'max':
+            return None
+        try:
+            limit = int(raw)
+        except ValueError:
+            continue
+        return limit if 0 < limit < (1 << 50) else None
+    return None
+
+
+def default_max_tasks(env=None, limit_bytes=None, paths=_CGROUP_LIMIT_FILES):
+    """`(cap, source)` for KC_MAX_TASKS.
+
+    An explicit positive KC_MAX_TASKS wins (`env`). Otherwise the cap follows
+    the memory limit (`memory`): 8 GiB -> 12 (the old fixed default),
+    16 GiB -> 20, 4 GiB -> 4. With no readable limit, MAX_TASKS_FALLBACK
+    (`default`).
+    """
+    env = os.environ if env is None else env
+    raw = (env.get('KC_MAX_TASKS') or '').strip()
+    if raw:
+        try:
+            if int(raw) > 0:
+                return int(raw), 'env'
+        except ValueError:
+            pass
+    if limit_bytes is None:
+        limit_bytes = memory_limit_bytes(paths)
+    if not limit_bytes:
+        return MAX_TASKS_FALLBACK, 'default'
+    try:
+        per_task = max(64, int(env.get('KC_TASK_MEMORY_MB') or 512))
+    except ValueError:
+        per_task = 512
+    usable = limit_bytes // (1024 * 1024) - TASK_MEMORY_RESERVE_MB
+    return (max(MAX_TASKS_FLOOR, min(MAX_TASKS_CEILING, usable // per_task)),
+            'memory')
+
+
 class ClaudeTaskManager:
     """Manages Claude Code tasks running in tmux sessions"""
 
@@ -3119,7 +3179,12 @@ class ClaudeTaskManager:
     # `waiting-for-input` with its session still open; counting it filled the
     # cap with finished work while nothing was running. Idle sessions are
     # bounded instead by the idle-session reaper, which closes them.
-    MAX_TASKS = int(os.environ.get('KC_MAX_TASKS', '12'))
+    #
+    # The default follows the container's memory limit (#928): the cap is a
+    # memory guard first -- the ide container has been OOMKilled at 8Gi
+    # (#847) -- so a 16 GiB pod should not be held to a 4 GiB pod's number.
+    # An explicit KC_MAX_TASKS always wins. See default_max_tasks.
+    MAX_TASKS, MAX_TASKS_SOURCE = default_max_tasks()
 
     #: Task statuses whose open session does NOT hold a slot: the agent is
     #: parked waiting for someone, or the Build is already over and its
@@ -18145,6 +18210,11 @@ if __name__ == "__main__":
             legacy_log('workspace', f'[tasks] prompt reaper started ({_reaper_interval}s)')
         except Exception as e:
             legacy_log('workspace', f'[tasks] prompt reaper start failed: {e}', file=sys.stderr)
+
+    _limit = memory_limit_bytes()
+    legacy_log('workspace', f'[tasks] KC_MAX_TASKS={ClaudeTaskManager.MAX_TASKS} busy tasks '
+          f'({ClaudeTaskManager.MAX_TASKS_SOURCE}'
+          f'{f", memory limit {_limit / 2**30:.1f} GiB" if _limit else ""})')
 
     # Idle-session reaper (#928): closes the session of a Build that has sat
     # waiting-for-input past KC_IDLE_SESSION_TTL_S (idle) or

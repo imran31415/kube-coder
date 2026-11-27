@@ -430,7 +430,8 @@ nothing to guess.
 Concurrency is clamped to `min(requested, KC_MAX_TASKS − busy, board ceiling)`
 and the reason is **persisted and shown**. `busy` counts only Builds that are
 working: one parked on `waiting-for-input` holds no slot (#928), so finished
-sessions left open do not shrink a run's headroom. `create_task` returns `rejected`
+sessions left open do not shrink a run's headroom. `KC_MAX_TASKS` defaults from the pod's memory
+limit (12 at 8 GiB, 20 at 16 GiB; see the Task API's Concurrency section). `create_task` returns `rejected`
 without creating anything at capacity, so an unclamped run does not fail loudly
 — it quietly produces rows that look like items nobody worked.
 

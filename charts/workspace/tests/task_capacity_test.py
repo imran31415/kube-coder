@@ -119,6 +119,53 @@ class AtCapacityTests(unittest.TestCase):
                          {'error': 'x'})
 
 
+GiB = 1 << 30
+
+
+class DefaultMaxTasksTests(unittest.TestCase):
+    """The default follows the container's memory limit (#928)."""
+
+    def test_follows_the_memory_limit(self):
+        for gib, cap in ((3, 4), (4, 4), (8, 12), (12, 20), (16, 20), (64, 20)):
+            with self.subTest(gib=gib):
+                self.assertEqual(server.default_max_tasks(env={}, limit_bytes=gib * GiB),
+                                 (cap, 'memory'))
+
+    def test_an_explicit_setting_wins(self):
+        self.assertEqual(server.default_max_tasks(env={'KC_MAX_TASKS': '30'},
+                                                  limit_bytes=4 * GiB), (30, 'env'))
+        # Garbage or non-positive falls through rather than disabling the cap.
+        for raw in ('lots', '0', '-3', ' '):
+            with self.subTest(raw=raw):
+                self.assertEqual(server.default_max_tasks(env={'KC_MAX_TASKS': raw},
+                                                          limit_bytes=8 * GiB),
+                                 (12, 'memory'))
+
+    def test_per_task_budget_is_tunable(self):
+        self.assertEqual(server.default_max_tasks(env={'KC_TASK_MEMORY_MB': '1024'},
+                                                  limit_bytes=16 * GiB), (14, 'memory'))
+
+    def test_no_limit_falls_back(self):
+        tmp = tempfile.mkdtemp(prefix='kccg-')
+        self.addCleanup(shutil.rmtree, tmp, True)
+        v2 = os.path.join(tmp, 'memory.max')
+        v1 = os.path.join(tmp, 'memory.limit_in_bytes')
+        missing = os.path.join(tmp, 'nope')
+        self.assertEqual(server.default_max_tasks(env={}, paths=(missing,)),
+                         (server.MAX_TASKS_FALLBACK, 'default'))
+        with open(v2, 'w') as f:
+            f.write('max\n')
+        self.assertEqual(server.default_max_tasks(env={}, paths=(v2,)),
+                         (server.MAX_TASKS_FALLBACK, 'default'))
+        with open(v1, 'w') as f:
+            f.write('9223372036854771712\n')   # cgroup v1's "unlimited"
+        self.assertIsNone(server.memory_limit_bytes((v1,)))
+        with open(v2, 'w') as f:
+            f.write(f'{16 * GiB}\n')
+        self.assertEqual(server.memory_limit_bytes((missing, v2)), 16 * GiB)
+        self.assertEqual(server.default_max_tasks(env={}, paths=(v2,)), (20, 'memory'))
+
+
 class CreateTaskCapTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='kccap-')

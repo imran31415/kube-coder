@@ -1011,7 +1011,23 @@ reaper](#idle-sessions-idle-session-reaper) instead.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KC_MAX_TASKS` | `12` | Busy tasks allowed at once. |
+| `KC_MAX_TASKS` | from memory | Busy tasks allowed at once. Set it to a positive integer to override the memory-derived default. |
+| `KC_TASK_MEMORY_MB` | `512` | Memory budgeted per busy task when deriving the default. |
+
+The default follows the container's memory limit (cgroup v2 `memory.max`, or
+v1 `memory.limit_in_bytes`), because the cap is a memory guard first: 2 GiB is
+kept back for the dashboard, VS Code and the browser, then one busy task per
+`KC_TASK_MEMORY_MB`, clamped to 4–20. With no readable limit it is 15.
+
+| Memory limit | Default `KC_MAX_TASKS` |
+|---|---|
+| 4 GiB | 4 |
+| 8 GiB | 12 |
+| 16 GiB or more | 20 |
+| none / unreadable | 15 |
+
+The server logs the value it chose, and where it came from, at startup
+(`[tasks] KC_MAX_TASKS=…`).
 
 Sub-agents spawned through the orchestrator MCP have their own cap,
 `KC_MAX_SUBAGENTS`.
