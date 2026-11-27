@@ -479,7 +479,7 @@ class TaskRoutes:
             pass
         task = handlers.server.ClaudeTaskManager.create_terminal_task(workdir=workdir)
         if task.get('status') == 'rejected':
-            self.send_json({'error': task.get('error')}, 429)
+            self.send_json(handlers.server.ClaudeTaskManager.rejection_body(task), 429)
             return
         # Pre-arm the ttyd entry script so the next /oauth/terminal/ load
         # attaches to this session instead of dropping to a fresh bash.

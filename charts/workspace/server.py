@@ -3109,22 +3109,32 @@ class ClaudeTaskManager:
                 parts = ' '.join([parts, *extra])
         return parts
 
-    # Soft ceiling on concurrently-live tasks created through this manager
-    # (dashboard / desktop / webhook / cron). Protects a small 2-3 CPU pod from
-    # a webhook/cron storm — or a buggy POST loop — spawning unbounded tmux
-    # sessions. The MCP orchestrator enforces its own KC_MAX_SUBAGENTS cap for
+    # Soft ceiling on concurrently-BUSY tasks created through this manager
+    # (dashboard / desktop / webhook / cron). Protects the pod from a
+    # webhook/cron storm — or a buggy POST loop — spawning unbounded working
+    # agents. The MCP orchestrator enforces its own KC_MAX_SUBAGENTS cap for
     # spawned sub-agents; this is the HTTP-create equivalent (issue #98).
+    #
+    # Only BUSY tasks count (#928). A Build that finished its turn parks on
+    # `waiting-for-input` with its session still open; counting it filled the
+    # cap with finished work while nothing was running. Idle sessions are
+    # bounded instead by the idle-session reaper, which closes them.
     MAX_TASKS = int(os.environ.get('KC_MAX_TASKS', '12'))
 
-    @staticmethod
-    def count_live_tasks():
-        """Count live tmux sessions for dashboard tasks (kube-coder-*).
+    #: Task statuses whose open session does NOT hold a slot: the agent is
+    #: parked waiting for someone, or the Build is already over and its
+    #: session is merely on its way out.
+    _IDLE_FOR_CAP = frozenset({task_status.WAITING}) | task_status.TERMINAL_STATUSES
 
-        A missing tmux binary counts as ZERO rather than raising: a task IS a
-        tmux session, so no tmux means no tasks. The `returncode != 0` branch
-        below already made that judgement for "tmux ran and told us nothing";
-        letting FileNotFoundError escape meant the same fact, discovered one
-        step earlier, became a 500 instead. It surfaced from
+    @staticmethod
+    def _session_names():
+        """Names of every live tmux session, or [] when tmux has none to give.
+
+        A missing tmux binary is ZERO sessions rather than an error: a task IS
+        a tmux session, so no tmux means no tasks. The `returncode != 0`
+        branch already made that judgement for "tmux ran and told us
+        nothing"; letting FileNotFoundError escape meant the same fact,
+        discovered one step earlier, became a 500 instead. It surfaced from
         BoardRunsManager.create's concurrency clamp, which only wanted a
         number.
         """
@@ -3134,26 +3144,83 @@ class ClaudeTaskManager:
                 capture_output=True, text=True,
             )
         except OSError:
-            return 0
+            return []
         if r.returncode != 0:
-            return 0
-        return sum(1 for n in r.stdout.splitlines() if n.startswith('kube-coder-'))
+            return []
+        return r.stdout.splitlines()
+
+    @staticmethod
+    def count_tasks():
+        """`{'busy': n, 'idle': n}` over the live kube-coder-* sessions.
+
+        The split comes from each Build's task.json `status` — the reconciler's
+        own derivation — never from the screen. A session whose record is
+        missing or unreadable counts as busy: an unknown session may well be
+        working, and the cap exists to err that way.
+        """
+        out = {'busy': 0, 'idle': 0}
+        prefix = 'kube-coder-'
+        for name in ClaudeTaskManager._session_names():
+            if not name.startswith(prefix):
+                continue
+            task_id = name[len(prefix):]
+            status = None
+            if re.fullmatch(r'[A-Za-z0-9_-]+', task_id):
+                try:
+                    with open(os.path.join(ClaudeTaskManager.TASKS_DIR,
+                                           task_id, 'task.json')) as f:
+                        meta = json.load(f)
+                    if isinstance(meta, dict):
+                        status = meta.get('status')
+                except (OSError, ValueError):
+                    pass
+            if status in ClaudeTaskManager._IDLE_FOR_CAP:
+                out['idle'] += 1
+            else:
+                out['busy'] += 1
+        return out
+
+    @staticmethod
+    def count_live_tasks():
+        """The number of BUSY dashboard tasks — what KC_MAX_TASKS limits.
+
+        Idle (`waiting-for-input`) sessions are left out (#928); see
+        count_tasks for the split.
+        """
+        return ClaudeTaskManager.count_tasks()['busy']
 
     @staticmethod
     def at_capacity():
-        """(at_cap, live, max) — whether the live-task ceiling is reached."""
-        live = ClaudeTaskManager.count_live_tasks()
-        return live >= ClaudeTaskManager.MAX_TASKS, live, ClaudeTaskManager.MAX_TASKS
+        """(at_cap, busy, max) — whether the busy-task ceiling is reached."""
+        busy = ClaudeTaskManager.count_live_tasks()
+        return busy >= ClaudeTaskManager.MAX_TASKS, busy, ClaudeTaskManager.MAX_TASKS
 
     @staticmethod
     def _capacity_rejection():
-        _, live, cap = ClaudeTaskManager.at_capacity()
+        counts = ClaudeTaskManager.count_tasks()
+        busy, idle = counts['busy'], counts['idle']
+        cap = ClaudeTaskManager.MAX_TASKS
         return {
             'status': 'rejected',
             'task_id': None,
-            'error': f'concurrent task limit reached ({live}/{cap}); '
-                     'wait for a task to finish or raise KC_MAX_TASKS',
+            'code': 'at_capacity',
+            'busy': busy,
+            'idle': idle,
+            'max_tasks': cap,
+            'error': f'concurrent task limit reached ({busy}/{cap} busy, '
+                     f'{idle} idle not counted); wait for a task to finish '
+                     'or raise KC_MAX_TASKS',
         }
+
+    @staticmethod
+    def rejection_body(task):
+        """The 429 body for a refused create: the error, plus the busy / idle
+        split when the refusal was the task ceiling."""
+        body = {'error': task.get('error')}
+        if task.get('code') == 'at_capacity':
+            body.update({k: task[k] for k in
+                         ('code', 'busy', 'idle', 'max_tasks') if k in task})
+        return body
 
     @staticmethod
     def create_task(prompt, workdir=None, response_url=None, response_secret=None,

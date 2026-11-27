@@ -167,6 +167,10 @@ def clamp_concurrency(requested, *, live_tasks, max_tasks,
 
     `reason` is empty when nothing was clamped, and is persisted on the run so
     the UI can show it rather than the user inferring it from a count.
+
+    `live_tasks` is `ClaudeTaskManager.count_live_tasks()` — the BUSY Builds
+    only (#928). A Build parked on `waiting-for-input` holds no slot, so a pod
+    full of finished-but-open sessions does not shrink a run's headroom.
     """
     try:
         requested = int(requested)
@@ -182,15 +186,15 @@ def clamp_concurrency(requested, *, live_tasks, max_tasks,
 
     limits = []
     if headroom < requested:
-        # KC_MAX_TASKS counts kube-coder-* tmux sessions; KC_MAX_SUBAGENTS
+        # KC_MAX_TASKS counts busy kube-coder-* sessions; KC_MAX_SUBAGENTS
         # counts claude-* and is a different budget, so board workers press
         # against this one only.
-        limits.append(f'KC_MAX_TASKS={max_tasks} with {live_tasks} already live')
+        limits.append(f'KC_MAX_TASKS={max_tasks} with {live_tasks} already busy')
     if board_max < requested:
         limits.append(f'board ceiling {board_max}')
     if effective == 0:
         return 0, (f'cannot start: the workspace is at its task limit '
-                   f'({live_tasks}/{max_tasks}) — wait for a task to finish '
+                   f'({live_tasks}/{max_tasks} busy) — wait for a task to finish '
                    f'or raise KC_MAX_TASKS')
     return effective, (f'clamped to {effective} from {requested}: '
                        + ', '.join(limits))
