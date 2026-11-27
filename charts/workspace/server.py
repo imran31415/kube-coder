@@ -3294,7 +3294,7 @@ class ClaudeTaskManager:
                     project_id=None, model=None, effort=None,
                     board_id=None, board_item_id=None, resume_session_id='',
                     isolate=False, base_ref=None, worktree_slug=None,
-                    base_sha=None, board_run_context=None):
+                    base_sha=None, board_run_context=None, origin_thread_id=None):
         """Launch a Build. Returns its meta, or a refusal dict whose `status`
         is `rejected` / `invalid` / `conflict` / `lock_timeout` / `error`.
 
@@ -3323,13 +3323,15 @@ class ClaudeTaskManager:
                       project_id, model, effort, board_id, board_item_id,
                       resume_session_id)
         if wt_plan is None:
-            return ClaudeTaskManager._spawn_task(*spawn_args, board_run_context=board_run_context)
+            return ClaudeTaskManager._spawn_task(*spawn_args, board_run_context=board_run_context,
+                                                 origin_thread_id=origin_thread_id)
 
         wt, refusal = WorktreeManager.acquire(wt_plan, task_id)
         if refusal:
             return refusal
         try:
-            meta = ClaudeTaskManager._spawn_task(*spawn_args, worktree=wt, board_run_context=board_run_context)
+            meta = ClaudeTaskManager._spawn_task(*spawn_args, worktree=wt, board_run_context=board_run_context,
+                                                 origin_thread_id=origin_thread_id)
         except BaseException:
             WorktreeManager.rollback(wt)
             raise
@@ -3420,7 +3422,7 @@ class ClaudeTaskManager:
                      response_secret, source, disable_memory_injection, assistant,
                      parent_task_id, system_preamble, auto_approve, project_id,
                      model, effort, board_id, board_item_id, resume_session_id,
-                     worktree=None, board_run_context=None):
+                     worktree=None, board_run_context=None, origin_thread_id=None):
         task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
         os.makedirs(task_dir, mode=0o700)
 
@@ -3572,6 +3574,11 @@ class ClaudeTaskManager:
             meta['response_secret'] = response_secret
         if source:
             meta['source'] = source
+        # The chat that dispatched this Build (#929), so its Feed alerts can
+        # go through that chat instead of the Build. Absent for every Build
+        # that did not come from a chat turn.
+        if origin_thread_id:
+            meta['origin_thread_id'] = origin_thread_id
         if worktree:
             meta['worktree'] = WorktreeManager.meta_for(worktree, source_workdir)
 
