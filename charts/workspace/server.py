@@ -4499,6 +4499,7 @@ class ClaudeTaskManager:
         with open(meta_path, 'r') as f:
             meta = json.load(f)
         ClaudeTaskManager._reconcile_status(meta, task_dir)
+        ClaudeTaskManager._deliveries_view(task_id, meta)
 
         # Token spend (#574): the public ledger replaces the stored one, and the
         # private resume state (byte offsets, dedupe ring) never goes on the wire.
@@ -4564,93 +4565,391 @@ class ClaudeTaskManager:
             return raw if ansi else strip_ansi(raw)
         return '(no output available)'
 
+    # ── Follow-up delivery (#927) ────────────────────────────────────────
+    # A follow-up used to be fire-and-hope: the HTTP call held the paste and
+    # submit (a minute or more on a slow TUI), a client that gave up first saw
+    # a bare timeout, and the server carried on pasting behind its back. Each
+    # follow-up now gets a delivery record on the task, one delivery runs per
+    # Build at a time, and a caller can either wait for the outcome or take
+    # the delivery id and read it back.
+
+    #: Delivery records kept on a task: enough to answer "what happened to
+    #: the one I just sent", not a history (`followups[]` is that).
+    DELIVERY_HISTORY = 20
+
+    #: How long a key that was delivered keeps a repeat of it from being sent
+    #: again. A retried request is seconds-to-minutes late; a deliberate
+    #: second "carry on" an hour later is a new message.
+    FOLLOWUP_DEDUPE_WINDOW = float(
+        os.environ.get('KC_FOLLOWUP_DEDUPE_WINDOW', '900'))
+
+    #: Delivery states on top of `_deliver_prompt_outcome`'s.
+    PENDING = 'pending'          # being delivered right now
+    PASTED = 'pasted'            # submit=False: in the box, by request
+    RESUMED = 'resumed'          # a parked Build was resumed with it (#928)
+    INTERRUPTED = 'interrupted'  # pending when the server process went away
+
+    #: States a repeat of the same idempotency key must NOT send again: it
+    #: is on its way, already sent, or we cannot tell whether it was.
+    _DELIVERY_HOLDS_KEY = ('pending', 'delivered', 'pasted', 'resumed',
+                           'unknown', 'interrupted')
+
+    #: Task id -> the delivery id in flight for it. In-process on purpose: a
+    #: restart ends every delivery with it, which is what lets a `pending`
+    #: record with no entry here be reported as `interrupted`.
+    _active_deliveries = {}
+    _delivery_lock = threading.Lock()
+
+    @staticmethod
+    def delivery_budget():
+        """Seconds one follow-up delivery can take, worst case, by design.
+
+        Built from the same constants `_deliver_prompt_outcome` spends: the
+        appear budget once, then each re-paste's floor, release settle, box
+        clear and submit nudges. A caller that waits less than this is the
+        30 s client of #927 giving up on a delivery still in progress.
+        """
+        cls = ClaudeTaskManager
+        submit = cls.SUBMIT_ENTER_TRIES * (
+            cls.SUBMIT_CONFIRM_TIMEOUT + cls.SUBMIT_ESCAPE_SETTLE
+            + 2 * cls.PASTE_POLL_INTERVAL)
+        clear = (len(cls.COMPOSER_CLEAR_KEYS) + 1) * 0.5
+        retry = cls.PASTE_RETRY_FLOOR + cls.PASTE_END_SETTLE + clear + submit
+        # 3 attempts, the default; tmux round-trips are the margin.
+        return round(cls.PASTE_APPEAR_TIMEOUT + cls.PASTE_END_SETTLE + submit
+                     + 2 * retry + 10.0, 1)
+
+    @staticmethod
+    def _delivery_view(task_id, d):
+        """A delivery record as a caller should read it."""
+        view = dict(d)
+        if view.get('state') == ClaudeTaskManager.PENDING and \
+                ClaudeTaskManager._active_deliveries.get(task_id) != view.get('id'):
+            view['state'] = ClaudeTaskManager.INTERRUPTED
+            view['reason'] = ('the dashboard server restarted while this was '
+                              'being delivered; read the task\'s input box '
+                              'before sending it again')
+        return view
+
+    @staticmethod
+    def _deliveries_view(task_id, meta):
+        if meta.get('deliveries'):
+            meta['deliveries'] = [ClaudeTaskManager._delivery_view(task_id, d)
+                                  for d in meta['deliveries']]
+        return meta
+
+    @staticmethod
+    def get_delivery(task_id, delivery_id):
+        """`(delivery, task_status)` for one follow-up delivery, or None."""
+        meta_path = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id,
+                                 'task.json')
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        for d in meta.get('deliveries') or []:
+            if d.get('id') == delivery_id:
+                return (ClaudeTaskManager._delivery_view(task_id, d),
+                        meta.get('status'))
+        return None
+
+    @staticmethod
+    def delivery_error_text(delivery):
+        """What a failed delivery left the task holding, as one sentence."""
+        cls = ClaudeTaskManager
+        state = (delivery or {}).get('state')
+        reason = (delivery or {}).get('reason') or 'no reason recorded'
+        if state == cls.LEFT_UNSENT:
+            return ('Follow-up left UNSENT in the input box: ' + reason + '. '
+                    'Nothing was submitted. Press Enter in the task terminal to '
+                    'send it, or send it again: the box is emptied before the '
+                    'next paste.')
+        if state == cls.NOT_DELIVERED:
+            return ('Follow-up not delivered: ' + reason + '. The input box '
+                    'does not hold it and nothing was submitted, so it is safe '
+                    'to send again.')
+        if state == cls.INTERRUPTED:
+            return 'Follow-up delivery interrupted: ' + reason + '.'
+        if state == cls.PENDING:
+            return ('Follow-up still being delivered (' + reason + '). Do '
+                    'not send it again; read delivery '
+                    + str(delivery.get('id')) + ' for its outcome.')
+        return ('Follow-up delivery failed and the input box could not be '
+                'read: ' + reason + '. Check the task terminal before sending '
+                'it again.')
+
+    @staticmethod
+    def _claim_delivery(task_id, task_dir, prompt, submit, key):
+        """Start a delivery record, or say why this request must not start one.
+
+        Returns `(delivery, why)`: `why` is None for a new delivery (now the
+        task's active one), `'duplicate'` when an earlier delivery of the same
+        `key` answers this request, `'busy'` when another follow-up to this
+        Build is still being pasted -- pasting a second one into the same box
+        is how copies stack -- and `'gone'` when the task vanished.
+        """
+        cls = ClaudeTaskManager
+        now = time.time()
+        with cls._delivery_lock:
+            try:
+                with open(os.path.join(task_dir, 'task.json')) as f:
+                    meta = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return None, 'gone'
+            records = meta.get('deliveries') or []
+            if key:
+                for d in reversed(records):
+                    if d.get('key') != key:
+                        continue
+                    view = cls._delivery_view(task_id, d)
+                    at = d.get('finished_at') or d.get('started_at') or now
+                    if view['state'] in cls._DELIVERY_HOLDS_KEY and (
+                            view['state'] == cls.PENDING
+                            or now - at < cls.FOLLOWUP_DEDUPE_WINDOW):
+                        return view, 'duplicate'
+                    break  # left unsent / not delivered: a retry is safe
+            active = cls._active_deliveries.get(task_id)
+            if active:
+                for d in records:
+                    if d.get('id') == active:
+                        return cls._delivery_view(task_id, d), 'busy'
+                return {'id': active, 'state': cls.PENDING}, 'busy'
+            delivery = {
+                'id': 'dlv-' + secrets.token_hex(6),
+                'state': cls.PENDING,
+                'reason': 'pasting into the input box',
+                'submit': bool(submit),
+                'started_at': now,
+                'prompt_chars': len(prompt),
+                'prompt_sha256': hashlib.sha256(
+                    prompt.encode('utf-8')).hexdigest()[:16],
+            }
+            if key:
+                delivery['key'] = key
+
+            def add(m):
+                m['deliveries'] = ((m.get('deliveries') or [])
+                                   + [delivery])[-cls.DELIVERY_HISTORY:]
+
+            if cls._atomic_update_meta(task_dir, add) is None:
+                return None, 'gone'
+            cls._active_deliveries[task_id] = delivery['id']
+        return dict(delivery), None
+
+    @staticmethod
+    def _finish_delivery(task_id, task_dir, delivery_id, state, reason):
+        """Record a delivery's outcome and release the Build for the next one.
+
+        Returns the task as it now stands (None if it is gone)."""
+        cls = ClaudeTaskManager
+        now = time.time()
+
+        def mutate(m):
+            for d in m.get('deliveries') or []:
+                if d.get('id') == delivery_id:
+                    d.update(state=state, reason=reason, finished_at=now)
+
+        try:
+            return cls._atomic_update_meta(task_dir, mutate)
+        finally:
+            with cls._delivery_lock:
+                if cls._active_deliveries.get(task_id) == delivery_id:
+                    del cls._active_deliveries[task_id]
+
     @staticmethod
     def send_followup(task_id, prompt, submit=True):
-        # submit=False pastes the text into the live session's input box WITHOUT
-        # pressing Enter — used by the dashboard's "Paste from clipboard" action
-        # so a mobile user can drop text in, review it, and submit themselves.
-        task_dir = os.path.join(ClaudeTaskManager.TASKS_DIR, task_id)
-        meta_path = os.path.join(task_dir, 'task.json')
-        if not os.path.isfile(meta_path):
-            return None, 'Task not found'
+        """Deliver a follow-up and wait for it. Returns `(task, error)`.
 
+        The original contract, kept for in-process callers (Board runs);
+        `followup` is the full one."""
+        res = ClaudeTaskManager.followup(task_id, prompt, submit=submit)
+        if res['kind'] in ('sent', 'duplicate'):
+            return res['task'], None
+        return None, res['error']
+
+    @staticmethod
+    def followup(task_id, prompt, submit=True, key=None, wait=True):
+        """Deliver a follow-up prompt into a live Build (#927).
+
+        submit=False pastes the text into the input box WITHOUT pressing Enter
+        -- the dashboard's "Paste from clipboard" action, so a mobile user can
+        drop text in, review it, and submit themselves.
+
+        `key` makes the request idempotent: while a delivery of the same key
+        is in flight, was delivered within `FOLLOWUP_DEDUPE_WINDOW`, or ended
+        in a state nobody can vouch for, the request sends nothing and
+        answers with that delivery instead. `wait=False` returns as soon as
+        the delivery is claimed and runs it on a thread; the caller reads the
+        outcome back with `get_delivery`.
+
+        Returns a dict with `kind`:
+          'sent'      -- delivered (task + delivery)
+          'accepted'  -- wait=False: started (task + delivery, still pending)
+          'duplicate' -- an earlier delivery of `key` answers it; nothing sent
+          'busy'      -- another follow-up to this Build is mid-delivery
+          'failed'    -- delivery ran and did not deliver; `error` says what
+                         the box was left holding
+          'refused'   -- not attempted (`error`): no such task, finished, ...
+        """
+        cls = ClaudeTaskManager
+        task_dir = os.path.join(cls.TASKS_DIR, task_id)
+        meta_path = os.path.join(task_dir, 'task.json')
+
+        def result(kind, task=None, delivery=None, error=None):
+            return {'kind': kind, 'task': task, 'delivery': delivery,
+                    'error': error}
+
+        if not os.path.isfile(meta_path):
+            return result('refused', error='Task not found')
         with open(meta_path, 'r') as f:
             meta = json.load(f)
 
         # A finished Build takes no more input, even with a session still up.
         if meta.get('status') in task_status.TERMINAL_STATUSES:
-            return None, 'Session is no longer running'
+            return result('refused', error='Session is no longer running')
 
         # A parked Build (#928) had its idle session closed; a message is how
         # it is picked up again, so sending one resumes it. A paste-only
         # request has nothing to resume FOR.
-        if meta.get('status') in task_status.RESUMABLE_STATUSES:
-            if not submit:
-                return None, 'Session is parked; send a message to resume it'
-            resumed, err = ClaudeTaskManager.resume_task(task_id, prompt=prompt)
-            if resumed is None or err:
-                return None, ClaudeTaskManager.resume_error_text(err, resumed)
-            return resumed, None
-
+        parked = meta.get('status') in task_status.RESUMABLE_STATUSES
+        if parked and not submit:
+            return result('refused',
+                          error='Session is parked; send a message to resume it')
         session_name = meta.get('tmux_session', f'kube-coder-{task_id}')
+        if not parked:
+            check = subprocess.run(
+                ['tmux', 'has-session', '-t', session_name],
+                capture_output=True, text=True,
+            )
+            if check.returncode != 0:
+                return result('refused', error='Session is no longer running')
 
-        # Check if tmux session is still alive
-        check = subprocess.run(
-            ['tmux', 'has-session', '-t', session_name],
-            capture_output=True, text=True,
-        )
-        if check.returncode != 0:
-            return None, 'Session is no longer running'
+        delivery, why = cls._claim_delivery(task_id, task_dir, prompt,
+                                            submit, key)
+        if why == 'gone':
+            return result('refused', error='Task not found')
+        if why == 'duplicate':
+            with open(meta_path) as f:
+                task = cls._deliveries_view(task_id, json.load(f))
+            return result('duplicate', task, delivery)
+        if why == 'busy':
+            return result('busy', delivery=delivery, error=(
+                'Another follow-up to this task is still being delivered '
+                f'({delivery.get("id")}); nothing was pasted. Wait for it to '
+                'finish, then send this one.'))
 
-        # Send the follow-up prompt into the interactive claude session
-        # Use load-buffer + paste-buffer for clean multi-line handling
-        prompt_file = os.path.join(task_dir, 'followup.txt')
-        with open(prompt_file, 'w') as f:
-            f.write(prompt)
+        def run():
+            return cls._run_followup(task_id, task_dir, delivery['id'],
+                                     prompt, submit, parked, session_name)
 
-        # Reuse the shared paste+verify path (issue #288). The TUI is already
-        # settled for a follow-up, but the verify+retry still guards against a
-        # dropped paste, and Claude/OpenCode's bracketed-paste Enter-absorption
-        # is handled by the helper's nudge (the "it just sets the input" bug).
-        buf_name = f'followup-{task_id}'
-        delivered = ClaudeTaskManager._deliver_prompt(
-            session_name, prompt_file, buf_name, submit=submit)
-        if not delivered:
-            return None, 'Failed to send follow-up'
+        if not wait:
+            def background():
+                try:
+                    run()
+                except Exception as e:  # never leave it pending forever
+                    legacy_log('workspace', f'[followup] {task_id}: delivery '
+                               f'{delivery["id"]} crashed: {e}',
+                               file=sys.stderr)
+            threading.Thread(target=background, daemon=True,
+                             name=f'followup-{task_id}').start()
+            with open(meta_path) as f:
+                task = cls._deliveries_view(task_id, json.load(f))
+            return result('accepted', task, delivery)
+        return run()
 
-        # A paste (no submit) leaves the text sitting in the input box — nothing
-        # was actually sent, so don't record a followup or flip status. Return
-        # the current meta so the caller still gets a 200.
-        if not submit:
-            with open(meta_path, 'r') as f:
-                return json.load(f), None
+    @staticmethod
+    def _run_followup(task_id, task_dir, delivery_id, prompt, submit, parked,
+                      session_name):
+        """The delivery itself, recorded whatever happens. See `followup`."""
+        cls = ClaudeTaskManager
+        finished = []
 
-        # Update metadata under an exclusive lock so concurrent /message calls
-        # don't drop each other's appends to followups[].
-        sent_at = time.time()
+        def finish(kind, state, reason, task=None, error=None):
+            finished.append(state)
+            updated = cls._finish_delivery(task_id, task_dir, delivery_id,
+                                           state, reason)
+            view = cls.get_delivery(task_id, delivery_id)
+            delivery = view[0] if view else {'id': delivery_id,
+                                             'state': state, 'reason': reason}
+            if kind == 'failed' and error is None:
+                error = cls.delivery_error_text(delivery)
+            if task is None and kind == 'sent' and updated is not None:
+                task = cls._deliveries_view(task_id, updated)
+            return {'kind': kind, 'task': task, 'delivery': delivery,
+                    'error': error}
 
-        def record_followup(m):
-            # The Build ended while the text was being pasted, so nothing is
-            # left to read it. Refused rather than recorded: the caller must
-            # hear what a session already dead at the top of this call gets.
-            # Parked counts too: the idle reaper closed the session while
-            # the text was being pasted, so nothing read it (#928).
-            if m.get('status') in task_status.TERMINAL_STATUSES or \
-                    m.get('status') in task_status.RESUMABLE_STATUSES:
-                return False
-            m.setdefault('followups', []).append(
-                {'prompt': prompt, 'sent_at': sent_at})
+        try:
+            if parked:
+                resumed, err = cls.resume_task(task_id, prompt=prompt)
+                if resumed is None or err:
+                    text = cls.resume_error_text(err, resumed)
+                    return finish('failed', cls.NOT_DELIVERED, text,
+                                  error=text)
+                return finish('sent', cls.RESUMED, 'the parked Build was '
+                              'resumed with this message as its prompt')
 
-        updated, _ = ClaudeTaskManager._transition(
-            task_dir, 'running', record=record_followup)
-        if updated is not None and \
-                updated.get('status') in task_status.TERMINAL_STATUSES:
-            return None, 'Session is no longer running'
-        if updated is not None and \
-                updated.get('status') in task_status.RESUMABLE_STATUSES:
-            return None, ('The session was closed while idle as this message '
-                          'was sent; send it again to resume the Build')
-        return updated, None
+            # load-buffer + paste-buffer for clean multi-line handling. One
+            # delivery per Build at a time, so the file is never shared.
+            prompt_file = os.path.join(task_dir, 'followup.txt')
+            with open(prompt_file, 'w') as f:
+                f.write(prompt)
+
+            # Reuse the shared paste+verify path (issue #288). The TUI is
+            # already settled for a follow-up, but the verify+retry still
+            # guards against a dropped paste, and Claude/OpenCode's
+            # bracketed-paste Enter-absorption is handled by the nudge.
+            got = cls._deliver_prompt_outcome(
+                session_name, prompt_file, f'followup-{task_id}',
+                submit=submit)
+            if got['state'] != cls.DELIVERED:
+                return finish('failed', got['state'], got['reason'])
+
+            # A paste (no submit) leaves the text sitting in the input box --
+            # nothing was actually sent, so don't record a followup or flip
+            # status.
+            if not submit:
+                return finish('sent', cls.PASTED,
+                              'pasted into the input box; not submitted')
+
+            # Update metadata under an exclusive lock so concurrent /message
+            # calls don't drop each other's appends to followups[].
+            sent_at = time.time()
+
+            def record_followup(m):
+                # The Build ended while the text was being pasted, so nothing
+                # is left to read it. Refused rather than recorded: the caller
+                # must hear what a session already dead at the top of this
+                # call gets. Parked counts too: the idle reaper closed the
+                # session while the text was being pasted (#928).
+                if m.get('status') in task_status.TERMINAL_STATUSES or \
+                        m.get('status') in task_status.RESUMABLE_STATUSES:
+                    return False
+                m.setdefault('followups', []).append(
+                    {'prompt': prompt, 'sent_at': sent_at,
+                     'delivery_id': delivery_id})
+
+            updated, _ = cls._transition(
+                task_dir, 'running', record=record_followup)
+            if updated is not None and \
+                    updated.get('status') in task_status.TERMINAL_STATUSES:
+                text = 'Session is no longer running'
+                return finish('failed', cls.NOT_DELIVERED,
+                              'the Build ended while it was being sent',
+                              error=text)
+            if updated is not None and \
+                    updated.get('status') in task_status.RESUMABLE_STATUSES:
+                text = ('The session was closed while idle as this message '
+                        'was sent; send it again to resume the Build')
+                return finish('failed', cls.NOT_DELIVERED,
+                              'the idle session was closed as it was sent',
+                              error=text)
+            return finish('sent', cls.DELIVERED, 'submitted')
+        except Exception as e:
+            if not finished:
+                finish('failed', cls.UNKNOWN,
+                       f'the delivery crashed: {type(e).__name__}: {e}')
+            raise
 
     @staticmethod
     def resume_error_text(err, meta=None):
@@ -5329,6 +5628,32 @@ class ClaudeTaskManager:
             return 0 if not norm else -1
         return norm.count(needle)
 
+    #: Bracketed-paste END marker (#927). Sent literally, it closes a paste
+    #: the composer is still inside. Measured on Claude Code 2.1.325 in a
+    #: throwaway tmux: after a lone `ESC[200~`, Enter, C-c and Escape are all
+    #: swallowed as paste text and the box looks frozen; this marker releases
+    #: it, and on an idle composer it inserts nothing.
+    PASTE_END_MARKER = '\x1b[201~'
+
+    @staticmethod
+    def _end_stuck_paste(session_name):
+        """Close an unterminated bracketed paste in the session's TUI."""
+        subprocess.run(
+            ['tmux', 'send-keys', '-t', session_name, '-l',
+             ClaudeTaskManager.PASTE_END_MARKER],
+            capture_output=True, text=True,
+        )
+
+    @staticmethod
+    def _pane_shows_busy(pane):
+        """True when the CLI is visibly working on a turn.
+
+        Claude Code's footer reads `esc to interrupt` only while a turn runs.
+        Used to tell a prompt SENT (by our Enter, or by anyone else's) from a
+        box Escape emptied, which looks the same from the box alone (#927).
+        """
+        return bool(pane) and 'esc to interrupt' in strip_ansi(pane).lower()
+
     #: Key sequences tried, in order, to empty an input box that still holds a
     #: previous attempt's paste. `C-u` kills the line; Escape is Claude Code's
     #: own "clear the composer" and gets a multi-line paste placeholder that a
@@ -5346,10 +5671,17 @@ class ClaudeTaskManager:
         because that is exactly how a box ends up holding the prompt three
         times.
         """
-        for keys in ClaudeTaskManager.COMPOSER_CLEAR_KEYS:
+        for i, keys in enumerate(ClaudeTaskManager.COMPOSER_CLEAR_KEYS):
             if ClaudeTaskManager._paste_copies(
                     ClaudeTaskManager._capture_pane(session_name), needle) <= 0:
                 return True
+            if not i:
+                # A composer stuck inside an unterminated bracketed paste
+                # takes every key below as more paste text, so the box never
+                # empties and a re-paste stacks on top of it (#927). Close
+                # the paste first; on a composer that is not in one, the
+                # marker is ignored.
+                ClaudeTaskManager._end_stuck_paste(session_name)
             subprocess.run(
                 ['tmux', 'send-keys', '-t', session_name, *keys],
                 capture_output=True, text=True,
@@ -5377,6 +5709,9 @@ class ClaudeTaskManager:
     #: failure; with it, total delivery stays well inside the Board run's
     #: quiet-settle window instead of multiplying the ceiling by `retries`.
     PASTE_RETRY_FLOOR = 4.0
+
+    #: How long a paste released by the END marker gets to show up (#927).
+    PASTE_END_SETTLE = 1.5
 
     @staticmethod
     def _wait_for_paste(session_name, needle, before, timeout=None,
@@ -5457,8 +5792,12 @@ class ClaudeTaskManager:
                    if timeout is None else timeout)
         interval = (ClaudeTaskManager.PASTE_POLL_INTERVAL
                     if interval is None else interval)
+        busy_before = ClaudeTaskManager._pane_shows_busy(pasted)
         for attempt in range(max(1, tries)):
             if attempt:
+                # An Enter that vanished may be sitting inside a paste the
+                # composer never closed; Escape would vanish the same way.
+                ClaudeTaskManager._end_stuck_paste(session_name)
                 subprocess.run(
                     ['tmux', 'send-keys', '-t', session_name, 'Escape'],
                     capture_output=True, text=True,
@@ -5467,10 +5806,15 @@ class ClaudeTaskManager:
                 # Some CLIs treat Escape as "clear the composer". An emptied
                 # box here was NOT sent -- reading it as a submit would report
                 # a delivery that never happened -- so hand it back to be
-                # pasted again.
-                if ClaudeTaskManager._paste_copies(
-                        ClaudeTaskManager._capture_pane(session_name),
-                        needle) == 0:
+                # pasted again. Unless the CLI is now working on a turn it was
+                # not working on before: then the empty box is a SUBMIT (a
+                # late Enter, or a human's), and pasting again is exactly the
+                # duplicate #927 found in the box ten minutes later.
+                pane = ClaudeTaskManager._capture_pane(session_name)
+                if ClaudeTaskManager._paste_copies(pane, needle) == 0:
+                    if not busy_before and \
+                            ClaudeTaskManager._pane_shows_busy(pane):
+                        return True
                     return ClaudeTaskManager.SUBMIT_CLEARED
             subprocess.run(
                 ['tmux', 'send-keys', '-t', session_name, 'Enter'],
@@ -5489,9 +5833,38 @@ class ClaudeTaskManager:
                     break
         return False
 
+    #: `_deliver_prompt_outcome` states (#927). Each one says what the input
+    #: box was left holding, because that is what a caller has to act on.
+    DELIVERED = 'delivered'          # submitted (or, without submit, pasted)
+    LEFT_UNSENT = 'left_unsent'      # the prompt is in the box, NOT sent
+    NOT_DELIVERED = 'not_delivered'  # the box does not hold it; nothing sent
+    UNKNOWN = 'unknown'              # failed, and the box cannot be read
+
     @staticmethod
     def _deliver_prompt(session_name, prompt_file, buf_name, submit=True,
                         retries=3, appear_timeout=None):
+        """`_deliver_prompt_outcome` as a bool: True only when delivered."""
+        return ClaudeTaskManager._deliver_prompt_outcome(
+            session_name, prompt_file, buf_name, submit=submit,
+            retries=retries, appear_timeout=appear_timeout,
+        )['state'] == ClaudeTaskManager.DELIVERED
+
+    @staticmethod
+    def _settle_outcome(session_name, needle, reason):
+        """What a FAILED delivery left behind, read off the box once."""
+        cls = ClaudeTaskManager
+        copies = cls._paste_copies(cls._capture_pane(session_name), needle)
+        if copies > 0:
+            state = cls.LEFT_UNSENT
+        elif copies == 0:
+            state = cls.NOT_DELIVERED
+        else:
+            state = cls.UNKNOWN
+        return {'state': state, 'reason': reason}
+
+    @staticmethod
+    def _deliver_prompt_outcome(session_name, prompt_file, buf_name,
+                                submit=True, retries=3, appear_timeout=None):
         """Paste a prompt file into a live tmux TUI and verify delivery.
 
         Shared path for the initial prompt (create_task) and follow-ups
@@ -5499,24 +5872,32 @@ class ClaudeTaskManager:
         the session's input box, and — when `submit` — presses Enter until the
         box empties.
 
-        Claude/OpenCode wrap pasted text in bracketed-paste escapes. A paste
-        into a still-initializing TUI can be silently *dropped*, and re-sending
-        Enter cannot recover that (the box is empty), so a dropped paste has to
-        be pasted again (#288). But a paste into a SLOW TUI is only late, not
-        lost: it is queued and shows up seconds later. Telling those apart is
-        what this does — it waits, up to `appear_timeout`, for the prompt
-        itself to appear in the box, and only re-pastes if it never does. Every
-        re-paste empties the box first, so a late arrival can never leave two
-        copies stacked in it (#805).
+        The paste is a BRACKETED one (`paste-buffer -p`): tmux wraps it in the
+        paste start/end markers whenever the CLI asked for them, so the two
+        always arrive as a pair. Without `-p` tmux sends the raw text with each
+        newline as a carriage return, and Claude Code 2.1.325 submits the first
+        line of a multi-line prompt on its own (measured, #927).
 
-        Returns True once the prompt is delivered (and submitted, when
-        `submit`), else False — and a False is loud, because the honest state
-        is a Build that visibly never received its prompt rather than one
-        quietly holding it unsent.
+        A paste into a still-initializing TUI can be silently *dropped*, and
+        re-sending Enter cannot recover that (the box is empty), so a dropped
+        paste has to be pasted again (#288). But a paste into a SLOW TUI is
+        only late, not lost: it is queued and shows up seconds later. Telling
+        those apart is what this does — it waits, up to `appear_timeout`, for
+        the prompt itself to appear in the box, and only re-pastes if it never
+        does. Every re-paste empties the box first, and is abandoned if the box
+        will not empty, so a late arrival can never leave two copies stacked in
+        it (#805, #927).
+
+        Returns `{'state', 'reason'}`: `DELIVERED`, or what the box was left
+        holding — `LEFT_UNSENT` (the prompt is there, unsent), `NOT_DELIVERED`
+        (it is not) or `UNKNOWN` (unreadable). A failure is loud, because the
+        honest state is a Build that visibly never received its prompt rather
+        than one quietly holding it unsent.
         """
-        needle = ClaudeTaskManager._paste_needle(prompt_file)
+        cls = ClaudeTaskManager
+        needle = cls._paste_needle(prompt_file)
         attempts = max(1, retries)
-        budget = (ClaudeTaskManager.PASTE_APPEAR_TIMEOUT
+        budget = (cls.PASTE_APPEAR_TIMEOUT
                   if appear_timeout is None else appear_timeout)
         spend_by = time.time() + max(0.0, budget)
         reason = 'no attempt ran'
@@ -5525,9 +5906,9 @@ class ClaudeTaskManager:
             # that can only be a previous delivery round's leftovers (the
             # launch path retries around the trust dialog); on a retry it is
             # our own paste, which may have landed late after all.
-            if attempt or ClaudeTaskManager._paste_copies(
-                    ClaudeTaskManager._capture_pane(session_name), needle) > 0:
-                if not ClaudeTaskManager._clear_composer(session_name, needle):
+            if attempt or cls._paste_copies(
+                    cls._capture_pane(session_name), needle) > 0:
+                if not cls._clear_composer(session_name, needle):
                     reason = 'the input box could not be emptied for a re-paste'
                     break
             try:
@@ -5535,23 +5916,32 @@ class ClaudeTaskManager:
                     ['tmux', 'load-buffer', '-b', buf_name, prompt_file],
                     capture_output=True, text=True, check=True,
                 )
-                before = ClaudeTaskManager._capture_pane(session_name)
+                before = cls._capture_pane(session_name)
                 subprocess.run(
-                    ['tmux', 'paste-buffer', '-b', buf_name, '-t', session_name],
+                    ['tmux', 'paste-buffer', '-p', '-b', buf_name,
+                     '-t', session_name],
                     capture_output=True, text=True, check=True,
                 )
             except subprocess.CalledProcessError as e:
                 legacy_log('workspace', f'[ClaudeTaskManager] paste failed: {e}', file=sys.stderr)
-                ClaudeTaskManager._delete_buffer(buf_name)
+                cls._delete_buffer(buf_name)
                 reason = f'tmux refused the paste: {e}'
                 continue
-            landed, pasted = ClaudeTaskManager._wait_for_paste(
+            landed, pasted = cls._wait_for_paste(
                 session_name, needle, before,
-                timeout=max(ClaudeTaskManager.PASTE_RETRY_FLOOR,
-                            spend_by - time.time()))
-            ClaudeTaskManager._delete_buffer(buf_name)
+                timeout=max(cls.PASTE_RETRY_FLOOR, spend_by - time.time()))
+            if not landed and not cls._pane_shows_trust_dialog(pasted):
+                # A paste the composer is still INSIDE is buffered, not drawn,
+                # so it reads as dropped -- and pasting again would stack a
+                # second copy into the same open paste (#927). Close it and
+                # look once more before calling it lost.
+                cls._end_stuck_paste(session_name)
+                landed, pasted = cls._wait_for_paste(
+                    session_name, needle, before,
+                    timeout=cls.PASTE_END_SETTLE)
+            cls._delete_buffer(buf_name)
             if not landed:
-                if ClaudeTaskManager._pane_shows_trust_dialog(pasted):
+                if cls._pane_shows_trust_dialog(pasted):
                     # The modal has the keyboard, so the prompt never reached
                     # the composer. Re-pasting would just feed the dialog
                     # again; the launch path answers it and comes back (#800).
@@ -5567,12 +5957,11 @@ class ClaudeTaskManager:
                 reason = 'the paste never appeared in the input box'
                 continue
             if not submit:
-                return True
-            sent = ClaudeTaskManager._submit_and_confirm(
-                session_name, needle, pasted)
+                return {'state': cls.DELIVERED, 'reason': 'pasted, not submitted'}
+            sent = cls._submit_and_confirm(session_name, needle, pasted)
             if sent is True:
-                return True
-            if sent == ClaudeTaskManager.SUBMIT_CLEARED:
+                return {'state': cls.DELIVERED, 'reason': 'submitted'}
+            if sent == cls.SUBMIT_CLEARED:
                 reason = 'Escape emptied the input box before it was sent'
                 continue
             # The prompt IS in the box and Enter did not clear it. Say so and
@@ -5584,7 +5973,7 @@ class ClaudeTaskManager:
             break
         legacy_log('workspace', f'[ClaudeTaskManager] {session_name}: PROMPT NOT DELIVERED — '
               f'{reason} (#805)', file=sys.stderr)
-        return False
+        return cls._settle_outcome(session_name, needle, reason)
 
     #: Clear-the-dialog-and-deliver-again rounds at launch (#800).
     LAUNCH_PROMPT_ROUNDS = 2
@@ -18436,6 +18825,7 @@ if __name__ == "__main__":
     legacy_log('workspace', "  GET  /api/claude/tasks/{id}/worktree - Isolated worktree status (#701)")
     legacy_log('workspace', "  GET  /api/worktrees                 - All isolated worktrees")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    legacy_log('workspace', "  GET  /api/claude/tasks/{id}/deliveries/{delivery_id} - Follow-up delivery state")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/rename  - Rename a task")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/resume  - Resume a parked task")
     legacy_log('workspace', "  DELETE /api/claude/tasks/{id}       - Kill a running task")

@@ -430,11 +430,17 @@ class KillTests(Base):
         set_item.assert_called_once_with('r1', '7', superseded_task_id='owner')
 
 
+def delivered(*a, **k):
+    """Stands in for `_deliver_prompt_outcome`, the seam a follow-up pastes
+    through since #927 (it reports what the box was left holding)."""
+    return {'state': CTM.DELIVERED, 'reason': 'submitted'}
+
+
 class FollowupTests(Base):
     def _send(self, deliver=None, tid='t', **kwargs):
         with mock.patch.object(server.subprocess, 'run', side_effect=SESSION_ALIVE), \
-             mock.patch.object(CTM, '_deliver_prompt',
-                               side_effect=deliver or (lambda *a, **k: True)):
+             mock.patch.object(CTM, '_deliver_prompt_outcome',
+                               side_effect=deliver or delivered):
             return CTM.send_followup(tid, 'hi', **kwargs)
 
     def test_defect4_every_terminal_status_survives_a_racing_followup(self):
@@ -444,7 +450,7 @@ class FollowupTests(Base):
 
                 def ends_mid_paste(*a, **k):
                     CTM._transition(task_dir, status)
-                    return True
+                    return delivered()
 
                 updated, err = self._send(ends_mid_paste, tid=status)
                 self.assertIsNone(updated)
@@ -461,10 +467,11 @@ class FollowupTests(Base):
 
         def killed_mid_paste(*a, **k):
             CTM._transition(task_dir, 'killed')
-            return True
+            return delivered()
 
         with mock.patch.object(server.subprocess, 'run', side_effect=SESSION_ALIVE), \
-             mock.patch.object(CTM, '_deliver_prompt', side_effect=killed_mid_paste), \
+             mock.patch.object(CTM, '_deliver_prompt_outcome',
+                               side_effect=killed_mid_paste), \
              mock.patch.object(server.time, 'sleep') as sleep:
             got = server.BoardRunsManager._resume_in_place(
                 {'task_id': 't', 'note': 'please revise'})
@@ -475,7 +482,7 @@ class FollowupTests(Base):
         # Even with a session still standing, e.g. a kill landing right now.
         self._task(status='killed')
         with mock.patch.object(server.subprocess, 'run', side_effect=SESSION_ALIVE), \
-             mock.patch.object(CTM, '_deliver_prompt') as deliver:
+             mock.patch.object(CTM, '_deliver_prompt_outcome') as deliver:
             updated, err = CTM.send_followup('t', 'hi')
         deliver.assert_not_called()
         self.assertIsNone(updated)

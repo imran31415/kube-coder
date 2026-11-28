@@ -509,6 +509,13 @@ class TaskRoutes:
         self.send_json(task, 201)
 
     def handle_claude_followup(self):
+        """POST /api/claude/tasks/{id}/message — deliver a follow-up.
+
+        Body: `prompt`; optional `submit` (default true; false = paste only),
+        `idempotency_key` (a repeat of the same key never pastes twice) and
+        `wait` (default true; false = 202 with a delivery id at once, read the
+        outcome from GET .../deliveries/{delivery_id}). See #927.
+        """
         if not self.check_claude_auth():
             self.send_json({'error': 'Unauthorized'}, 401)
             return
@@ -517,20 +524,62 @@ class TaskRoutes:
         except (json.JSONDecodeError, ValueError):
             self.send_json({'error': 'Invalid JSON body'}, 400)
             return
-        prompt = data.get('prompt', '').strip()
+        if not isinstance(data, dict):
+            self.send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        prompt = data.get('prompt', '')
+        prompt = prompt.strip() if isinstance(prompt, str) else ''
         if not prompt:
             self.send_json({'error': 'prompt is required'}, 400)
             return
+        key = data.get('idempotency_key')
+        if key is not None and (not isinstance(key, str) or
+                                not 0 < len(key.strip()) <= 200):
+            self.send_json({'error': 'idempotency_key must be a non-empty '
+                                     'string of at most 200 characters'}, 400)
+            return
         # submit defaults to True (normal send). False = paste-only (no Enter).
         submit = data.get('submit', True) is not False
-        task, err = handlers.server.ClaudeTaskManager.send_followup(self._claude_task_id, prompt, submit=submit)
-        if task is None:
-            # A message to a parked Build resumes it (#928), and resuming is a
-            # new busy session, so it can meet the task ceiling.
-            at_cap = (err or '').startswith('concurrent task limit')
-            self.send_json({'error': err or 'Task not found'}, 429 if at_cap else 404)
+        wait = data.get('wait', True) is not False
+        mgr = handlers.server.ClaudeTaskManager
+        res = mgr.followup(self._claude_task_id, prompt, submit=submit,
+                           key=key.strip() if key else None, wait=wait)
+        kind, delivery, err = res['kind'], res['delivery'], res['error']
+        if kind in ('sent', 'accepted', 'duplicate'):
+            body = dict(res['task'] or {'task_id': self._claude_task_id})
+            body['delivery'] = delivery
+            body['delivery_budget_s'] = mgr.delivery_budget()
+            if kind == 'duplicate':
+                body['deduplicated'] = True
+            pending = (delivery or {}).get('state') == mgr.PENDING
+            self.send_json(body, 202 if pending else 200)
             return
-        self.send_json(task)
+        if kind == 'busy':
+            self.send_json({'error': err, 'delivery': delivery}, 409)
+            return
+        # A message to a parked Build resumes it (#928), and resuming is a
+        # new busy session, so it can meet the task ceiling.
+        at_cap = (err or '').startswith('concurrent task limit')
+        if kind == 'failed':
+            self.send_json({'error': err, 'delivery': delivery},
+                           429 if at_cap else 409)
+            return
+        self.send_json({'error': err or 'Task not found'},
+                       429 if at_cap else 404)
+
+    def handle_claude_get_delivery(self, delivery_id):
+        """GET /api/claude/tasks/{id}/deliveries/{delivery_id} (#927)."""
+        if not self.check_claude_auth():
+            self.send_json({'error': 'Unauthorized'}, 401)
+            return
+        found = handlers.server.ClaudeTaskManager.get_delivery(
+            self._claude_task_id, delivery_id)
+        if found is None:
+            self.send_json({'error': 'Delivery not found'}, 404)
+            return
+        delivery, status = found
+        self.send_json({'task_id': self._claude_task_id,
+                        'task_status': status, 'delivery': delivery})
 
     def handle_claude_resume_task(self):
         """POST /api/claude/tasks/{id}/resume — reopen a parked Build (#928).
@@ -836,6 +885,9 @@ ROUTES.add('GET', '/api/claude/assistants', 'handle_claude_list_assistants')
 # — but keep the specific ones first so widening one is caught by reading.
 ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/stream$'),
            'handle_claude_stream_output', sets='_claude_task_id')
+ROUTES.add('GET',
+           re.compile(rf'^/api/claude/tasks/{_TASK_ID}/deliveries/(dlv-[a-f0-9]+)$'),
+           'handle_claude_get_delivery', sets='_claude_task_id')
 ROUTES.add('GET', re.compile(rf'^/api/claude/tasks/{_TASK_ID}/output$'),
            'handle_claude_get_output', sets='_claude_task_id')
 # Was one pattern with an optional `(/diff)?` group the handler branched on.

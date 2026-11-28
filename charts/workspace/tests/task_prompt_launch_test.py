@@ -489,14 +489,14 @@ TRUST_DIALOG_SCREEN = (
 )
 
 
-def composer_screen(box_lines, transcript=()):
+def composer_screen(box_lines, transcript=(), footer=None):
     """Render a Claude Code screen: transcript, then the input box, then the
     shortcuts footer. `box_lines` is what sits INSIDE the box."""
     out = list(transcript)
     out.append('╭──────────────────────────────────────────────────────────╮')
     out.extend(f'│ {line:<56} │' for line in box_lines)
     out.append('╰──────────────────────────────────────────────────────────╯')
-    out.append('  ? for shortcuts')
+    out.append(footer or '  ? for shortcuts')
     return '\n'.join(out) + '\n'
 
 
@@ -518,14 +518,28 @@ class FakeSession:
     - `needs_escape` — Claude Code v2.1.310 (#813): after a paste, a bare Enter
                      does nothing, however often it is pressed; only an Enter
                      that follows an Escape submits. Escape leaves the text.
+    - `stuck`      — the composer is inside an unterminated bracketed paste
+                     (#927): every key is swallowed as paste text and nothing
+                     new shows until the paste END marker arrives. Measured on
+                     Claude Code 2.1.325.
+    - `sticks`     — this many pastes open a paste they never close.
+    - `shows_busy` — draw `esc to interrupt` while a submitted turn runs.
+    - `outside_enter_at` — a human's Enter (or a second caller's) lands at
+                     this virtual time: the #927 occurrence-1 race.
     """
 
     PROMPT = 'implement the thing and open a PR'
 
     def __init__(self, paste_delay=0.0, drops=0, swallow=0, preloaded=0,
                  placeholder=False, unclearable=False, dialog=False,
-                 needs_escape=False):
+                 needs_escape=False, stuck=False, sticks=0, shows_busy=False,
+                 outside_enter_at=None):
         self.clock = 0.0
+        self.stuck = stuck
+        self.sticks = sticks
+        self.hidden = 0
+        self.shows_busy = shows_busy
+        self.outside_enter_at = outside_enter_at
         self.needs_escape = needs_escape
         self.armed = False
         self.paste_delay = paste_delay
@@ -540,6 +554,7 @@ class FakeSession:
         self.pastes = 0
         self.enters = 0
         self.keys = []
+        self.paste_args = []
 
     # -- virtual clock --------------------------------------------------
     def sleep(self, secs):
@@ -554,6 +569,10 @@ class FakeSession:
         due = [t for t in self.pending if t <= self.clock]
         self.pending = [t for t in self.pending if t > self.clock]
         self.visible += len(due)
+        if self.outside_enter_at is not None and \
+                self.clock >= self.outside_enter_at:
+            self.outside_enter_at = None
+            self._key('Enter')
 
     # -- the pane -------------------------------------------------------
     def render(self):
@@ -566,15 +585,17 @@ class FakeSession:
         for _ in self.submitted:
             transcript.append(f'> {self.PROMPT}')
             transcript.append('● Working on it…')
+        footer = ('  esc to interrupt' if self.shows_busy and self.submitted
+                  else None)
         if not self.visible:
-            return composer_screen(['>'], transcript)
+            return composer_screen(['>'], transcript, footer=footer)
         if self.placeholder:
             body = [f'[Pasted text #{i + 1} +14 lines]'
                     for i in range(self.visible)]
         else:
             body = [self.PROMPT] * self.visible
         body[0] = '> ' + body[0]
-        return composer_screen(body, transcript)
+        return composer_screen(body, transcript, footer=footer)
 
     # -- tmux -----------------------------------------------------------
     def run(self, cmd, **kwargs):
@@ -585,18 +606,33 @@ class FakeSession:
             return mock.Mock(returncode=0, stdout=self.render(), stderr='')
         if verb == 'paste-buffer':
             self.pastes += 1
+            self.paste_args.append(tuple(argv[2:]))
             if self.drops > 0:
                 self.drops -= 1
+            elif self.stuck or self.sticks > 0:
+                # Inside an open paste the text is buffered, not drawn.
+                if self.sticks > 0:
+                    self.sticks -= 1
+                self.stuck = True
+                self.hidden += 1
             else:
                 self.pending.append(self.clock + self.paste_delay)
         elif verb == 'send-keys':
             keys = argv[4:]
             self.keys.append(tuple(keys))
-            for key in keys:
-                self._key(key)
+            if keys[:1] == ['-l']:
+                if keys[1:] == [CTM.PASTE_END_MARKER] and self.stuck:
+                    self.stuck = False
+                    self.visible += self.hidden
+                    self.hidden = 0
+            else:
+                for key in keys:
+                    self._key(key)
         return mock.Mock(returncode=0, stdout='', stderr='')
 
     def _key(self, key):
+        if self.stuck:
+            return  # swallowed as paste text
         if key == 'Enter':
             self.enters += 1
             if self.dialog:
@@ -721,12 +757,22 @@ class ClearComposerTests(unittest.TestCase):
         sess = FakeSession(preloaded=3)
         self.assertTrue(self._drive(sess))
         self.assertEqual(sess.visible, 0)
-        self.assertEqual(sess.keys[0], ('C-u',))
+        # The paste is closed first (#927), then the box is cleared.
+        self.assertEqual(sess.keys[0], ('-l', CTM.PASTE_END_MARKER))
+        self.assertEqual(sess.keys[1], ('C-u',))
 
     def test_box_that_refuses_to_empty_reports_false(self):
         sess = FakeSession(preloaded=1, unclearable=True)
         self.assertFalse(self._drive(sess))
-        self.assertEqual(len(sess.keys), len(CTM.COMPOSER_CLEAR_KEYS))
+        self.assertEqual(len(sess.keys), len(CTM.COMPOSER_CLEAR_KEYS) + 1)
+
+    def test_box_stuck_in_a_paste_is_released_then_emptied(self):
+        # #927 occurrence 2: C-u and Escape are swallowed as paste text until
+        # the paste is closed. Before the fix this box read as unclearable.
+        sess = FakeSession(preloaded=1, stuck=True)
+        self.assertTrue(self._drive(sess))
+        self.assertFalse(sess.stuck)
+        self.assertEqual(sess.visible, 0)
 
 
 class DeliverPromptTests(unittest.TestCase):
@@ -749,6 +795,12 @@ class DeliverPromptTests(unittest.TestCase):
              mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
              mock.patch.object(server.time, 'time', side_effect=sess.time):
             return CTM._deliver_prompt('sess', self.prompt_file, 'buf', **kw)
+
+    def _deliver_outcome(self, sess, **kw):
+        with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
+             mock.patch.object(server.time, 'sleep', side_effect=sess.sleep), \
+             mock.patch.object(server.time, 'time', side_effect=sess.time):
+            return CTM._deliver_prompt_outcome('sess', self.prompt_file, 'buf', **kw)
 
     def _launch(self, sess, **kw):
         with mock.patch.object(server.subprocess, 'run', side_effect=sess.run), \
@@ -851,6 +903,59 @@ class DeliverPromptTests(unittest.TestCase):
         self.assertFalse(self._deliver(sess))
         self.assertEqual(sess.pastes, 0)
         self.assertEqual(sess.submitted, [])
+
+    def test_paste_is_bracketed(self):
+        # #927: without -p tmux sends each newline as a carriage return, and
+        # Claude Code 2.1.325 submits a multi-line prompt's first line alone.
+        sess = FakeSession()
+        self.assertTrue(self._deliver(sess))
+        self.assertIn('-p', sess.paste_args[0])
+
+    def test_outside_enter_during_the_nudge_is_not_re_pasted(self):
+        # #927 occurrence 1: the client timed out, a human pressed Enter, and
+        # the box was empty when the server's Escape nudge looked at it. That
+        # read as "Escape cleared it", so the server pasted the prompt again
+        # and it sat in the box to be sent a second time.
+        sess = FakeSession(needs_escape=True, shows_busy=True,
+                           outside_enter_at=3.5)
+        outcome = self._deliver_outcome(sess)
+        self.assertEqual(outcome['state'], CTM.DELIVERED)
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.visible, 0)
+
+    def test_escape_clear_still_re_pastes_when_nothing_started(self):
+        # The busy check above must not cost an older CLI its re-paste.
+        sess = FakeSession(paste_delay=1.0, swallow=1, shows_busy=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 2)
+        self.assertEqual(sess.submitted, [1])
+
+    def test_paste_that_opens_a_paste_it_never_closes(self):
+        # The paste is buffered inside an open bracketed paste, so it never
+        # shows. Re-pasting would stack a second copy into the same paste;
+        # closing it reveals the first, which is then sent once.
+        sess = FakeSession(sticks=1)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.pastes, 1)
+        self.assertEqual(sess.submitted, [1])
+        self.assertIn(('-l', CTM.PASTE_END_MARKER), sess.keys)
+
+    def test_box_stuck_in_a_paste_is_recovered_not_stacked(self):
+        # #927 occurrence 2: a copy is in the box and the composer swallows
+        # every key. Delivery releases the paste, empties the box, pastes
+        # once and sends exactly one copy.
+        sess = FakeSession(preloaded=1, stuck=True)
+        self.assertTrue(self._deliver(sess))
+        self.assertEqual(sess.submitted, [1])
+        self.assertEqual(sess.pastes, 1)
+
+    def test_outcome_says_what_the_box_holds(self):
+        unsent = FakeSession(swallow=99, unclearable=True)
+        self.assertEqual(self._deliver_outcome(unsent)['state'], CTM.LEFT_UNSENT)
+        dropped = FakeSession(drops=99)
+        self.assertEqual(self._deliver_outcome(dropped)['state'], CTM.NOT_DELIVERED)
+        self.assertEqual(self._deliver_outcome(FakeSession())['state'], CTM.DELIVERED)
 
     def test_paste_without_submit_skips_enter(self):
         sess = FakeSession(paste_delay=2.0)
