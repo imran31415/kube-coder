@@ -418,7 +418,7 @@ Content-Type: text/plain
 
 **`POST /api/claude/tasks/{task_id}/message`**
 
-Sends a follow-up prompt into a running interactive Claude session by typing it into the tmux pane.
+Sends a follow-up prompt into a running interactive Claude session by pasting it into the tmux pane and pressing Enter until the input box empties.
 
 **Request:**
 
@@ -432,14 +432,34 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID/message \
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `prompt` | string | Yes | The follow-up prompt to send. |
+| `submit` | boolean | No | Default `true`. `false` pastes the text into the input box without pressing Enter. |
+| `idempotency_key` | string | No | Up to 200 characters. While a delivery with this key is in flight, or was delivered in the last `KC_FOLLOWUP_DEDUPE_WINDOW` seconds (default 900), or ended `unknown` / `interrupted`, a repeat **sends nothing** and answers with that delivery and `"deduplicated": true`. A key whose delivery ended `left_unsent` or `not_delivered` can be sent again: the box is emptied before the next paste. |
+| `wait` | boolean | No | Default `true`: the response comes back when the delivery has finished. `false`: answers `202` right away with a `delivery` in state `pending`, and the paste runs on in the background. Read the outcome from [`GET .../deliveries/{delivery_id}`](#read-a-follow-up-delivery). |
 
 **Behavior:**
 
-- The follow-up text is typed into the running interactive Claude session via tmux.
-- A `parked` task (its idle session was closed, see [Idle sessions](#idle-sessions-idle-session-reaper)) is **resumed** first, and the text is delivered once the session is back up. This counts as a new busy task, so it can answer `429` when the cap is full. `"submit": false` (paste only) is refused for a parked task.
+- The follow-up text is pasted into the running interactive Claude session as a bracketed paste (`tmux paste-buffer -p`). Without `-p`, Claude Code 2.1.325 submits the first line of a multi-line prompt on its own (#927).
+- Every follow-up gets a **delivery record** on the task, in `deliveries[]` (the last 20). One delivery runs per task at a time. A second message sent while one is still being pasted gets `409` and is **not** pasted, because two pastes into the same box are how copies stack up.
+- A delivery can take more than a minute on a slow TUI: the paste may take up to `KC_PASTE_APPEAR_TIMEOUT` (45 s) to show up, then come up to three paste attempts and the Enter retries. `delivery_budget_s` in the response is the server's worst case, worked out from those same settings. A client that waits less than that should send `"wait": false` and poll, rather than give up while the paste is still running (#927).
+- A `parked` task (its idle session was closed, see [Idle sessions](#idle-sessions-idle-session-reaper)) is **resumed** first, and the text is delivered once the session is back up (delivery state `resumed`). This counts as a new busy task, so it can answer `429` when the cap is full. `"submit": false` (paste only) is refused for a parked task.
 - If the tmux session has ended, an error is returned.
 
-**Response (200 OK):**
+**Delivery states.** Each one says what the task's input box was left holding:
+
+| `state` | Meaning |
+|---|---|
+| `pending` | Being delivered right now. Do not send it again. |
+| `delivered` | Submitted. The prompt is also appended to `followups[]`, with its `delivery_id`. |
+| `pasted` | `submit: false`: in the input box, as requested. |
+| `resumed` | The task was parked and has been resumed with this message as its prompt. |
+| `left_unsent` | The prompt **is in the input box, unsent**, because Enter never submitted it. Nothing was sent. |
+| `not_delivered` | The input box does not hold it and nothing was sent, so it is safe to send again. |
+| `unknown` | Delivery failed and the input box could not be read. Look at the task before you send it again. |
+| `interrupted` | It was `pending` when the dashboard server restarted. Whether it was submitted is unknown. |
+
+A delivery record is `{id, state, reason, submit, started_at, finished_at, prompt_chars, prompt_sha256, key?}`. It never stores the prompt itself. `followups[]` already has the prompts that were sent.
+
+**Response (200 OK, `wait: true`):** the task, plus the delivery:
 
 ```json
 {
@@ -449,19 +469,33 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks/$TASK_ID/message \
   "followups": [
     {
       "prompt": "Now add unit tests for that script",
-      "sent_at": 1707000100.789
+      "sent_at": 1707000100.789,
+      "delivery_id": "dlv-3f9a1c2b7e4d"
     }
-  ]
+  ],
+  "delivery": {"id": "dlv-3f9a1c2b7e4d", "state": "delivered", "reason": "submitted", "...": "..."},
+  "delivery_budget_s": 105.7
 }
 ```
 
-**Error (session ended):**
+**Response (202 Accepted):** for `wait: false`, or for a `pending` duplicate. It has the same shape, and `delivery.state` is `pending`.
 
-```json
-{
-  "error": "Session is no longer running"
-}
-```
+**Errors:**
+
+| Status | Body | When |
+|---|---|---|
+| `404` | `{"error": "Session is no longer running"}` | The task is gone, finished, or its tmux session has ended. Nothing was attempted. |
+| `409` | `{"error", "delivery"}`, with `delivery.state` `pending` | Another follow-up to this task is still being delivered. Nothing was pasted. |
+| `409` | `{"error", "delivery"}`, with `delivery.state` `left_unsent` / `not_delivered` / `unknown` | The delivery ran and did not deliver. `error` is a sentence that says what the box was left holding. |
+| `429` | `{"error", "delivery"}` | A parked task could not resume because the task cap is full. |
+
+---
+
+### Read a Follow-up Delivery
+
+**`GET /api/claude/tasks/{task_id}/deliveries/{delivery_id}`**
+
+Returns `{task_id, task_status, delivery}` for one delivery from `POST .../message` (`404` if there is no such delivery). Poll this after a `wait: false` send until `delivery.state` is no longer `pending`. The `send_task_message` MCP tool does exactly that. It sends `wait: false` with an idempotency key made from the task id and the message. It waits up to the server's `delivery_budget_s` (capped by `KC_DASHBOARD_MCP_FOLLOWUP_WAIT`, default 240 s) and reports the final state. Calling it again with the same message never pastes a second copy. `allow_repeat: true` sends an identical message again on purpose.
 
 ---
 
@@ -629,7 +663,7 @@ All endpoints return errors as JSON with an appropriate HTTP status code:
 | `400` | Bad request (missing or invalid `prompt`, malformed JSON, a folder that cannot be isolated). |
 | `401` | Unauthorized (missing or invalid bearer token, missing OAuth2 headers). |
 | `404` | Task not found. |
-| `409` | Conflict (an isolated worktree that is busy, running, or has uncommitted changes). |
+| `409` | Conflict (an isolated worktree that is busy, running, or has uncommitted changes; a follow-up that is still being delivered, or one that was not delivered; see [Send Follow-up Message](#send-follow-up-message)). |
 | `429` | At a limit (`KC_MAX_TASKS`, `KC_MAX_WORKTREES`). A `KC_MAX_TASKS` refusal has `code: "at_capacity"` and reports `busy`, `idle` and `max_tasks` separately. |
 | `500` | Internal server error. |
 

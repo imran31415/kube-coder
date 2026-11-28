@@ -18825,6 +18825,7 @@ if __name__ == "__main__":
     legacy_log('workspace', "  GET  /api/claude/tasks/{id}/worktree - Isolated worktree status (#701)")
     legacy_log('workspace', "  GET  /api/worktrees                 - All isolated worktrees")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/message - Send follow-up prompt")
+    legacy_log('workspace', "  GET  /api/claude/tasks/{id}/deliveries/{delivery_id} - Follow-up delivery state")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/rename  - Rename a task")
     legacy_log('workspace', "  POST /api/claude/tasks/{id}/resume  - Resume a parked task")
     legacy_log('workspace', "  DELETE /api/claude/tasks/{id}       - Kill a running task")
