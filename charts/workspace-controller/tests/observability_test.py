@@ -109,7 +109,7 @@ class ControllerHTTPTest(unittest.TestCase):
         stream = io.StringIO()
         with patch.object(controller, 'DEV_TOKEN', 'test'), \
              patch.object(controller, 'cached_list_workspaces',
-                          side_effect=controller.KubectlError('kubectl get failed', 'forbidden: token=abc')), \
+                          side_effect=controller.KubectlError('kubectl get failed', 'forbidden: token=tok-SECRET-zq9x')), \
              contextlib.redirect_stderr(stream):
             conn.request('GET', '/api/workspaces', headers={'Authorization': 'Bearer test'})
             response = conn.getresponse()
@@ -120,8 +120,9 @@ class ControllerHTTPTest(unittest.TestCase):
         logged = [r for r in self._logs(stream) if r.get('error_id') == payload['problem']['error_id']]
         self.assertEqual(logged[0]['detail'], 'kubectl get failed')
         # The legacy line keeps kubectl's stderr, with the credential redacted.
+        # The fake secret has non-hex letters so it can't match a random error_id.
         self.assertIn('forbidden: token=[redacted]', stream.getvalue())
-        self.assertNotIn('abc', stream.getvalue())
+        self.assertNotIn('tok-SECRET-zq9x', stream.getvalue())
 
     def test_expected_monitoring_states_are_not_logged(self):
         # Prometheus unset is the chart default and every open tab polls; a
