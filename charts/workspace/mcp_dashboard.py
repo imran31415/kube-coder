@@ -30,11 +30,13 @@ Safety:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 import sys
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -778,13 +780,123 @@ def _t_create_task(a):
     return _ok(_pretty(payload))
 
 
+#: Longest send_task_message waits on one delivery before handing back its id
+#: (#927). The server reports its own worst case (`delivery_budget_s`); this
+#: only caps it so a misconfigured server cannot hang a tool call.
+_FOLLOWUP_WAIT_CAP = float(os.environ.get('KC_DASHBOARD_MCP_FOLLOWUP_WAIT', '240'))
+_FOLLOWUP_POLL = 1.0
+
+
+def _followup_key(task_id: str, message: str) -> str:
+    """Idempotency key for one follow-up: the same message to the same task.
+
+    A retried call (the model, or a human, after a timeout) sends the same
+    key, so the server answers with the first delivery instead of pasting
+    the prompt a second time (#927)."""
+    digest = hashlib.sha256(f'{task_id}\n{message}'.encode('utf-8'))
+    return 'mcp-' + digest.hexdigest()[:32]
+
+
+def _delivery_sentence(task_id: str, d: Dict[str, Any]) -> str:
+    """One delivery's outcome as the state the task was left in."""
+    state = d.get('state')
+    did = d.get('id') or '?'
+    reason = d.get('reason') or 'no reason recorded'
+    if state == 'delivered':
+        return f'Delivered: the message was submitted to task {task_id} ({did}).'
+    if state == 'resumed':
+        return (f'Delivered: task {task_id} was parked, and has been resumed '
+                f'with this message as its prompt ({did}).')
+    if state == 'pasted':
+        return f'Pasted into task {task_id}\'s input box, not submitted ({did}).'
+    if state == 'left_unsent':
+        return (f'NOT sent: the message is sitting UNSENT in task {task_id}\'s '
+                f'input box ({reason}; {did}). Nothing was submitted. Calling '
+                'send_task_message again with the same message clears the box '
+                'and pastes it once.')
+    if state == 'not_delivered':
+        return (f'NOT delivered to task {task_id}: {reason} ({did}). The input '
+                'box does not hold it and nothing was submitted; it is safe to '
+                'send again.')
+    if state == 'pending':
+        return (f'Still being delivered to task {task_id} ({did}). Do NOT '
+                'press Enter in its terminal or send a reworded copy. Calling '
+                'send_task_message again with the SAME message is safe: it '
+                'is not pasted twice, it reports this delivery\'s outcome.')
+    if state == 'interrupted':
+        return (f'Delivery to task {task_id} was interrupted ({reason}; {did}). '
+                'Whether it was submitted is unknown: read the task output '
+                'before sending anything again.')
+    return (f'Delivery to task {task_id} failed and its input box could not be '
+            f'read ({reason}; {did}). Read the task output before sending '
+            'anything again.')
+
+
+_DELIVERY_OK = ('delivered', 'resumed', 'pasted')
+
+
+def _await_delivery(task_id: str, d: Dict[str, Any], budget: float):
+    """Poll one delivery until it settles or `budget` seconds pass."""
+    deadline = time.monotonic() + max(0.0, min(budget, _FOLLOWUP_WAIT_CAP))
+    path = (f'/api/claude/tasks/{urllib.parse.quote(task_id)}/deliveries/'
+            f'{urllib.parse.quote(str(d.get("id") or ""))}')
+    while d.get('state') == 'pending' and time.monotonic() < deadline:
+        time.sleep(_FOLLOWUP_POLL)
+        status, payload = _api('GET', path)
+        if status == 200 and isinstance(payload, dict) and \
+                isinstance(payload.get('delivery'), dict):
+            d = payload['delivery']
+        elif status == 404:
+            break
+        # Anything else is transient: keep the last known state and look again.
+    return d
+
+
 def _t_send_task_message(a):
     tid = (a.get('task_id') or '').strip()
     msg = (a.get('message') or '').strip()
     if not tid or not msg:
         return _err('task_id and message are required')
-    return _call('POST', f'/api/claude/tasks/{urllib.parse.quote(tid)}/message',
-                 body={'prompt': msg, 'submit': True})
+    path = f'/api/claude/tasks/{urllib.parse.quote(tid)}/message'
+    # wait=False: the server answers at once with a delivery id, and the
+    # paste+submit (which can outlast any sane HTTP timeout) is polled for
+    # instead of held open (#927).
+    body: Dict[str, Any] = {'prompt': msg, 'submit': True, 'wait': False}
+    keyed = not a.get('allow_repeat')
+    if keyed:
+        body['idempotency_key'] = _followup_key(tid, msg)
+    status, payload = _api('POST', path, body=body)
+    if status == 401:
+        return _err(_unauthorized_help('POST', path))
+    if status == 0:
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        safe = ('Calling send_task_message again with the same message is '
+                'safe: it is never pasted twice.' if keyed else
+                'Read the task output before sending it again.')
+        return _err(f'Could not reach the dashboard API ({detail}), so whether '
+                    f'task {tid} received the message is unknown. {safe}')
+    delivery = payload.get('delivery') if isinstance(payload, dict) else None
+    if status in (200, 202) and not isinstance(delivery, dict):
+        return _ok(_pretty(payload))  # a server from before #927
+    if status not in (200, 202):
+        detail = payload.get('error') if isinstance(payload, dict) else payload
+        if status == 409 and isinstance(delivery, dict) and \
+                delivery.get('state') == 'pending':
+            return _err(f'Not sent: {detail}')
+        if isinstance(delivery, dict) and delivery.get('state'):
+            return _err(_delivery_sentence(tid, delivery))
+        return _err(f'Not sent to task {tid} (HTTP {status}): {detail}')
+    note = ''
+    if payload.get('deduplicated') and delivery.get('state') != 'pending':
+        note = (' This exact message had already been sent, so it was NOT '
+                'sent again; pass allow_repeat=true to send it a second time '
+                'on purpose.')
+    budget = float(payload.get('delivery_budget_s') or 120) + 15.0
+    delivery = _await_delivery(tid, delivery, budget)
+    text = _delivery_sentence(tid, delivery) + note
+    if delivery.get('state') in _DELIVERY_OK:
+        return _ok(text)
+    return _err(text)
 
 
 def _t_add_memory(a):
@@ -1170,11 +1282,21 @@ TOOLS: Dict[str, Any] = {
         }, required=['prompt'], kind='write'),
     'send_task_message': _tool(
         'send_task_message',
-        'Send a follow-up message to an existing running task.',
+        'Send a follow-up message to an existing running task. Waits for the '
+        'paste and submit to finish and says what state the task was left '
+        'in: delivered, not delivered, or left unsent in its input box. '
+        'Retrying the same message never sends it twice.',
         _t_send_task_message,
         properties={**_TASK_ID,
                     'message': {'type': 'string',
-                                'description': 'The follow-up text.'}},
+                                'description': 'The follow-up text.'},
+                    'allow_repeat': {'type': 'boolean',
+                                     'description': 'Send this message again '
+                                     'even though the identical text was '
+                                     'already delivered to this task in the '
+                                     'last 15 minutes. Leave unset when '
+                                     'retrying a call that failed or timed '
+                                     'out.'}},
         required=['task_id', 'message'], kind='write'),
     'add_memory': _tool(
         'add_memory',
