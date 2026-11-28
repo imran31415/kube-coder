@@ -1510,7 +1510,9 @@ class StopWatcherScopeTest(unittest.TestCase):
         old = hs.WATCHERS.arm(s.id, kind='command', target='true', note='old')
         s.send('turn two')
         self.assertTrue(self._wait_idle(s), 'second turn never finished')
-        recent = hs.WATCHERS.arm(s.id, kind='command', target='true',
+        # A different command: the same (kind, target) collapses onto the
+        # still-armed one (#929).
+        recent = hs.WATCHERS.arm(s.id, kind='command', target='true # 2',
                                  note='recent')
         self.assertEqual((old['turn_seq'], recent['turn_seq']), (1, 2))
         self.assertFalse(s.stop())  # nothing live to kill
@@ -1538,7 +1540,9 @@ class CancelThreadScopeTest(unittest.TestCase):
     def _arm_at(self, seq, note=''):
         with hs._RUNLOCK:
             hs._TURN_SEQ[self.s.id] = seq
-        return hs.WATCHERS.arm(self.s.id, kind='command', target='true',
+        # One target per turn: arming the same (kind, target) again while it
+        # is live returns the first watcher (#929).
+        return hs.WATCHERS.arm(self.s.id, kind='command', target=f'true # {seq}',
                                note=note)
 
     def _states(self):
@@ -1978,7 +1982,7 @@ class WatcherArmTest(WatcherTestBase):
         self.assertEqual(w['interval'], hs.WATCH_MIN_INTERVAL)
         self.assertEqual(w['timeout'], hs.WATCH_MAX_TIMEOUT)
         # Garbage falls back to the defaults rather than erroring.
-        w2 = self._arm(interval='soon', timeout=None)
+        w2 = self._arm(target='task-def', interval='soon', timeout=None)
         self.assertEqual(w2['interval'], hs.WATCH_DEFAULT_INTERVAL)
         self.assertEqual(w2['timeout'], hs.WATCH_DEFAULT_TIMEOUT)
 
@@ -1996,14 +2000,35 @@ class WatcherArmTest(WatcherTestBase):
             self._arm()
 
     def test_arm_enforces_per_thread_cap(self):
-        for _ in range(hs.WATCH_MAX_PER_THREAD):
-            self._arm()
+        for i in range(hs.WATCH_MAX_PER_THREAD):
+            self._arm(target=f'task-{i}')
         with self.assertRaises(ValueError):
-            self._arm()
+            self._arm(target='task-one-too-many')
         # Cancelling frees a slot.
         first = self.mgr.list(self.session.id)[0]
         self.assertTrue(self.mgr.cancel(self.session.id, first['id']))
-        self._arm()
+        self._arm(target='task-one-too-many')
+
+    def test_rearming_the_same_kind_and_target_is_a_no_op(self):
+        # create_task auto-arms a `task` watcher (#929); the agent arming its
+        # own on the same build must not get a second delivery.
+        first = self._arm(note='')
+        again = self._arm(note='the docs build')
+        self.assertEqual(again['id'], first['id'])
+        self.assertEqual(len(self.mgr.list(self.session.id)), 1)
+        # The caller's note is the better description, so it is kept.
+        self.assertEqual(self.mgr.list(self.session.id)[0]['note'], 'the docs build')
+        # Other kinds on the same target are separate watchers.
+        self._arm(kind='port')
+        self.assertEqual(len(self.mgr.list(self.session.id)), 2)
+
+    def test_rearming_after_delivery_arms_a_new_watcher(self):
+        self.mgr.set_task_status_provider(lambda tid: 'completed')
+        first = self._arm()
+        self.mgr.tick(now=self.now)
+        again = self._arm()
+        self.assertNotEqual(again['id'], first['id'])
+        self.assertEqual(self._states(), ['delivered', 'armed'])
 
 
 class WatcherFireTest(WatcherTestBase):
@@ -2281,6 +2306,264 @@ class WatcherRestartTest(WatcherTestBase):
         self.assertEqual([w['state'] for w in fresh.list(self.session.id)],
                          ['delivered'])
         self.assertIn('[Hypervisor watcher fired]', delivered[0][1])
+
+
+class ChatOwnedBuildTest(WatcherTestBase):
+    """A chat-dispatched Build notifies through its chat (#929).
+
+    `owns_task` is the suppression test server.py runs on every Build status
+    change; the reply settling decides, once the turn a `task` watcher started
+    is over, between the chat-level Feed row (`on_reply`) and handing the
+    Build its own rows back (`on_release`). Turns are simulated: the deliver
+    seam does what send() does before it spawns the CLI."""
+
+    def setUp(self):
+        super().setUp()
+        self.replies, self.releases = [], []
+        self.mgr.set_task_notifier(
+            on_reply=lambda th, task, text: self.replies.append((th, task, text)),
+            on_release=lambda th, task: self.releases.append((th, task)))
+        self.mgr._deliver = self._start_turn
+        self.statuses = {'task-abc': 'running'}
+        self.mgr.set_task_status_provider(lambda tid: self.statuses.get(tid))
+        self.addCleanup(self._clear_turns)
+
+    def _clear_turns(self):
+        with hs._RUNLOCK:
+            hs._RUNNING.pop(self.session.id, None)
+            hs._TURN_SEQ.pop(self.session.id, None)
+            hs._STOPPED_TURNS.pop(self.session.id, None)
+
+    def _start_turn(self, thread_id, text):
+        """send() minus the CLI: the user event, a new turn number, running.
+        Defers on a busy thread, as _default_deliver does."""
+        with hs._RUNLOCK:
+            if hs._RUNNING.get(thread_id):
+                return False
+        hs.HypervisorSession.get(thread_id)._append(
+            [{'role': 'user', 'type': 'message', 'text': text}])
+        with hs._RUNLOCK:
+            hs._RUNNING[thread_id] = True
+            hs._TURN_SEQ[thread_id] = hs._TURN_SEQ.get(thread_id, 0) + 1
+        self.delivered.append((thread_id, text))
+        return True
+
+    def _end_turn(self, *events):
+        self.session._append(list(events))
+        with hs._RUNLOCK:
+            hs._RUNNING.pop(self.session.id, None)
+
+    @staticmethod
+    def _say(text):
+        return {'role': 'assistant', 'type': 'message', 'text': text}
+
+    def _fire(self):
+        """The Build parks; the watcher fires and starts the reply turn."""
+        self.statuses['task-abc'] = 'waiting-for-input'
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+
+    # ── owns_task ──────────────────────────────────────────────────────────
+
+    def test_an_armed_task_watcher_owns_its_build(self):
+        self._arm()
+        self.assertTrue(self.mgr.owns_task(self.session.id, 'task-abc'))
+        self.assertFalse(self.mgr.owns_task(self.session.id, 'task-other'))
+
+    def test_fired_but_undelivered_still_owns(self):
+        self._arm()
+        self.mgr._deliver = lambda tid, text: False  # thread busy
+        self.statuses['task-abc'] = 'completed'
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['fired'])
+        self.assertTrue(self.mgr.owns_task(self.session.id, 'task-abc'))
+
+    def test_no_owner_once_delivered_cancelled_or_timed_out(self):
+        w = self._arm()
+        self.mgr.cancel(self.session.id, w['id'])
+        self.assertFalse(self.mgr.owns_task(self.session.id, 'task-abc'))
+        w2 = self._arm(timeout=60)
+        self.mgr.tick(now=w2['deadline'] + 1)
+        self.assertFalse(self.mgr.owns_task(self.session.id, 'task-abc'))
+
+    def test_other_kinds_do_not_own_a_build(self):
+        self._arm(kind='port')
+        self.assertFalse(self.mgr.owns_task(self.session.id, 'task-abc'))
+
+    def test_a_deleted_or_unknown_thread_owns_nothing(self):
+        self._arm()
+        for bad in ('no-such-thread', '', '../escape', None):
+            self.assertFalse(self.mgr.owns_task(bad, 'task-abc'), bad)
+        self.session.delete()
+        self.assertFalse(self.mgr.owns_task(self.session.id, 'task-abc'))
+
+    def test_owns_task_takes_no_lock(self):
+        # A tick holds the lock while it reads a task's status, and that read
+        # can reach owns_task through server.py's transition side effects.
+        self._arm()
+        seen = []
+
+        def status(tid):
+            seen.append(self.mgr.owns_task(self.session.id, tid))
+            return 'running'
+        self.mgr.set_task_status_provider(status)
+        self.mgr.tick(now=self.now)  # would deadlock on a lock
+        self.assertEqual(seen, [True])
+
+    # ── the chat-level reply ───────────────────────────────────────────────
+
+    def test_a_finished_reply_turn_posts_one_chat_level_row(self):
+        self._arm()
+        self._fire()
+        self.mgr.tick(now=self.now + 1)  # still answering: nothing yet
+        self.assertEqual(self.replies, [])
+        self._end_turn(self._say('Build done: 12 tests pass, PR ready.'))
+        self.mgr.tick(now=self.now + 2)
+        self.assertEqual(self.replies, [(self.session.id, 'task-abc',
+                                         'Build done: 12 tests pass, PR ready.')])
+        self.assertEqual(self.releases, [])
+        # Settled once: later ticks do not post it again.
+        self.mgr.tick(now=self.now + 3)
+        self.assertEqual(len(self.replies), 1)
+        self.assertEqual(self.mgr.list(self.session.id)[0]['reply']['state'], 'notified')
+
+    def test_a_parked_build_fires_the_watcher_and_is_reported(self):
+        # #928's `parked` is quiescent: the chat still owns the Build until the
+        # watcher delivers, and the reply turn reports it like any other.
+        self._arm()
+        self.statuses['task-abc'] = 'parked'
+        self.assertTrue(self.mgr.owns_task(self.session.id, 'task-abc'))
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered'])
+        self.assertIn('"parked"', self.delivered[0][1])
+        self._end_turn(self._say('It is parked on a question: which DB?'))
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual([x for _, _, x in self.replies],
+                         ['It is parked on a question: which DB?'])
+
+    def test_two_builds_parking_together_report_one_turn_each(self):
+        self._arm()
+        self._arm(target='task-def')
+        self.statuses.update({'task-abc': 'completed', 'task-def': 'completed'})
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self._states(), ['delivered', 'fired'])  # one turn at a time
+        self._end_turn(self._say('abc done'))
+        self.mgr._tick_thread_safe(self.session.id)
+        self.assertEqual(self._states(), ['delivered', 'delivered'])
+        self._end_turn(self._say('def done'))
+        self.mgr._tick_thread_safe(self.session.id)
+        self.assertEqual([(t, x) for _, t, x in self.replies],
+                         [('task-abc', 'abc done'), ('task-def', 'def done')])
+        self.assertEqual(self.releases, [])
+
+    def test_the_reply_is_capped_and_stops_at_the_next_user_turn(self):
+        self._arm()
+        self._fire()
+        self._end_turn(self._say('x' * 1000))
+        # The user answers before the tick that settles it: a later turn's
+        # words are not part of this reply.
+        self._start_turn(self.session.id, 'thanks, now deploy')
+        self._end_turn(self._say('deploying'))
+        self.mgr.tick(now=self.now + 1)
+        [(_, _, text)] = self.replies
+        self.assertEqual(text, 'x' * hs.WATCH_REPLY_MAX_CHARS)
+
+    def test_turn_complete_hook_settles_without_waiting_for_a_tick(self):
+        self._arm()
+        self._fire()
+        self._end_turn(self._say('done'))
+        self.mgr._tick_thread_safe(self.session.id)  # what _on_turn_complete runs
+        self.assertEqual(len(self.replies), 1)
+
+    def test_a_failed_reply_turn_falls_back_to_the_build(self):
+        self._arm()
+        self._fire()
+        self._end_turn(self._say('partial'),
+                       {'role': 'system', 'type': 'error', 'text': 'assistant timed out'})
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual(self.replies, [])
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+        self.assertEqual(self.mgr.list(self.session.id)[0]['reply']['state'], 'fallback')
+
+    def test_a_silent_reply_turn_falls_back(self):
+        self._arm()
+        self._fire()
+        self._end_turn({'role': 'assistant', 'type': 'tool_call',
+                        'tool': {'name': 'Bash', 'input': {}}})
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+
+    def test_a_stopped_reply_turn_falls_back(self):
+        self._arm()
+        self._fire()
+        with hs._RUNLOCK:
+            hs._STOPPED_TURNS.setdefault(self.session.id, set()).add(
+                hs._TURN_SEQ[self.session.id])
+        self._end_turn(self._say('half a summary'))
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual((self.replies, len(self.releases)), ([], 1))
+
+    def test_a_reply_turn_lost_to_a_restart_falls_back(self):
+        self._arm()
+        self._fire()
+        # The server restarts: the in-process turn counter starts again at 0,
+        # and the turn the watcher started never reports.
+        self._clear_turns()
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+
+    def test_the_thread_deleted_mid_reply_falls_back(self):
+        self._arm()
+        self._fire()
+        self._end_turn(self._say('done'))
+        self.session.delete()
+        self.mgr.tick(now=self.now + 1)
+        self.assertEqual((self.replies, len(self.releases)), ([], 1))
+
+    def test_a_timeout_notification_is_not_a_report(self):
+        # The watcher expiring hands the Build back at once; the turn the
+        # timeout notice starts is not the chat reporting the result.
+        w = self._arm(timeout=60)
+        self.mgr.tick(now=w['deadline'] + 1)
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+        self._end_turn(self._say('the build is still running'))
+        self.mgr.tick(now=w['deadline'] + 2)
+        self.assertEqual(self.replies, [])
+        self.assertEqual(len(self.releases), 1)
+
+    # ── the other ways ownership ends ──────────────────────────────────────
+
+    def test_cancel_hands_the_build_back(self):
+        w = self._arm()
+        self.mgr.cancel(self.session.id, w['id'])
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+
+    def test_stop_and_delete_hand_the_build_back(self):
+        self._arm()
+        self.mgr.cancel_thread(self.session.id)
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+
+    def test_delivery_to_a_gone_thread_hands_the_build_back(self):
+        self._arm()
+        self.mgr._deliver = lambda tid, text: None
+        self.statuses['task-abc'] = 'completed'
+        self.mgr.tick(now=self.now)
+        self.assertEqual(self.releases, [(self.session.id, 'task-abc')])
+
+    def test_other_kinds_never_release(self):
+        w = self._arm(kind='command', target='false')
+        self.mgr.cancel(self.session.id, w['id'])
+        self.assertEqual(self.releases, [])
+
+    def test_a_raising_notifier_does_not_break_the_tick(self):
+        def boom(*a):
+            raise RuntimeError('feed down')
+        self.mgr.set_task_notifier(on_reply=boom, on_release=boom)
+        self._arm()
+        self._fire()
+        self._end_turn(self._say('done'))
+        self.mgr.tick(now=self.now + 1)  # must not raise
+        self.assertEqual(self.mgr.list(self.session.id)[0]['reply']['state'], 'notified')
 
 
 class SlashCommandNameTest(unittest.TestCase):

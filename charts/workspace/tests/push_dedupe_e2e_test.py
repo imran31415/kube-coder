@@ -34,6 +34,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import hypervisor_session as hs  # noqa: E402
 import push_notify as pn  # noqa: E402
 import server  # noqa: E402
 from live_state import isolate_feed_and_push  # noqa: E402
@@ -379,6 +380,162 @@ class PushDedupeE2E(unittest.TestCase):
         self.pushes(1)
         self.assertEqual(len(self.feed()), 1)
 
+
+
+class ChatOwnedBuildPushE2E(PushDedupeE2E):
+    """A chat-dispatched Build pages the phone once, through its chat (#929).
+
+    The same real path as above, plus a real WatcherManager wired exactly as
+    server.py wires it: the Build parks (no push), the chat's `task` watcher
+    fires and starts a reply turn, the turn ends, and the chat's reply is what
+    reaches the phone, tapping through to the thread. The reply turn is the
+    only fake: the deliver seam does what send() does before spawning a CLI.
+    Inherits the scenarios above, so a Build no chat owns is re-checked too."""
+
+    def setUp(self):
+        super().setUp()
+        hv_dir = tempfile.mkdtemp(prefix='kctest-e2e-threads-')
+        self.addCleanup(shutil.rmtree, hv_dir, True)
+        self.mgr = hs.WatcherManager()
+        self.mgr.set_task_status_provider(
+            lambda tid: (CTM.read_meta(tid) or {}).get('status'))
+        self.mgr.set_task_notifier(on_reply=server.hv_watch_reply_notify,
+                                   on_release=server.hv_watch_release)
+        self.mgr._deliver = self._start_turn
+        for target, attr, value in ((hs, 'HYPERVISOR_DIR', hv_dir),
+                                    (server, 'hv_watchers', self.mgr)):
+            p = mock.patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.chat = hs.HypervisorSession.create(
+            assistant='claude', workdir='/home/dev', cli_cmd='claude',
+            title='CTO: shop')
+        self.addCleanup(self._idle)
+
+    def _idle(self):
+        with hs._RUNLOCK:
+            hs._RUNNING.pop(self.chat.id, None)
+            hs._TURN_SEQ.pop(self.chat.id, None)
+
+    def _start_turn(self, thread_id, text):
+        with hs._RUNLOCK:
+            if hs._RUNNING.get(thread_id):
+                return False  # busy: _default_deliver defers the same way
+        hs.HypervisorSession.get(thread_id)._append(
+            [{'role': 'user', 'type': 'message', 'text': text}])
+        with hs._RUNLOCK:
+            hs._RUNNING[thread_id] = True
+            hs._TURN_SEQ[thread_id] = hs._TURN_SEQ.get(thread_id, 0) + 1
+        return True
+
+    def _end_turn(self, *events):
+        self.chat._append(list(events))
+        with hs._RUNLOCK:
+            hs._RUNNING.pop(self.chat.id, None)
+        self.mgr._tick_thread_safe(self.chat.id)  # the turn-complete hook
+
+    def dispatch(self, tid, prompt):
+        """What create_task does inside a chat: the Build records the chat,
+        and the chat arms its `task` watcher over the watcher route."""
+        self.make_task(tid, prompt)
+        with open(self._meta_path(tid)) as f:
+            meta = json.load(f)
+        meta['origin_thread_id'] = self.chat.id
+        self._write_meta(tid, meta)
+        status, _ = self.api_call('POST', '/api/hypervisor/threads/%s/watchers'
+                                  % self.chat.id, {'kind': 'task', 'target': tid})
+        self.assertEqual(status, 201)
+
+    def chat_reports(self, text):
+        self.mgr.tick()
+        self._end_turn({'role': 'assistant', 'type': 'message', 'text': text})
+
+    def test_20_a_chat_owned_build_pages_once_through_its_chat(self):
+        self.dispatch('t-20', 'Add a checkout page')
+        self.task_waits('t-20')
+        self.pushes(0)  # no "Task waiting on you" for a Build the chat owns
+        self.assertEqual(self.feed(), [])
+        self.chat_reports('Checkout page is live on :3000; tests pass.')
+        [msg] = self.pushes(1)
+        [row] = self.feed()
+        self.assertEqual(msg['title'], 'CTO: shop: Add a checkout page')
+        self.assertEqual(msg['body'], 'Checkout page is live on :3000; tests pass.')
+        self.assertEqual(msg['data']['ref'], 'thread:%s' % self.chat.id)
+        self.assertEqual(row['source'], 'system:hypervisor')
+        self.assertTrue(row['waiting'])
+
+    def test_21_two_builds_on_one_chat_page_once_into_one_row(self):
+        for tid in ('t-21a', 't-21b'):
+            self.dispatch(tid, 'build ' + tid)
+        self.task_waits('t-21a')
+        self.task_waits('t-21b')
+        self.chat_reports('t-21a done')
+        self.chat_reports('t-21b done')
+        self.pushes(1)
+        [row] = self.feed()
+        self.assertEqual(row['body_md'], 't-21b done')
+
+    def test_22_answering_the_chat_marks_its_row_read(self):
+        self.dispatch('t-22', 'x')
+        self.task_waits('t-22')
+        self.chat_reports('done')
+        self.assertFalse(self.feed()[0]['read'])
+        with mock.patch.object(hs.HypervisorSession, 'send'):
+            status, _ = self.api_call('POST', '/api/hypervisor/threads/%s/messages'
+                                      % self.chat.id, {'message': 'ship it'})
+        self.assertEqual(status, 200)
+        self.assertTrue(self.feed()[0]['read'])
+
+    def test_23_a_failed_reply_turn_falls_back_to_the_build_alert(self):
+        self.dispatch('t-23', 'Migrate the DB')
+        self.task_waits('t-23')
+        self.pushes(0)
+        self.mgr.tick()
+        self._end_turn({'role': 'system', 'type': 'error', 'text': 'assistant timed out'})
+        [msg] = self.pushes(1)
+        self.assertEqual(msg['title'], 'Task waiting on you: Migrate the DB')
+        self.assertEqual(msg['data']['ref'], 'task:t-23')
+
+    def test_24_a_cancelled_watcher_hands_the_alert_back(self):
+        self.dispatch('t-24', 'Migrate the DB')
+        self.task_waits('t-24')
+        [w] = self.mgr.list(self.chat.id)
+        status, _ = self.api_call('DELETE', '/api/hypervisor/threads/%s/watchers/%s'
+                                  % (self.chat.id, w['id']))
+        self.assertEqual(status, 200)
+        [msg] = self.pushes(1)
+        self.assertEqual(msg['data']['ref'], 'task:t-24')
+
+    def park_on_question(self, tid):
+        """What #928's idle reaper does to a Build waiting on a question."""
+        moved = CTM._transition(os.path.join(self.tasks, tid), 'parked',
+                                fields={'parked_at': time.time(),
+                                        'parked_reason': 'question',
+                                        'parked_idle_s': 1800})[1]
+        self.assertTrue(moved)
+
+    def test_26_a_chat_owned_build_parked_on_a_question_pages_once(self):
+        self.dispatch('t-26', 'Pick a DB')
+        self.task_waits('t-26')
+        self.park_on_question('t-26')
+        self.pushes(0)  # neither the waiting row nor #928's parked row alerts
+        self.chat_reports('The build is parked asking which DB to use.')
+        [msg] = self.pushes(1)
+        self.assertEqual(msg['data']['ref'], 'thread:%s' % self.chat.id)
+
+    def test_27_an_unowned_build_parked_on_a_question_still_pages(self):
+        self.make_task('t-27', 'Pick a DB')
+        self.task_waits('t-27')
+        self.park_on_question('t-27')
+        first, second = self.pushes(2)  # #928's own behaviour, unchanged
+        self.assertEqual(second['data']['ref'], 'task:t-27')
+
+    def test_25_a_deleted_chat_owns_nothing(self):
+        self.dispatch('t-25', 'x')
+        self.chat.delete()
+        self.task_waits('t-25')
+        [msg] = self.pushes(1)
+        self.assertEqual(msg['data']['ref'], 'task:t-25')
 
 if __name__ == '__main__':
     unittest.main()

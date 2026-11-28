@@ -38,6 +38,13 @@ The **Builds** tab (**New build**) dispatches a task: a `claude` /
 It runs whether or not you're watching, and its status shows up in the
 task list, the Feed, and mobile push.
 
+A Build that a chat started reports back through that chat. When it
+finishes, the chat reads the result and replies, and that reply is what
+notifies you: one Feed row, push and desktop alert that opens the chat. You
+don't also get "Task waiting on you" for the Build. If the chat can't report
+it (the watch expired or was cancelled, the chat was deleted, or the reply
+failed), the Build notifies you itself, as before.
+
 Reach for Builds when you want to:
 
 - **Hand off a self-contained job** — *"run the test suite in ./api,

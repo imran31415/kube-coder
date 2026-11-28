@@ -137,19 +137,42 @@ class CreateTaskPreviewTest(unittest.TestCase):
         body = self._task_body()
         self.assertIn('build me a todo app', body['prompt'])
         self.assertIn('Build-preview contract', body['prompt'])
-        posts = self._watcher_posts()
+        posts = [(p, b) for p, b in self._watcher_posts() if b['kind'] == 'port']
         self.assertEqual(len(posts), 1)
         path, wbody = posts[0]
         self.assertIn('thread-xyz', path)
-        self.assertEqual(wbody['kind'], 'port')
         self.assertEqual(wbody['target'], 'T-123')
 
-    def test_preview_false_skips_contract_and_watcher(self):
+    def test_preview_false_skips_contract_and_port_watcher(self):
         res = m._t_create_task({'prompt': 'refactor utils', 'preview': False})
         self.assertFalse(res.get('isError'))
         body = self._task_body()
         self.assertNotIn('Build-preview contract', body['prompt'])
-        self.assertEqual(self._watcher_posts(), [])
+        # The build still reports back to the chat (#929); only the preview
+        # watcher is the opt-out.
+        self.assertEqual([b['kind'] for _, b in self._watcher_posts()], ['task'])
+
+    # ── chat-owned builds (#929) ───────────────────────────────────────────
+
+    def test_records_the_dispatching_thread_on_the_build(self):
+        m._t_create_task({'prompt': 'ship the thing'})
+        self.assertEqual(self._task_body()['origin_thread_id'], 'thread-xyz')
+
+    def test_outside_a_chat_the_build_has_no_origin_thread(self):
+        os.environ.pop('KC_HYPERVISOR_THREAD_ID', None)
+        m._t_create_task({'prompt': 'ship the thing'})
+        self.assertNotIn('origin_thread_id', self._task_body())
+
+    def test_arms_exactly_one_task_watcher_on_the_new_build(self):
+        m._t_create_task({'prompt': 'build me a todo app'})
+        tasks = [(p, b) for p, b in self._watcher_posts() if b['kind'] == 'task']
+        self.assertEqual(len(tasks), 1)
+        path, wbody = tasks[0]
+        self.assertEqual(path, '/api/hypervisor/threads/thread-xyz/watchers')
+        self.assertEqual(wbody['target'], 'T-123')
+        # Long enough to outlast a long build: an expiry hands the alerts
+        # back to the build itself.
+        self.assertEqual(wbody['timeout'], m._TASK_WATCH_TIMEOUT)
 
     def test_no_thread_context_skips_watcher_but_keeps_contract(self):
         os.environ.pop('KC_HYPERVISOR_THREAD_ID', None)

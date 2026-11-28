@@ -228,6 +228,7 @@ curl -X POST https://{user}.dev.archon.cx/api/claude/tasks \
 | `isolate` | boolean | No | `true` runs the task in its own git worktree on its own `kc/<name>` branch with its own `$PORT` ([Isolated worktrees](#isolated-worktrees-701)). `workdir` must be inside a git repository. Only a JSON `true` counts. |
 | `base_ref` | string | No | With `isolate`: the branch, tag or commit to start from. Default: the folder's current commit. |
 | `worktree_slug` | string | No | With `isolate`: continue in the named worktree (e.g. `issue-701`) instead of a fresh one. Refused with `409 busy` while another live task uses it. |
+| `origin_thread_id` | string | No | The chat thread that dispatched this task (#929). The dashboard MCP's `create_task` sends it from inside a chat turn (`KC_HYPERVISOR_THREAD_ID`); nothing else does. Must be a thread id (`[A-Za-z0-9_-]`, at most 64 characters), else `400` with `code: bad_thread_id`. Stored in `task.json`. While that thread has a live `task` watcher on the task, the task's alerts come from the chat instead; see [Who notifies when a chat-dispatched task finishes](#who-notifies-when-a-chat-dispatched-task-finishes-929). |
 
 **Response (201 Created):**
 
@@ -560,6 +561,37 @@ Returns the current bearer token. This endpoint requires an OAuth2 browser sessi
 Generates a new bearer token, invalidating the previous one. Requires OAuth2 browser session.
 
 ---
+
+### Who notifies when a chat-dispatched task finishes (#929)
+
+Every task posts a Feed row when it parks or stops. A parked task posts
+**"Task waiting on you"** (`waiting`), which goes to push, the desktop alert
+and the Needs-you badge. A task that ends posts a history row (`Task
+finished` / `failed` / …), which never alerts.
+
+A task a chat dispatched is different, because the chat already reports it
+back. `create_task` in a chat records `origin_thread_id` and arms a `task`
+watcher on the new task. A second `watch` on the same task (kind and target)
+returns that watcher instead of adding one. While the watcher is live
+(`armed` or `fired`):
+
+| When | What the Feed gets |
+|---|---|
+| The task parks (`waiting-for-input`) | Nothing. No waiting row, so no push and no desktop alert. |
+| Its idle session is closed (`parked`, #928) | The "Idle session closed" row, never `waiting` (even when it was parked on a question) and with the chat as its first link. The chat's watcher fires on `parked` and reports the question. |
+| The task ends | The usual history row, with the chat as its first link. |
+| The chat's reply to the watcher's message is complete | One row from `system:hypervisor`: `waiting`, titled `<chat title>: <first line of the task prompt>`, body = the first 300 characters of the reply, links chat then task. It is one row per chat (`thread:<id>:watch-reply`), so tasks finishing close together share one row and one push, under the usual repeat rules (#685). |
+| You send the next message in that chat | That row is marked read. |
+
+The decision uses `task.json` and the thread's `watchers.json` only. When
+ownership can't be shown, the task gets today's rows back, for the state it is
+in at that moment (for `parked`, the parked row, `waiting` again if it was
+parked on a question). That happens when the watcher timed out or was cancelled
+(including by stopping the turn that armed it), when the thread was deleted,
+when the reply turn errored, was stopped, said nothing or was lost to a
+restart, or when there was never a watcher. Tasks from the Build tab,
+webhooks, crons, Board runs and sub-agents have no `origin_thread_id` and
+never change.
 
 ### Isolated worktrees (#701)
 

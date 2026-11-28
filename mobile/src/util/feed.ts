@@ -69,6 +69,9 @@ export function countBoardsAwaitingReview(items: FeedItem[]): number {
 export function feedSourceLabel(source: string): string {
   if (source.startsWith('agent:')) return 'CTO';
   if (source.startsWith('cron:')) return `cron · ${source.slice(5)}`;
+  // A chat reporting a Build it dispatched (#929). "Hypervisor" is the
+  // backend's name for Chat; the label is the one people see.
+  if (source === 'system:hypervisor') return 'chat';
   if (source.startsWith('system:')) return source.slice(7);
   if (source.startsWith('board:')) return `board · ${source.slice(6)}`;
   return source || 'system';

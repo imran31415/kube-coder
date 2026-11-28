@@ -345,6 +345,34 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_owned_build_alerts_once_through_its_chat() {
+        // #929: a Build its chat is watching writes no waiting row of its own,
+        // only a history row (never an alert); the chat's reply is the alert,
+        // and it opens the chat.
+        let mut l = primed();
+        let mut history = waiting("f1", "thread:th-1", NOW);
+        history.waiting = false;
+        history.kind = "activity".into();
+        history.links.push(FeedLink { reference: "task:t1".into(), label: "Open task".into() });
+        let mut reply = waiting("f2", "thread:th-1", NOW);
+        reply.kind = "activity".into();
+        reply.body_md = "Checkout is live; tests pass.".into();
+        reply.links.push(FeedLink { reference: "task:t1".into(), label: "Open task".into() });
+        let items = vec![history, reply.clone()];
+        assert!(!items.iter().any(|i| i.waiting && i.primary_ref().starts_with("task:")));
+        let a = l.observe(&items, NOW, IV);
+        assert_eq!(a.len(), 1);
+        assert_eq!((a[0].feed_id.as_str(), a[0].reference.as_str()), ("f2", "thread:th-1"));
+        assert_eq!(a[0].body, "Checkout is live; tests pass.");
+        assert_eq!(needs_you_count(&items), 1);
+        // A second Build reporting on the same chat coalesces into that row:
+        // unread, so it does not alert again.
+        reply.ts = NOW + 60.0;
+        reply.links[1].reference = "task:t2".into();
+        assert!(l.observe(&[reply], NOW + 60.0, IV).is_empty());
+    }
+
+    #[test]
     fn badge_counts_unread_waiting_rows() {
         let mut read = waiting("f2", "task:t2", NOW);
         read.read = true;

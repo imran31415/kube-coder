@@ -2875,6 +2875,15 @@ WATCH_COMMAND_TIMEOUT = 10.0
 # you" signal; only headless tasks ever reach completed.
 WATCH_TASK_FIRE_STATUSES = task_status.QUIESCENT_STATUSES
 _WATCH_ACTIVE_STATES = ('armed', 'fired', 'timeout')
+# States in which a watcher is still going to tell its chat about the target
+# (#929): not yet checked true, or true and waiting for the thread to go idle.
+# These are also the states a re-arm of the same (kind, target) collapses onto.
+_WATCH_OWNING_STATES = ('armed', 'fired')
+# The longest reply a chat-level Feed row quotes (#929).
+WATCH_REPLY_MAX_CHARS = 300
+# A thread id as create() mints it and the thread routes accept it. No `/`,
+# so a recorded `origin_thread_id` cannot walk out of HYPERVISOR_DIR.
+_SAFE_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 
 
 def _clamp(value: Any, lo: float, hi: float, default: float) -> float:
@@ -2912,6 +2921,12 @@ class WatcherManager:
         self._deliver: Callable[[str, str], Optional[bool]] = self._default_deliver
         self._deliver_embed: Callable[[str, Dict[str, Any]], Optional[bool]] = \
             self._default_deliver_embed
+        # Chat-owned Builds (#929), injected by server.py. `_on_reply(thread,
+        # task, text)` posts the chat-level Feed row once the turn a `task`
+        # watcher started has answered; `_on_release(thread, task)` hands a
+        # Build its own alerts back when the chat can no longer report it.
+        self._on_reply: Optional[Callable[[str, str, str], Any]] = None
+        self._on_release: Optional[Callable[[str, str], Any]] = None
 
     # ── wiring ─────────────────────────────────────────────────────────────
     def set_task_status_provider(self, fn: Callable[[str], Optional[str]]) -> None:
@@ -2925,6 +2940,13 @@ class WatcherManager:
         currently-listening loopback dev-server ports (ints), with workspace
         infrastructure ports already filtered out."""
         self._ports = fn
+
+    def set_task_notifier(self, on_reply: Optional[Callable[[str, str, str], Any]] = None,
+                          on_release: Optional[Callable[[str, str], Any]] = None) -> None:
+        """Wire the Feed side of chat-owned Builds (#929). Both run outside
+        the watcher lock, after the watcher state they follow from is saved."""
+        self._on_reply = on_reply
+        self._on_release = on_release
 
     def start(self) -> None:
         """Start the background tick loop (idempotent) and register for
@@ -2954,10 +2976,22 @@ class WatcherManager:
     def _tick_thread_safe(self, thread_id: str) -> None:
         try:
             with self._lock:
-                self._tick_thread(thread_id, _now())
+                effects = self._tick_thread(thread_id, _now())
+            self._run_effects(effects)
         except Exception as e:
             _log(f'watcher delivery for {thread_id} failed: '
                  f'{type(e).__name__}: {e}')
+
+    @staticmethod
+    def _run_effects(effects: List[Callable[[], Any]]) -> None:
+        """Run Feed side effects collected under the lock, once it is
+        released: they call back into server.py, whose task reads can reach
+        `owns_task`, and one failing must not cost the rest."""
+        for effect in effects or ():
+            try:
+                effect()
+            except Exception as e:
+                _log(f'watcher side effect failed: {type(e).__name__}: {e}')
 
     # ── persistence ────────────────────────────────────────────────────────
     @staticmethod
@@ -3038,6 +3072,19 @@ class WatcherManager:
                 prior = next((x for x in items if x.get('kind') == kind and x.get('target') == target), None)
                 if prior:
                     return prior
+            else:
+                # Idempotent per (kind, target) while one is still live
+                # (#929): create_task auto-arms a `task` watcher on its build,
+                # and an agent that arms its own must not get a second
+                # delivery. The caller's note is the better description.
+                prior = next((x for x in items
+                              if x.get('kind') == kind and x.get('target') == target
+                              and x.get('state') in _WATCH_OWNING_STATES), None)
+                if prior:
+                    if w['note'] and w['note'] != prior.get('note'):
+                        prior['note'] = w['note']
+                        self._save(thread_id, items)
+                    return prior
             active = sum(1 for x in items if x.get('state') in _WATCH_ACTIVE_STATES)
             if active >= WATCH_MAX_PER_THREAD:
                 raise ValueError(
@@ -3051,21 +3098,61 @@ class WatcherManager:
         with self._lock:
             return self._load(thread_id)
 
+    def owns_task(self, thread_id: str, task_id: str) -> bool:
+        """Whether chat `thread_id` is going to report Build `task_id` (#929):
+        the thread exists, is not deleted, and holds a `task` watcher on the
+        Build that has not yet been delivered (`armed` / `fired`).
+
+        Recorded state only (thread.json + watchers.json), never transcript
+        text. Takes NO lock, on purpose: a tick holds `_lock` while it asks
+        server.py for a task's status, and that read can settle the task and
+        call back here. `_save` replaces watchers.json atomically, so a
+        lock-free read sees one whole version. Never raises; any doubt is
+        False, which keeps the Build's own alerts."""
+        try:
+            thread_id = (thread_id or '').strip()
+            task_id = (task_id or '').strip()
+            if not thread_id or not task_id or not _SAFE_ID_RE.fullmatch(thread_id):
+                return False
+            session = HypervisorSession.get(thread_id)
+            meta = session.read_meta() if session else None
+            if meta is None or meta.get('deleted_at') is not None:
+                return False
+            return any(w.get('kind') == 'task' and w.get('target') == task_id
+                       and w.get('state') in _WATCH_OWNING_STATES
+                       for w in self._load(thread_id))
+        except Exception:
+            return False
+
+    def _release(self, thread_id: str, w: Dict[str, Any]) -> Optional[Callable[[], Any]]:
+        """The fallback for a `task` watcher that will not report its Build
+        after all (#929): an effect that lets server.py re-emit the Build's own
+        Feed rows from its task.json. None for any other kind."""
+        on_release = self._on_release
+        target = w.get('target') or ''
+        if w.get('kind') != 'task' or on_release is None or not target:
+            return None
+        return lambda: on_release(thread_id, target)
+
     def cancel(self, thread_id: str, watcher_id: str) -> bool:
         """Cancel one watcher (armed or fired-but-undelivered). Returns whether
         anything changed."""
+        effects = []
         with self._lock:
             items = self._load(thread_id)
             hit = False
             for w in items:
                 if w.get('id') == watcher_id and \
                         w.get('state') in _WATCH_ACTIVE_STATES:
+                    if w.get('state') in _WATCH_OWNING_STATES:
+                        effects.append(self._release(thread_id, w))
                     w['state'] = 'cancelled'
                     w['cancelled_at'] = _now()
                     hit = True
             if hit:
                 self._save(thread_id, items)
-            return hit
+        self._run_effects([e for e in effects if e])
+        return hit
 
     def cancel_thread(self, thread_id: str,
                       turn_seq: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -3078,6 +3165,7 @@ class WatcherManager:
         and takes them all — a deleted thread must not keep polling at all.
         """
         try:
+            effects = []
             with self._lock:
                 items = self._load(thread_id)
                 hit = []
@@ -3087,12 +3175,15 @@ class WatcherManager:
                     if turn_seq is not None and \
                             int(w.get('turn_seq') or 0) != turn_seq:
                         continue
+                    if w.get('state') in _WATCH_OWNING_STATES:
+                        effects.append(self._release(thread_id, w))
                     w['state'] = 'cancelled'
                     w['cancelled_at'] = _now()
                     hit.append(dict(w))
                 if hit:
                     self._save(thread_id, items)
-                return hit
+            self._run_effects([e for e in effects if e])
+            return hit
         except Exception as e:
             _log(f'watcher cancel_thread {thread_id} failed: '
                  f'{type(e).__name__}: {e}')
@@ -3111,16 +3202,18 @@ class WatcherManager:
         for tid in thread_ids:
             try:
                 with self._lock:
-                    self._tick_thread(tid, now)
+                    effects = self._tick_thread(tid, now)
+                self._run_effects(effects)
             except Exception as e:  # one broken thread must not stall the rest
                 _log(f'watcher tick for {tid} failed: {type(e).__name__}: {e}')
 
-    def _tick_thread(self, thread_id: str, now: float) -> None:
-        """Evaluate + deliver one thread's watchers. Caller holds _lock."""
+    def _tick_thread(self, thread_id: str, now: float) -> List[Callable[[], Any]]:
+        """Evaluate + deliver one thread's watchers. Caller holds _lock, and
+        runs the returned Feed effects (#929) once it has let go of it."""
         items = self._load(thread_id)
         if not items:
-            return
-        changed = False
+            return []
+        changed, effects = self._settle_replies(thread_id, items)
         for w in items:
             if w.get('state') != 'armed':
                 continue
@@ -3130,6 +3223,9 @@ class WatcherManager:
                 w['fired_at'] = now
                 w['outcome'] = (f'timed out after {int(w.get("timeout", 0))}s '
                                 'without the condition firing')
+                # The chat stops owning the Build here (#929); whatever state
+                # the Build is in now, it reports it itself.
+                effects.append(self._release(thread_id, w))
                 changed = True
                 continue
             if now - w.get('last_check_at', 0) < w.get('interval', WATCH_DEFAULT_INTERVAL):
@@ -3155,12 +3251,23 @@ class WatcherManager:
                 else:
                     delivered = True
             else:
+                # A fired `task` watcher starts the turn whose answer becomes
+                # the chat-level Feed row (#929): note where that turn's events
+                # begin before the delivery appends the first of them.
+                reply_since = (self._reply_since(thread_id)
+                               if w.get('kind') == 'task' and w.get('state') == 'fired'
+                               else None)
                 delivered = self._deliver(thread_id, self._notification_text(w))
+                if delivered is True and reply_since is not None:
+                    w['reply'] = {'state': 'pending', 'since': reply_since,
+                                  'turn': _turn_seq(thread_id)}
             if delivered is True:
                 w['state'] = 'delivered'
                 w['delivered_at'] = now
                 changed = True
             elif delivered is None:  # thread gone/deleted — drop, don't retry
+                if w.get('state') == 'fired':
+                    effects.append(self._release(thread_id, w))
                 w['state'] = 'cancelled'
                 w['cancelled_at'] = now
                 changed = True
@@ -3168,6 +3275,81 @@ class WatcherManager:
             # the turn-complete hook.
         if changed:
             self._save(thread_id, items)
+        return [e for e in effects if e]
+
+    # ── chat-level notification (#929) ─────────────────────────────────────
+    @staticmethod
+    def _reply_since(thread_id: str) -> Optional[int]:
+        """The seq the next appended event will get, or None without a
+        thread (the delivery will drop it anyway)."""
+        session = HypervisorSession.get(thread_id)
+        return session._next_seq() if session else None
+
+    @staticmethod
+    def _turn_reply(events: List[Dict[str, Any]], since: int) -> tuple:
+        """(reply text, ok) for the turn whose first event has seq `since`:
+        the injected watcher message, up to the next user message. `ok` only
+        when the agent said something and the turn raised no error event."""
+        turn = sorted((e for e in events if e.get('seq', 0) >= since),
+                      key=lambda e: e.get('seq', 0))
+        prose, failed = [], False
+        for i, e in enumerate(turn):
+            if i and e.get('role') == 'user' and e.get('type') == 'message':
+                break  # the next turn
+            if e.get('type') == 'error':
+                failed = True
+            elif (e.get('type') == 'message' and e.get('role') == 'assistant'
+                  and (e.get('text') or '').strip()):
+                prose.append(e['text'].strip())
+        text = '\n\n'.join(prose)
+        return text, bool(text) and not failed
+
+    def _settle_replies(self, thread_id: str,
+                        items: List[Dict[str, Any]]) -> tuple:
+        """Settle each delivered `task` watcher whose turn has ended (#929).
+
+        Turns on a thread run one at a time and `_TURN_SEQ` numbers them, so a
+        recorded turn below the current number has ended, and the current one
+        has ended once nothing is running. A recorded turn ABOVE it is from
+        before a server restart: its outcome is unknown, so it falls back. A
+        good reply → `_on_reply`; an error, an empty or stopped turn, or a
+        thread that has gone → `_on_release`, so the Build reports itself.
+        Returns (changed, effects). Caller holds _lock."""
+        pending = [w for w in items if w.get('kind') == 'task'
+                   and isinstance(w.get('reply'), dict)
+                   and w['reply'].get('state') == 'pending']
+        if not pending:
+            return False, []
+        session = HypervisorSession.get(thread_id)
+        meta = session.read_meta() if session else None
+        current = _turn_seq(thread_id)
+        with _RUNLOCK:
+            running = bool(_RUNNING.get(thread_id))
+        events = None
+        changed, effects = False, []
+        for w in pending:
+            reply = w['reply']
+            turn = int(reply.get('turn') or 0)
+            text, ok = '', False
+            if meta is not None and meta.get('deleted_at') is None:
+                if turn == current and running:
+                    continue  # still answering
+                if turn <= current:
+                    if events is None:
+                        events = session.read_events()
+                    text, ok = self._turn_reply(events, int(reply.get('since') or 0))
+                    ok = ok and not session.turn_was_stopped(turn)
+            on_reply, target = self._on_reply, w.get('target') or ''
+            if ok and on_reply is not None:
+                body = text[:WATCH_REPLY_MAX_CHARS]
+                effects.append(lambda t=target, b=body: on_reply(thread_id, t, b))
+                reply['state'] = 'notified'
+            else:
+                effects.append(self._release(thread_id, w))
+                reply['state'] = 'fallback'
+            reply['settled_at'] = _now()
+            changed = True
+        return changed, effects
 
     def _evaluate(self, w: Dict[str, Any]) -> tuple:
         """(fired, outcome) for one armed watcher. Exceptions bubble to the

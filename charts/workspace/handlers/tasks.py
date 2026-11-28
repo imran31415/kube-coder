@@ -65,6 +65,11 @@ import handlers
 import task_status
 from handlers.routing import RouteTable
 
+#: A chat thread id as `HypervisorSession.create` mints it, and as the thread
+#: routes accept it (`handlers/hypervisor.py`): no `/`, so it cannot leave the
+#: hypervisor directory when it is joined onto it.
+_THREAD_ID_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
+
 
 class TaskRoutes:
     """BrowserHandler methods backing `ROUTES`."""
@@ -438,6 +443,16 @@ class TaskRoutes:
             self.send_json({'error': 'base_ref / worktree_slug need '
                                      '"isolate": true', 'code': 'invalid'}, 400)
             return
+        # The chat that dispatched this Build (#929). Only the dashboard MCP's
+        # create_task sends it, from inside a chat turn. It names a thread
+        # directory later, so it has to look like a thread id.
+        origin_thread_id = data.get('origin_thread_id') or None
+        if origin_thread_id is not None and (
+                not isinstance(origin_thread_id, str)
+                or not _THREAD_ID_RE.fullmatch(origin_thread_id)):
+            self.send_json({'error': 'origin_thread_id must be a chat thread id',
+                            'code': 'bad_thread_id'}, 400)
+            return
         task = handlers.server.ClaudeTaskManager.create_task(
             prompt,
             workdir=workdir,
@@ -454,6 +469,7 @@ class TaskRoutes:
             isolate=isolate,
             base_ref=base_ref,
             worktree_slug=worktree_slug,
+            origin_thread_id=origin_thread_id,
         )
         refused = handlers.server.WorktreeManager.HTTP_STATUS.get(task.get('status'))
         if refused and task.get('task_id') is None:

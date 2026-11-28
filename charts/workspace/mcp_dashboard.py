@@ -698,6 +698,13 @@ _BUILD_PREVIEW_CONTRACT_ISOLATED = (
 )
 
 
+# The `task` watcher create_task arms on its build (#929). A day, the
+# runner's ceiling: a build can run for hours, and a watcher that expires
+# first hands the build's alerts back to the build.
+_TASK_WATCH_INTERVAL = 10
+_TASK_WATCH_TIMEOUT = 86400
+
+
 def _t_create_task(a):
     prompt = (a.get('prompt') or '').strip()
     if not prompt:
@@ -727,6 +734,11 @@ def _t_create_task(a):
     project_id = _project_id_env()
     if project_id:
         body['project_id'] = project_id
+    # Record the chat that dispatched this build (#929): while that chat's
+    # `task` watcher owns the build, its Feed alert comes from the chat's reply
+    # instead of a "Task waiting on you" row for the build itself.
+    if tid:
+        body['origin_thread_id'] = tid
     if a.get('workdir'):
         body['workdir'] = a['workdir']
     if a.get('assistant'):
@@ -751,6 +763,18 @@ def _t_create_task(a):
              body={'kind': 'port', 'target': task_id, 'interval': 5,
                    'timeout': 600,
                    'note': f'live preview for build task {task_id}'})
+    # And the `task` watcher that reports the build back here (#929), so the
+    # chat owns its completion whether or not the agent remembers to arm one.
+    # Arming is idempotent per (kind, target): an agent that also calls
+    # `watch` on this build gets this watcher back, not a second delivery.
+    if tid and task_id:
+        _api('POST',
+             f'/api/hypervisor/threads/{urllib.parse.quote(tid)}/watchers',
+             body={'kind': 'task', 'target': task_id,
+                   'interval': _TASK_WATCH_INTERVAL,
+                   'timeout': _TASK_WATCH_TIMEOUT,
+                   'note': f'build task {task_id} you dispatched; report its '
+                           'result to the user'})
     return _ok(_pretty(payload))
 
 
@@ -1097,7 +1121,10 @@ TOOLS: Dict[str, Any] = {
         'you to run, build, test, or start something as a background task. For '
         'a task that builds or runs a web app, leave preview on (the default): '
         'a live preview auto-surfaces in this chat the moment its dev server '
-        'comes up — no need to call show_app_preview yourself. For any task '
+        'comes up — no need to call show_app_preview yourself. Inside a chat, '
+        'this also arms a `task` watcher on the build, so the chat is told when '
+        'it finishes and the user is notified through your reply rather than '
+        'the build; arming your own `watch` on it as well is a no-op. For any task '
         'that writes code, put "commit and push your branch as soon as it '
         'compiles, before validating" in the prompt: this pod can restart and '
         'a restart loses uncommitted work and the task\'s final report, while '
